@@ -112,6 +112,22 @@ export function recordsParts(records: NonNullable<DeltaStep["records"]>): { labe
 }
 
 /**
+ * Under a limit, the audit keys of a step's events that the delta says can
+ * carry no mark of the change's own, each with why not in the lab's words:
+ * a key only one run's events carry is not by that the change's own.
+ */
+export function noMarkKeys(delta: Pick<Delta, "limit" | "audit_keys">, step: Pick<DeltaStep, "id" | "before_id">): { key: string; run: "before" | "after"; why: string }[] {
+  if (!limitOf(delta) || !delta.audit_keys) return [];
+  const found: { key: string; run: "before" | "after"; why: string }[] = [];
+  for (const [run, keys, stepId] of [["after", delta.audit_keys.only_after, step.id], ["before", delta.audit_keys.only_before, step.before_id ?? step.id]] as const) {
+    for (const [key, entry] of Object.entries(keys)) {
+      if (entry.mark === false && typeof entry.no_mark === "string" && entry.steps.includes(stepId)) found.push({ key, run, why: entry.no_mark });
+    }
+  }
+  return found;
+}
+
+/**
  * The control in one sentence: "What happened, which this change cannot move,
  * was the same on 91 of 91 paired steps." With nothing declared every field is
  * the control.

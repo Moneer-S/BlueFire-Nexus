@@ -537,6 +537,21 @@
 
 .cmp-records-more { margin: 0; font-size: 12px; color: var(--lv-muted); }
 
+/* Why an audit key carries no mark of the change's own: a quiet note, not a verdict. */
+.cmp-nomark {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--lv-muted-strong);
+}
+
+.cmp-nomark code {
+  font-family: var(--lv-mono);
+  font-size: 12px;
+  color: var(--lv-text-soft);
+  overflow-wrap: anywhere;
+}
+
 .cmp-under {
   display: flex;
   flex-wrap: wrap;

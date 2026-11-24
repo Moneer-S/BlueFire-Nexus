@@ -260,12 +260,13 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expect(link).toBeVisible();
   await picture(page, folder, "app-runs.png");
 
-  // The pair of runs shipped with the app: on the Runs screen, and its own page.
+  // The pair of runs shipped with the app: its part of the Runs screen alone, and its own page.
   const pairs = page.getByRole("region", { name: "Before against after" });
   const pair = pairs.getByRole("link", { name: "The settings of sensor auditd", exact: true });
   await pairs.scrollIntoViewIfNeeded();
   await expect(pair).toBeVisible();
-  await picture(page, folder, "app-runs-pair.png");
+  await settle(page);
+  await pairs.screenshot({ path: join(folder, "app-runs-pair.png") });
   await pair.click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
   await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();

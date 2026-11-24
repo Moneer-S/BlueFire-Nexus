@@ -5,7 +5,7 @@
 
 import deltaText from "../../../bluefire/data/recordings/deltas/lab-pair-history-watch.json?raw";
 import { readDelta, type Delta, type DeltaEntry } from "./api";
-import { shippedRecording } from "./demo-recordings";
+import { shippedSummaries } from "./demo-recordings";
 
 /** The service's note for a pair of two runs side by side in one CI run (`SHIPPED_PAIR_NOTE` in bluefire/recording_deltas.py). */
 const SHIPPED_PAIR_NOTE = "Shipped with BlueFire, with both of its recordings. This repository's lab workflow made the two runs side by side, and this comparison of them, in the CI run at {run_url}. BlueFire checked that the comparison follows the delta format and names both recordings by the SHA-256 of their files, with every step it lists. It did not make the comparison: bluefire-lab compare did.";
@@ -32,11 +32,14 @@ async function deltaId(delta: Delta): Promise<string> {
 
 async function load(): Promise<DeltaEntry> {
   const delta = readDelta(JSON.parse(deltaText));
-  const [before, after] = await Promise.all([shippedRecording(delta.before.id), shippedRecording(delta.after.id)]);
+  // The list entries of its two recordings: neither recording is loaded until a step's detail asks for it.
+  const summaries = shippedSummaries();
+  const before = summaries.find((summary) => summary.id === delta.before.id);
+  const after = summaries.find((summary) => summary.id === delta.after.id);
   if (!before || !after) throw new Error("The shipped pair names a recording that is not shipped.");
-  const runUrl = before.summary.source.run_url;
+  const runUrl = before.source.run_url;
   // The shipped pair is two runs side by side in one CI run, which the service names.
-  if (delta.runners !== 2 || runUrl === undefined || runUrl !== after.summary.source.run_url) throw new Error("The shipped pair is not two runs side by side in one CI run.");
+  if (delta.runners !== 2 || runUrl === undefined || runUrl !== after.source.run_url) throw new Error("The shipped pair is not two runs side by side in one CI run.");
   return {
     delta,
     summary: {
@@ -50,7 +53,7 @@ async function load(): Promise<DeltaEntry> {
       counts: delta.counts,
       before: delta.before,
       after: delta.after,
-      recordings: { before: before.summary, after: after.summary },
+      recordings: { before, after },
       origin: { kind: "shipped", run_url: runUrl, note: SHIPPED_PAIR_NOTE.replace("{run_url}", runUrl) },
     },
   };

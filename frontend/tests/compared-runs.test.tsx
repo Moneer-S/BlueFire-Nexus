@@ -65,20 +65,24 @@ function sensorDelta(): Delta {
   };
 }
 
-// A limited verdict in the shape of the real one of two runners that differed
-// (CI run 45362120784): the step credited by the change's own mark, its price
-// not known, and one more step not attributable because of the runners.
+// A limited verdict built here in the shape `bluefire-lab compare` writes for
+// two runners that differed: the step credited by the change's own mark, its
+// price not known, and one more step not attributable because of the runners.
+// No CI run has yet written one by the lab's current rule for the mark.
 const RUN = "https://github.com/example/lab/actions/runs/3";
-const UNKNOWN_PRICE = "price not known: each run counted its ordinary activity on its own runner, and the two runners differed, so what differs between the counts is not the change's price (each run's own, published rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 8964 before, 8804 after)";
+const UNKNOWN_PRICE = "price not known: each run counted its ordinary activity on its own runner, and the two runners differed, so what differs between the counts is not the change's price (each run's own, published rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 8858 before, 8779 after)";
 const RUNNERS_SAID = "the image of host `target`, the kernel of host `target`";
+const CREDITS = "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key whose every rule in that run watches a path that no rule of the other run, as written, could have recorded (none there watches that path, any other path the event names, a folder above one or a path under one, and none without a path records the same kind of event, a program start being one kind and a read, a write or a change of attributes the other; paths are compared as written, so a second name that a link gives a file is not found out), and the other run holds nothing of it";
+const RESTS = "it rests on 1 event of the audit key `shell-history`, whose every rule in the after run watches a path that no rule of the before run, as written, could have recorded, the only events either run holds of the step";
+const HOME_RULE = "the before run's rule `-a always,exit -F path=/home/bluefire-lab -F perm=aw` watches `/home/bluefire-lab`, a folder above `/home/bluefire-lab/.bash_history`";
 
 function limitedDelta(): Delta {
   const delta = sensorDelta();
   const marked: DeltaStep = {
     ...better,
-    records: { sensor: "auditd", new: { count: 1, lines: ["openat: .bash_history"] }, gone: { count: 0, lines: [] } },
+    records: { sensor: "auditd", new: { count: 1, lines: ["openat: /home/bluefire-lab/.bash_history"] }, gone: { count: 0, lines: [] } },
     mark: { run: "after", keys: ["shell-history"], events: 1 },
-    verdict: `better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors; unseen to seen by the published rules, on 1 of the 4 published procedures of T1070.003 in the list; ${UNKNOWN_PRICE}; it rests on 1 event of the audit key \`shell-history\`, which only the after run's audit rules define, the only events either run holds of the step, on two runners that differed (${RUNNERS_SAID}); one pair of runs`,
+    verdict: `better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors; unseen to seen by the published rules, on 1 of the 4 published procedures of T1070.003 in the list; ${UNKNOWN_PRICE}; ${RESTS}, on two runners that differed (${RUNNERS_SAID}); one pair of runs`,
     price: UNKNOWN_PRICE,
   };
   const unattributed: DeltaStep = {
@@ -95,7 +99,8 @@ function limitedDelta(): Delta {
     before: { ...delta.before, run_url: RUN, defense_commit: "d".repeat(40) },
     after: { ...delta.after, run_url: RUN, defense_commit: "c".repeat(40) },
     runners: 2,
-    limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key that only one run's audit rules define, and the other run holds nothing of it", credited: 1, not_attributable: 1 },
+    limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: CREDITS, credited: 1, not_attributable: 1 },
+    audit_keys: { only_before: {}, only_after: { "shell-history": { events: 1, steps: ["2"], mark: true } } },
     differences: [
       { what: "images:target", before: "ubuntu24 20261116.376.1", after: "ubuntu24 20261116.133.1" },
       { what: "kernels:target", before: "7.0.0-1017-azure", after: "7.0.0-1014-aws" },
@@ -106,6 +111,26 @@ function limitedDelta(): Delta {
     counts: { paired: 3, same: 1, better: 1, worse: 0, changed: 0, "not attributable": 1, "without cause": 0, "no verdict": 0, by_mark: 1, new: 0, gone: 0 },
     unexplained: ["3"],
     steps: [same("1", "List OS Information"), marked, unattributed],
+  };
+}
+
+/**
+ * The same pair when the before run's rules also watch the history file's
+ * folder: the key gives no mark, so the step is not attributable either.
+ */
+function unmarkedDelta(): Delta {
+  const delta = limitedDelta();
+  const steps = delta.steps.map((item): DeltaStep => {
+    if (item.id !== "2") return item;
+    return { ...item, mark: undefined, price: undefined, procedures: undefined, result: "not attributable", verdict: `not attributable: the two runners differed (${RUNNERS_SAID}), the step does not carry the change's own mark (its events' audit key \`shell-history\` gives no mark: ${HOME_RULE}), so this is run variation or the runners' difference; one pair of runs` };
+  });
+  return {
+    ...delta,
+    limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: CREDITS, credited: 0, not_attributable: 2 },
+    audit_keys: { only_before: {}, only_after: { "shell-history": { events: 1, steps: ["2"], mark: false, no_mark: HOME_RULE } } },
+    counts: { ...delta.counts, better: 0, "not attributable": 2, by_mark: 0 },
+    unexplained: ["2", "3"],
+    steps,
   };
 }
 
@@ -202,7 +227,7 @@ describe("the page of two compared runs", () => {
       "the image of host targetubuntu24 20261116.376.1ubuntu24 20261116.133.1",
       "the kernel of host target7.0.0-1017-azure7.0.0-1014-aws",
     ]);
-    expect(within(limit).getByText(/^Credited: only a step that carries the change's own mark/).parentElement).toHaveTextContent("Credited: only a step that carries the change's own mark: every event the recordings hold of it is of an audit key that only one run's audit rules define, and the other run holds nothing of it.");
+    expect(within(limit).getByText(/^Credited: only a step that carries the change's own mark/).parentElement).toHaveTextContent(`Credited: ${CREDITS}.`);
     expect(within(limit).getByText("1 step credited by the mark, 1 not attributable.")).toBeVisible();
 
     // Each run names the commit its rules and sensor settings came from, never one relative to the other.
@@ -222,9 +247,11 @@ describe("the page of two compared runs", () => {
     expect(within(line).getByText("better")).toHaveClass("cmp-result");
     expect(line).toHaveTextContent("better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors");
     // The mark is said once, in the delta's own verdict.
-    expect(line).toHaveTextContent("it rests on 1 event of the audit key shell-history, which only the after run's audit rules define, the only events either run holds of the step");
+    expect(line).toHaveTextContent(RESTS.replaceAll("`", ""));
     expect(line.textContent?.match(/it rests on/g)).toHaveLength(1);
-    expect(line).toHaveTextContent("What sensor auditd recorded of it in one run onlyOnly in the after run, 1 eventopenat: .bash_history");
+    expect(line).toHaveTextContent("What sensor auditd recorded of it in one run onlyOnly in the after run, 1 eventopenat: /home/bluefire-lab/.bash_history");
+    // A key that can carry the mark gives no line of why it carries none.
+    expect(line).not.toHaveTextContent(/No mark of the change's own/);
     const price = within(line).getByText(/^price not known: /);
     expect(price).toHaveClass("cmp-price");
     expect(price).toHaveTextContent(UNKNOWN_PRICE);
@@ -244,6 +271,24 @@ describe("the page of two compared runs", () => {
     expect(line).toHaveTextContent("Beforeseen, no alertAfteralerted");
     const moved = screen.getByRole("region", { name: /^What the change moved/ });
     expect(within(moved).queryByText("Stop the audit daemon")).not.toBeInTheDocument();
+    // Its events are of no key only one run's events carry, so no key's reason is told under it.
+    expect(line).not.toHaveTextContent(/No mark of the change's own/);
+  });
+
+  it("says under a step that is not attributable why the key of its events gives no mark", async () => {
+    mount(unmarkedDelta());
+    const control = await screen.findByRole("region", { name: /^The control/ });
+    const lines = within(control).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
+    const history = lines.find((item) => item.textContent?.includes("Clear Bash history (echo)"));
+    if (!history) throw new Error("The step whose key gives no mark should be listed as not attributable.");
+    const why = within(history).getByText(/^No mark of the change's own from the audit key/);
+    expect(why).toHaveTextContent(`No mark of the change's own from the audit key shell-history, only in the after run's events: ${HOME_RULE.replaceAll("`", "")}.`);
+    expect(within(why).getByText("/home/bluefire-lab", { selector: "code" })).toBeVisible();
+    // Said once under its own step, and not under the step whose events are of no such key.
+    expect(screen.getAllByText(/^No mark of the change's own/)).toHaveLength(1);
+    // Nothing is credited, so nothing moved.
+    const moved = screen.getByRole("region", { name: /^What the change moved/ });
+    expect(within(moved).getByText("No step moved in what this change can move.")).toBeVisible();
   });
 
   it("says No verdict with every reason and every difference, as prominently as a verdict", async () => {

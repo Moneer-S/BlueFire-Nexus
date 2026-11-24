@@ -7,7 +7,7 @@ import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, type DeltaSummary, type RecordingSummary } from "../lib/api";
 import { day } from "../live/format";
-import { newestFirst, originWords, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { originWords, ownRuns, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
 import { changeWords, codeSpans, pairPath, pairResultWords } from "../lib/recording-pairs";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
@@ -70,9 +70,8 @@ export function RecordedRuns() {
   // A recording that is one side of a listed pair is listed with its pair, not again on its own:
   // two near-identical rows of one list would read as two unrelated runs.
   const pairList = pairs.data?.deltas ?? [];
-  const paired = new Set(pairList.flatMap((summary) => [summary.before.id, summary.after.id]));
-  const all = recordings.data && !pairs.isPending ? newestFirst(recordings.data.recordings) : undefined;
-  const list = all?.filter((summary) => !paired.has(summary.id));
+  const all = recordings.data && !pairs.isPending ? recordings.data.recordings : undefined;
+  const list = all ? ownRuns(all, pairList) : undefined;
   const inPairs = (all?.length ?? 0) - (list?.length ?? 0);
   const unreadable = recordings.data?.unreadable_count ?? 0;
   const omitted = recordings.data?.omitted_count ?? 0;

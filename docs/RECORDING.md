@@ -334,14 +334,24 @@ that the limit, the marks and the counts agree: a `limit` only with `runners` 2,
 both sides naming one CI run, a verdict, a declared change that leaves a mark
 of its own, and names of a runner's image or kernel that are among the
 `differences`, recorded in both with two different values and not part of the
-declared change; every other difference part of the declared change; a `mark`
-only under a limit, on a step counted `better`, `worse` or `changed` whose
-verdict starts as the format says and says what the mark rests on, whose other
-run says `no telemetry`, whose keys `audit_keys` lists for its run with that
-step and at least the mark's events, and which carries `records` that give the
-mark's events; under a limit, no step credited
-without a mark and no price but `price not known`; and `counts.by_mark` and the
-limit's `credited` equal to the steps with a mark.
+declared change; every other difference part of the declared change; under a
+limit, each key of `audit_keys` saying `mark`, with `no_mark` exactly when it
+is false, and without a limit neither; a `mark` only under a limit, on a step
+counted `better`, `worse` or `changed` whose verdict starts as the format says
+and names each audit key of the mark, whose other run says `no telemetry`,
+none of whose keys `audit_keys` lists for the other run or with `mark` false,
+each it lists for its run listing that step and together at least the mark's
+events, and which carries `records` that give the mark's events; under a
+limit, no step credited without a mark and no price but `price not known`;
+`counts.by_mark` and the limit's `credited` equal to the steps with a mark;
+and, from the two kept recordings, that both say what their audit rules watch
+(`audit_watches`) and that every key said to carry the mark is on a rule of its
+run. A limited delta of recordings that name their audit keys alone is
+refused: a key's name is no mark. The app checks the delta's structure and the
+few phrases the format fixes (`one pair of runs`, a credited step's lead,
+`price not known`), not the rest of the lab's sentences, which it draws as
+written. Under a limit, a step that is `not attributable` says under it, for
+each key of its events that `audit_keys` says gives no mark, the lab's reason.
 
 The app ships one real pair: the two runs of the pull request that added an
 audit watch on the test account's shell history files, made side by side on two
@@ -357,7 +367,10 @@ declared change, the two runs' dates (or that they ran side by side) and one
 line of the result, a limited verdict's said as limited with its steps credited
 by the mark, and opens one at `#/runs/compared/<id>`. A recording that is one
 side of a listed pair is opened from its pair, and not listed again on its own,
-so that the two runs of one pair do not read as unrelated runs. That page draws
+so that the two runs of one pair do not read as unrelated runs. The Overview
+offers the newest of what the Runs screen lists: a pair when the later of its
+runs is newer than every run listed on its own, and that run otherwise. The
+page of a pair draws
 the delta alone: the declared change with both values, or "No verdict" with
 every reason and every difference; under a limit, at the top, that the verdict
 is limited, in what the two runners differed with both values, and what alone

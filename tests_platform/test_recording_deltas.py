@@ -505,9 +505,34 @@ def test_the_shipped_pair_is_listed_and_returned_whole_as_the_lab_made_it(
     assert detail["delta"] == delta
 
 
+# What the audit rules of the two runs of a built pair watch, in the fixed form the lab's
+# recordings write (audit_watches): the before run starts programs only, the after run also
+# watches the test account's history file under the key shell-history.
+STARTS = "-a always,exit -F auid!=unset -S execve"
+HISTORY = "-a always,exit -F path=/home/bluefire-lab/.bash_history -F perm=aw"
+WATCHES = {"before": {"": [STARTS]}, "after": {"": [STARTS], "shell-history": [HISTORY]}}
+
+
+def with_auditd(recording: dict[str, Any], watches: dict[str, list[str]] | None) -> dict[str, Any]:
+    """A built recording with the sensor auditd, saying what its rules watch when watches is given,
+    as the lab's recordings say it; None leaves it unsaid, as a recording written before it was."""
+
+    recording["network"]["sensors"].append(
+        {
+            "id": "auditd",
+            "name": "auditd 3.1.2",
+            "host": "target",
+            "records": "program starts and file changes",
+            **({"audit_watches": watches} if watches is not None else {}),
+        }
+    )
+    return recording
+
+
 def limited_delta(before: bytes, after: bytes) -> dict[str, Any]:
-    """A limited verdict in the shape bluefire-lab compare writes for two runners that differed:
-    one step better by the change's own mark, its price not known."""
+    """A built limited verdict, in the shape bluefire-lab compare writes today for two runners that
+    differed: one step better by the change's own mark, its price not known, its key able to carry
+    the mark. Made here, not by a run of the lab."""
 
     delta = small_delta(before, after)
     price = (
@@ -523,8 +548,13 @@ def limited_delta(before: bytes, after: bytes) -> dict[str, Any]:
             "why": "the two runners differed",
             "differences": ["images:target", "kernels:target"],
             "credits": "only a step that carries the change's own mark: every event the "
-            "recordings hold of it is of an audit key that only one run's audit rules define, "
-            "and the other run holds nothing of it",
+            "recordings hold of it is of an audit key whose every rule in that run watches a path "
+            "that no rule of the other run, as written, could have recorded (none there watches "
+            "that path, any other path the event names, a folder above one or a path under one, "
+            "and none without a path records the same kind of event, a program start being one "
+            "kind and a read, a write or a change of attributes the other; paths are compared as "
+            "written, so a second name that a link gives a file is not found out), and the other "
+            "run holds nothing of it",
             "credited": 1,
             "not_attributable": 0,
         },
@@ -533,37 +563,51 @@ def limited_delta(before: bytes, after: bytes) -> dict[str, Any]:
             {"what": "kernels:target", "before": "7.0.0-1017-azure", "after": "7.0.0-1014-aws"},
             {"what": "sensors:auditd", "before": "a" * 64, "after": "b" * 64, "declared": True},
         ],
-        audit_keys={"only_before": {}, "only_after": {"shell-history": {"events": 1, "steps": ["2"]}}},
+        audit_keys={
+            "only_before": {},
+            "only_after": {"shell-history": {"events": 1, "steps": ["2"], "mark": True}},
+        },
     )
     delta["counts"]["by_mark"] = 1
     step = delta["steps"][1]
     step.update(
         records={
             "sensor": "auditd",
-            "new": {"count": 1, "lines": ["openat: .bash_history"]},
+            "new": {"count": 1, "lines": ["openat: /home/bluefire-lab/.bash_history"]},
             "gone": {"count": 0, "lines": []},
         },
         mark={"run": "after", "keys": ["shell-history"], "events": 1},
         verdict="better by the change's own mark, on two runners that differed: no telemetry to "
         f"recorded by the sensors; {price}; it rests on 1 event of the audit key `shell-history`, "
-        "which only the after run's audit rules define, the only events either run holds of the "
-        "step; one pair of runs",
+        "whose every rule in the after run watches a path that no rule of the before run, as "
+        "written, could have recorded, the only events either run holds of the step, on two "
+        "runners that differed (the image of host `target`, the kernel of host `target`); one "
+        "pair of runs",
         price=price,
     )
     return delta
 
 
-def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_disagree(
-    service: BlueFireService,
-) -> None:
-    def in_one_run(recording_id: str) -> bytes:
-        recording = small_recording(recording_id)
+def in_one_run(
+    service: BlueFireService, prefix: str, said: bool = True
+) -> tuple[bytes, bytes]:
+    """Two built recordings of one CI run, kept here: the before and the after run of a pair, whose
+    auditd says what its rules watch unless said is false."""
+
+    payloads = []
+    for side in ("before", "after"):
+        recording = with_auditd(small_recording(f"{prefix}-{side}"), WATCHES[side] if said else None)
         recording["source"]["run_url"] = "https://github.com/example/lab/actions/runs/3"
         payload = lab_file(recording)
         service.import_recording(sent(payload))
-        return payload
+        payloads.append(payload)
+    return payloads[0], payloads[1]
 
-    good = limited_delta(in_one_run("rec-before"), in_one_run("rec-after"))
+
+def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_disagree(
+    service: BlueFireService,
+) -> None:
+    good = limited_delta(*in_one_run(service, "rec"))
 
     def changed(edit: Any) -> list[str]:
         delta = copy.deepcopy(good)
@@ -609,13 +653,28 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
         step = delta["steps"][1]
         step["verdict"] = step["verdict"].replace(" by the change's own mark, on two runners that differed", "")
 
-    def verdict_says_more_events(delta: dict[str, Any]) -> None:
+    def verdict_without_the_key(delta: dict[str, Any]) -> None:
         step = delta["steps"][1]
-        step["verdict"] = step["verdict"].replace("rests on 1 event of", "rests on 7 events of")
+        step["verdict"] = step["verdict"].replace("`shell-history`", "of its own")
 
-    def verdict_names_the_other_run(delta: dict[str, Any]) -> None:
-        step = delta["steps"][1]
-        step["verdict"] = step["verdict"].replace("only the after run's", "only the before run's")
+    def key_that_gives_no_mark(delta: dict[str, Any]) -> None:
+        delta["audit_keys"]["only_after"]["shell-history"].update(
+            mark=False, no_mark="the before run's rule `-a always,exit -F path=/home` watches `/home`"
+        )
+
+    def key_that_does_not_say(delta: dict[str, Any]) -> None:
+        del delta["audit_keys"]["only_after"]["shell-history"]["mark"]
+
+    def no_mark_without_why(delta: dict[str, Any]) -> None:
+        delta["audit_keys"]["only_after"]["shell-history"]["mark"] = False
+
+    def why_beside_a_mark(delta: dict[str, Any]) -> None:
+        delta["audit_keys"]["only_after"]["shell-history"]["no_mark"] = "it has no rule"
+
+    def key_of_the_other_run(delta: dict[str, Any]) -> None:
+        delta["audit_keys"]["only_before"]["shell-history"] = {
+            "events": 1, "steps": ["2"], "mark": True
+        }  # fmt: skip
 
     def key_without_the_step(delta: dict[str, Any]) -> None:
         delta["audit_keys"]["only_after"]["shell-history"]["steps"] = []
@@ -677,8 +736,10 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
     # The refusals below are each checked against a store that keeps no imported delta.
     (service.recording_library.root / "deltas" / f"{entry['id']}.json").unlink()
     assert changed(mark_without_limit) == [
+        "audit_keys.only_after.shell-history.mark is given only under a limit: whether a key can "
+        "carry the change's own mark is asked only on two runners that differed.",
         "steps[1].mark is given only under a limit: a step is credited by the change's own mark "
-        "only on two runners that differed."
+        "only on two runners that differed.",
     ]
     assert "counts.by_mark is 0, but the delta lists 1 steps with a mark." in changed(miscounted_marks)
     assert changed(credited_without_mark) == [
@@ -707,12 +768,10 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
         "a limit, so there can be no verdict."
     ]
     assert changed(mark_on_the_wrong_run) == [
-        "steps[1].verdict must say what its mark rests on: \"it rests on 1 event of the audit key "
-        "`shell-history`, which only the before run's audit rules define\".",
         "steps[1].mark says the before run carries the mark, so the after side must be no "
         "telemetry and the before side not.",
-        "steps[1].mark.keys names 'shell-history', which audit_keys does not list as only the "
-        "before run's.",
+        "steps[1].mark.keys names 'shell-history', which audit_keys lists among the keys only "
+        "the after run's events carry.",
         "steps[1].mark.events must be the number of events the step's records give for the run "
         "that carries the mark.",
     ]
@@ -720,12 +779,26 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
         "steps[1].verdict must start with \"better by the change's own mark, on two runners that "
         "differed\": the step is credited by the change's own mark."
     ) in changed(verdict_without_the_lead)
-    rests = (
-        "steps[1].verdict must say what its mark rests on: \"it rests on 1 event of the audit key "
-        "`shell-history`, which only the after run's audit rules define\"."
-    )
-    assert changed(verdict_says_more_events) == [rests]
-    assert changed(verdict_names_the_other_run) == [rests]
+    assert changed(verdict_without_the_key) == [
+        "steps[1].verdict must name the audit key 'shell-history' its mark rests on."
+    ]
+    assert changed(key_that_gives_no_mark) == [
+        "steps[1].mark.keys names 'shell-history', which audit_keys says can carry no mark of the "
+        "change's own."
+    ]
+    assert changed(key_that_does_not_say) == ["audit_keys.only_after.shell-history.mark is missing."]
+    assert changed(no_mark_without_why) == [
+        "audit_keys.only_after.shell-history.no_mark is missing.",
+        "steps[1].mark.keys names 'shell-history', which audit_keys says can carry no mark of the "
+        "change's own.",
+    ]
+    assert changed(why_beside_a_mark) == [
+        "audit_keys.only_after.shell-history.no_mark is given only when mark is false."
+    ]
+    assert changed(key_of_the_other_run) == [
+        "steps[1].mark.keys names 'shell-history', which audit_keys lists among the keys only "
+        "the before run's events carry."
+    ]
     assert changed(key_without_the_step) == [
         "steps[1].mark.keys names 'shell-history', whose entry in audit_keys.only_after does not "
         "list the step."
@@ -743,7 +816,7 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
     )
     assert "steps[1].mark.keys must name the audit keys of the mark." in changed(mark_of_no_keys)
     assert changed(no_audit_keys) == [
-        "steps[1].mark needs audit_keys.only_after, the keys its run alone has."
+        "steps[1].mark needs audit_keys.only_after, the keys only its run's events carry."
     ]
     assert "limit is given only with a verdict: comparable must be true." in changed(refused_with_a_limit)
     assert (
@@ -765,3 +838,51 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
         "limit.differences names 'images:target', which is the same in both runs."
     ]
     assert "differences[3].what must be non-empty text." in changed(difference_not_text)
+
+
+def test_a_limited_verdict_rests_on_what_the_rules_watch_and_not_on_the_lab_s_wording(
+    service: BlueFireService,
+) -> None:
+    good = limited_delta(*in_one_run(service, "rec"))
+    unsaid = limited_delta(*in_one_run(service, "old", said=False))
+
+    def imported(delta: dict[str, Any]) -> dict[str, Any]:
+        entry: dict[str, Any] = service.import_recording_delta({"delta": delta})["summary"]
+        (service.recording_library.root / "deltas" / f"{entry['id']}.json").unlink()
+        return entry
+
+    # The lab improves its sentences: the store holds the structure, not the words around it.
+    reworded = copy.deepcopy(good)
+    reworded["limit"]["credits"] = "only a step that carries the change's own mark, in other words"
+    step = reworded["steps"][1]
+    step["verdict"] = step["verdict"].replace("whose every rule in the after run", "every rule of which")
+    # A key that can carry the mark and whose name the other run's events carry too is not
+    # listed in audit_keys; the after recording's rules have it.
+    unlisted = copy.deepcopy(good)
+    unlisted["audit_keys"]["only_after"] = {}
+    # A key not on any rule of its run, and a credited key that is not either.
+    no_rule = copy.deepcopy(unlisted)
+    no_rule["steps"][1]["mark"]["keys"] = ["history"]
+    no_rule["steps"][1]["verdict"] = no_rule["steps"][1]["verdict"].replace("shell-history", "history")
+    listed_without_rule = copy.deepcopy(good)
+    listed_without_rule["audit_keys"]["only_after"]["home"] = {"events": 2, "steps": ["1"], "mark": True}
+
+    assert imported(reworded)["limit"] == reworded["limit"]
+    assert imported(unlisted)["counts"]["by_mark"] == 1
+    assert refused(service, no_rule) == [
+        "steps[1].mark.keys says the audit key 'history' can carry the change's own mark, but the "
+        "after recording's audit rules have no rule under it."
+    ]
+    assert refused(service, listed_without_rule) == [
+        "audit_keys.only_after.home.mark says the audit key 'home' can carry the change's own "
+        "mark, but the after recording's audit rules have no rule under it."
+    ]
+    # Recordings that name no rules a mark could rest on, as those written before they said, give
+    # no limited verdict: a key's name alone is no mark.
+    assert refused(service, unsaid) == [
+        f"the {side} recording does not say what its audit rules watch under each audit key "
+        "(audit_watches on its sensor auditd), so no step can carry the change's own mark: a key's "
+        "name alone is no mark. The recording is written again from its run's folder by "
+        "bluefire-lab recording, or the pair is run again."
+        for side in ("before", "after")
+    ]

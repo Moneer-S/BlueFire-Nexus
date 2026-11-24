@@ -122,7 +122,7 @@ describe("the Runs screen's recorded runs", () => {
     const side = (id: string, started: string) => ({ sha256: "a".repeat(64), id, environment: "GitHub-hosted runner", run_url: "https://github.com/example/bluefire/actions/runs/7", started });
     const limited: DeltaSummary = {
       id: "0000000000000003", claim: "one pair of runs", declared_change: "sensors:auditd", runners: 2, comparable: true, refused_because: [], counts,
-      limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key that only one run's audit rules define, and the other run holds nothing of it", credited: 1, not_attributable: 0 },
+      limit: { why: "the two runners differed", differences: ["images:target", "kernels:target"], credits: "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key whose every rule in that run watches a path that no rule of the other run, as written, could have recorded, and the other run holds nothing of it", credited: 1, not_attributable: 0 },
       before: side("pair-before", "2026-11-24T09:08:49Z"), after: side("pair-after", "2026-11-24T09:09:06Z"),
       recordings: { before: { ...shipped, id: "pair-before" }, after: { ...shipped, id: "pair-after" } },
       origin: { kind: "imported", note: "Imported." },

@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type Delta, type DeltaLimit, type DeltaSide, type DeltaStep, type DeltaSummary } from "../lib/api";
 import { originWords, recordedRunPath } from "../lib/recorded-runs";
-import { changeWords, chipField, codeSpans, controlWords, creditsWords, isCredited, isDigest, limitOf, movedSteps, raceWords, recordsParts, resultWords, runnerDifferences, setupLede, setupWords, shortValue, sideWhere, variationWords, verdictParts } from "../lib/recording-pairs";
+import { changeWords, chipField, codeSpans, controlWords, creditsWords, isCredited, isDigest, limitOf, movedSteps, noMarkKeys, raceWords, recordsParts, resultWords, runnerDifferences, setupLede, setupWords, shortValue, sideWhere, variationWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows } from "../live/analyse";
 import { outcomeClass, outcomeWords, plural, runLink, sensorColours, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
@@ -190,7 +190,9 @@ function LimitBox({ delta, limit }: { delta: Delta; limit: DeltaLimit }) {
     </table>
     <p className="cmp-limit-credits">
       <strong>Credited: {credits.lead}</strong>{credits.rest ? <>: <LabText text={credits.rest} /></> : null}.
-      {" "}Every other step that differs is not attributable, since the runners' difference could have moved it. No price is known: each run counted its ordinary activity on a runner of its own.
+    </p>
+    <p className="cmp-limit-credits">
+      Every other step that differs is not attributable, since the runners' difference could have moved it. No price is known: each run counted its ordinary activity on a runner of its own.
     </p>
     <p className="cmp-limit-count">{plural(limit.credited, "step")} credited by the mark, {limit.not_attributable} not attributable.</p>
   </section>;
@@ -279,6 +281,9 @@ function StepLine({ delta, step, open, onToggle }: { delta: Delta; step: DeltaSt
     </p>
     {step.underneath.length ? <ul className={`cmp-under${step.result === "better" ? " is-better" : ""}`} aria-label="What changed underneath">{step.underneath.map((item) => <li key={item}>{item}</li>)}</ul> : null}
     {step.records ? <Records records={step.records} /> : null}
+    {step.result === "not attributable" ? noMarkKeys(delta, step).map((item) => <p key={`${item.run}-${item.key}`} className="cmp-nomark">
+      No mark of the change's own from the audit key <code>{item.key}</code>, only in the {item.run} run's events: <LabText text={item.why} />.
+    </p>) : null}
     {step.paired_by !== "id" ? <p className="cmp-paired">Paired by {step.paired_by}.</p> : null}
     {open ? <PairDetail id={detail} delta={delta} step={step} onClose={onToggle} /> : null}
   </li>;

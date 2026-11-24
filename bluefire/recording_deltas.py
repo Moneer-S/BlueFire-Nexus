@@ -11,7 +11,10 @@ with the facts it copies from their source, and that every step id it names is a
 step of its recording. A delta is served only while both files are still the ones
 it names. A delta of two runners that differed carries a ``limit``: its verdict
 credits only the steps that carry the change's own ``mark``, and the checks
-refuse a delta whose limit, marks, counts and differences do not agree.
+refuse a delta whose limit, marks, audit keys, counts and differences do not
+agree, or whose recordings do not say what their audit rules watch. The checks
+hold the format's structure and the few phrases the format fixes; the lab's
+other sentences are its own to improve, and are drawn as it wrote them.
 
 Shipped deltas are files under ``bluefire/data/recordings/deltas/``; imported ones
 are kept under ``<runs-dir>/recordings/deltas/``, written under the recording
@@ -171,26 +174,6 @@ def _mark(check: _Checker, value: Any, where: str) -> None:
         check.fail(f"{where}.events", "must be at least 1: a mark is events of the change's own.")
 
 
-def _mark_clause(mark: Mapping[str, Any]) -> str | None:
-    """The words ``bluefire-lab compare`` writes into a credited step's verdict from its mark."""
-
-    run, keys, events = mark.get("run"), mark.get("keys"), mark.get("events")
-    if (
-        run not in ("before", "after")
-        or not isinstance(keys, list)
-        or not keys
-        or not all(isinstance(key, str) for key in keys)
-        or not isinstance(events, int)
-        or isinstance(events, bool)
-    ):
-        return None
-    said = ", ".join(f"`{key}`" for key in keys)
-    return (
-        f"it rests on {events} event{'' if events == 1 else 's'} of the audit "
-        f"{'key' if len(keys) == 1 else 'keys'} {said}, which only the {run} run's audit rules define"
-    )
-
-
 def _records(check: _Checker, value: Any, where: str) -> None:
     records = check.obj(value, where)
     check.text(records, "sensor", where)
@@ -204,7 +187,10 @@ def _records(check: _Checker, value: Any, where: str) -> None:
             check.fail(f"{where}.{key}.count", "must not be less than the lines it gives.")
 
 
-def _audit_keys(check: _Checker, value: Any) -> None:
+def _audit_keys(check: _Checker, value: Any, limited: bool) -> None:
+    """The audit keys only one run's events carry. Under a limit each says whether its events can
+    carry the change's own mark, and why not when they cannot; without one, neither."""
+
     if value is None:
         return
     found = check.obj(value, "audit_keys")
@@ -214,12 +200,27 @@ def _audit_keys(check: _Checker, value: Any) -> None:
             check.fail(f"audit_keys.{side}", "names at most 500 audit keys.")
             continue
         for key, entry in keys.items():
-            where = f"audit_keys.{side}.{key}"
+            where = f"audit_keys.{side}.{key[:80]}"
             if not key.strip() or len(key) > 500:
                 check.fail(f"audit_keys.{side}", "names an audit key that is empty or too long.")
             fields = check.obj(entry, where)
             check.count(fields, "events", where, required=True)
             _texts(check, fields, "steps", where)
+            for name in sorted(set(fields) - {"events", "steps", "mark", "no_mark"}):
+                check.fail(f"{where}.{name[:80]}", "is not a key of an audit key's entry.")
+            if not limited:
+                for name in ("mark", "no_mark"):
+                    if name in fields:
+                        check.fail(f"{where}.{name}", "is given only under a limit: whether a key "
+                                   "can carry the change's own mark is asked only on two runners "
+                                   "that differed.")  # fmt: skip
+                continue
+            check.flag(fields, "mark", where, required=True)
+            mark = fields.get("mark")
+            if mark is False:
+                check.text(fields, "no_mark", where, limit=_LINE)
+            elif mark is True and "no_mark" in fields:
+                check.fail(f"{where}.no_mark", "is given only when mark is false.")
 
 
 def validate_delta(value: Any) -> Mapping[str, Any]:
@@ -249,7 +250,7 @@ def validate_delta(value: Any) -> Mapping[str, Any]:
     if runners is not None and (isinstance(runners, bool) or runners != 2):
         check.fail("runners", "must be 2 or null.")
     limit = _limit(check, value.get("limit"))
-    _audit_keys(check, value.get("audit_keys"))
+    _audit_keys(check, value.get("audit_keys"), limit is not None)
     check.flag(value, "comparable", "delta", required=True)
     refusals = _texts(check, value, "refused_because", "")
     if isinstance(value.get("comparable"), bool) and value["comparable"] == bool(refusals):
@@ -412,9 +413,13 @@ def _step_under_limit(
         if not verdict.startswith(lead):
             check.fail(f"{where}.verdict", f"must start with {lead!r}: the step is credited by "
                        "the change's own mark.")  # fmt: skip
-        rests = _mark_clause(mark)
-        if rests is not None and rests not in verdict:
-            check.fail(f"{where}.verdict", f"must say what its mark rests on: {rests!r}.")
+        # What the mark rests on is held by its keys, its events and the step's records, which
+        # are checked below; the verdict's own words around them are the lab's to improve.
+        keys = mark.get("keys")
+        for key in keys if isinstance(keys, list) else []:
+            if isinstance(key, str) and f"`{key}`" not in verdict:
+                check.fail(f"{where}.verdict", f"must name the audit key {key[:80]!r} its mark "
+                           "rests on.")  # fmt: skip
     if limit is not None and result in _CREDITED and mark is None:
         check.fail(f"{where}.result", f"is {result} under a limit without the change's own mark: "
                    "on two runners that differed only a step that carries it is credited.")  # fmt: skip
@@ -438,19 +443,29 @@ def _step_under_limit(
                        f"must be no telemetry and the {run} side not.")  # fmt: skip
         audit = value.get("audit_keys")
         only = audit.get(f"only_{run}") if isinstance(audit, Mapping) else None
+        elsewhere = audit.get(f"only_{other}") if isinstance(audit, Mapping) else None
         keys = mark.get("keys")
         if not isinstance(only, Mapping):
-            check.fail(f"{where}.mark", f"needs audit_keys.only_{run}, the keys its run alone has.")
+            check.fail(f"{where}.mark", f"needs audit_keys.only_{run}, the keys only its run's "
+                       "events carry.")  # fmt: skip
         elif isinstance(keys, list):
             step_id = step.get("id") if run == "after" else step.get("before_id", step.get("id"))
             listed, unlisted = 0, False
             for key in keys:
-                entry = only.get(key) if isinstance(key, str) else None
-                if isinstance(key, str) and key not in only:
+                if not isinstance(key, str):
+                    continue
+                entry = only.get(key)
+                if isinstance(elsewhere, Mapping) and key in elsewhere:
+                    check.fail(f"{where}.mark.keys", f"names {key[:80]!r}, which audit_keys lists "
+                               f"among the keys only the {other} run's events carry.")  # fmt: skip
+                if entry is None:
+                    # A key that can carry the mark and whose name the other run's events carry
+                    # too, on other rules, is not listed; the recordings say it is its run's.
                     unlisted = True
-                    check.fail(f"{where}.mark.keys", f"names {key[:80]!r}, which audit_keys does "
-                               f"not list as only the {run} run's.")  # fmt: skip
                 elif isinstance(entry, Mapping):
+                    if entry.get("mark") is False:
+                        check.fail(f"{where}.mark.keys", f"names {key[:80]!r}, which audit_keys "
+                                   "says can carry no mark of the change's own.")  # fmt: skip
                     steps = entry.get("steps")
                     if isinstance(steps, list) and step_id not in steps:
                         check.fail(f"{where}.mark.keys", f"names {key[:80]!r}, whose entry in "
@@ -552,6 +567,52 @@ def _limit_agrees(
     if isinstance(limit.get("not_attributable"), int) and limit["not_attributable"] != unattributed:
         check.fail("limit.not_attributable", f"is {limit['not_attributable']}, but the delta lists "
                    f"{unattributed} steps not attributable.")  # fmt: skip
+
+
+def _audit_watches(recording: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """What the run's audit rules watch under each audit key, as its auditd sensor says, or None
+    when it does not say: a recording written before it said, which may name the keys alone."""
+
+    sensors = recording.get("network", {}).get("sensors", [])
+    for sensor in sensors if isinstance(sensors, list) else []:
+        if isinstance(sensor, Mapping) and sensor.get("id") == "auditd":
+            watches = sensor.get("audit_watches")
+            return watches if isinstance(watches, Mapping) else None
+    return None
+
+
+def _watched_keys(delta: Mapping[str, Any], kept: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Under a limit, the mark rests on what each run's audit rules watch, which its recording
+    must say; every key said to carry the mark is a key of its run's rules."""
+
+    problems: list[str] = []
+    watches = {side: _audit_watches(kept[side]) for side in ("before", "after")}
+    for side, found in watches.items():
+        if found is None:
+            problems.append(
+                f"the {side} recording does not say what its audit rules watch under each audit "
+                "key (audit_watches on its sensor auditd), so no step can carry the change's own "
+                "mark: a key's name alone is no mark. The recording is written again from its "
+                "run's folder by bluefire-lab recording, or the pair is run again."
+            )
+    claimed: list[tuple[str, str, str]] = []
+    for part, side in (("only_before", "before"), ("only_after", "after")):
+        for key, entry in (delta.get("audit_keys") or {}).get(part, {}).items():
+            if entry.get("mark") is True:
+                claimed.append((side, key, f"audit_keys.{part}.{key[:80]}.mark"))
+    for index, step in enumerate(delta["steps"]):
+        mark = step.get("mark")
+        if isinstance(mark, Mapping):
+            for key in mark["keys"]:
+                claimed.append((mark["run"], key, f"steps[{index}].mark.keys"))
+    for side, key, where in claimed:
+        found = watches[side]
+        if found is not None and key not in found and len(problems) < 20:
+            problems.append(
+                f"{where} says the audit key {key[:80]!r} can carry the change's own mark, but "
+                f"the {side} recording's audit rules have no rule under it."
+            )
+    return problems
 
 
 def parse_delta_bytes(payload: bytes) -> Mapping[str, Any]:
@@ -730,6 +791,8 @@ class DeltaLibrary:
                 for key, entry in (delta.get("audit_keys") or {}).get(part, {}).items():
                     for index, step_id in enumerate(entry["steps"]):
                         has(side, step_id, f"audit_keys.{part}.{key}.steps[{index}]")
+            if delta.get("limit") is not None:
+                problems += _watched_keys(delta, kept)
         if problems:
             raise RecordingError(problems)
 

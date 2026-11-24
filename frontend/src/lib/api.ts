@@ -270,6 +270,18 @@ export interface DeltaRecords {
 }
 
 /**
+ * An audit key that only one run's events carry: its events and their steps,
+ * and under a limit whether its events can carry the change's own mark, with
+ * why not in the lab's words when they cannot.
+ */
+export interface DeltaAuditKey {
+  events: number;
+  steps: string[];
+  mark?: boolean;
+  no_mark?: string;
+}
+
+/**
  * Why a verdict is limited, when the two runners differed: the names of the
  * setup that differed for it, which steps the change is credited on, in words,
  * and how many were credited by the mark and how many are not attributable.
@@ -321,6 +333,8 @@ export interface Delta {
   new: DeltaListed[];
   gone: DeltaListed[];
   race: { why: string } | { before: RaceTimes; after: RaceTimes };
+  /** Only when the declared change is `sensors:auditd`: the audit keys that one run's events carry and the other's never do. */
+  audit_keys?: { only_before: Record<string, DeltaAuditKey>; only_after: Record<string, DeltaAuditKey> } | null;
 }
 
 export interface RaceTimes {
@@ -438,7 +452,8 @@ function jsonObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function isRecordingSummary(value: unknown): value is RecordingSummary {
+/** A list entry of a recording in the shape the interface reads, as the service's list route gives it. */
+export function isRecordingSummary(value: unknown): value is RecordingSummary {
   const entry = jsonObject(value);
   if (!entry) return false;
   const source = jsonObject(entry.source), score = jsonObject(entry.score), counts = jsonObject(entry.counts), origin = jsonObject(entry.origin);
@@ -975,9 +990,10 @@ export const api = {
   /** The recordings the service keeps: those shipped with BlueFire first, then the imported ones. */
   async recordings(): Promise<RecordingList> {
     if (DEMO_MODE) {
-      // Only the demo build holds the shipped recordings, each a file of its own loaded when asked for.
-      const { shippedRecordings } = await import("./demo-recordings");
-      return { recordings: (await shippedRecordings()).map((item) => item.summary), unreadable_count: 0, omitted_count: 0 };
+      // Only the demo build holds the shipped recordings: it lists them from the entries the build
+      // worked out, and loads each, a file of its own, only when it is opened.
+      const { shippedSummaries } = await import("./demo-recordings");
+      return { recordings: shippedSummaries(), unreadable_count: 0, omitted_count: 0 };
     }
     return recordingList(await request<unknown>("/recordings"));
   },

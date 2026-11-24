@@ -106,6 +106,18 @@ describe("the recordings in the demo build", () => {
     expect(runUrl).toBe(shipped?.source.run_url);
     expect(shipped?.origin.note).toBe(`Shipped with BlueFire. This repository's lab workflow recorded it in the CI run at ${runUrl}. BlueFire checked that it follows the recording format and that its parts agree with each other.`);
 
+    // Each list entry, which the build worked out of its file, says what the recording itself holds.
+    for (const item of list.recordings) {
+      const whole = readRecording((await demo.recording(item.id)).recording);
+      expect(item).toEqual({
+        id: whole.id, title: whole.title, kind: whole.kind,
+        source: { engine: whole.source.engine, environment: whole.source.environment, started: whole.source.started, finished: whole.source.finished, run_url: whole.source.run_url, commit: whole.source.commit },
+        score: whole.score,
+        counts: { steps: whole.steps.length, events: whole.events.length, alerts: whole.alerts.length },
+        origin: item.origin,
+        running: false,
+      });
+    }
     const entry = await demo.recording(shipped?.id ?? "");
     expect(readRecording(entry.recording).steps).toHaveLength(91);
     await expect(demo.recording("not-shipped")).rejects.toMatchObject({ code: "recording_not_found", status: 404 });
