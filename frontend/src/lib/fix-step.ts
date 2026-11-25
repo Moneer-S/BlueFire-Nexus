@@ -6,7 +6,7 @@
 
 import type { MatchGroups, StepRow } from "../live/analyse";
 import { ordinaryMatches, otherRuns } from "../live/analyse";
-import { sensorShortName } from "../live/format";
+import { sensorLabel, sensorShortName } from "../live/format";
 import type { Alert, Recording, RecordingEvent, Rule, RuleVerdict, Step } from "../live/recording";
 import type { CatalogResponse } from "../types";
 import type { Delta, DeltaSide, DeltaStep, DeltaSummary } from "./api";
@@ -74,6 +74,36 @@ export function labRulesCommit(recording: Recording): string | null {
   return recording.network.detectors.find((detector) => detector.id === "lab")?.commit ?? recording.source.defense_commit ?? null;
 }
 
+/**
+ * Where the defense of a recording's run is set, which decides where a fix is
+ * made. A range runs its defense on a host of its own network, its manager, and
+ * is built from a spec under `lab/range/`; the lab's one host has no such host,
+ * and its sensors' settings and rules are files under `lab/sensors/` and
+ * `lab/rules/linux/`.
+ */
+export type DefenseHome =
+  | { kind: "lab" }
+  | {
+      kind: "range";
+      /** The name of the host that runs the range's rules. */
+      manager: string;
+      /** The sensors' names, each once, without their versions: "Wazuh agent". */
+      sensors: string[];
+      /** The rules that ran, in the recording's words, or null when it names none. */
+      rules: string | null;
+    };
+
+export function defenseHome(recording: Recording): DefenseHome {
+  const manager = recording.network.hosts.find((host) => host.kind === "defense");
+  if (!manager) return { kind: "lab" };
+  return {
+    kind: "range",
+    manager: manager.name,
+    sensors: [...new Set(recording.network.sensors.map((sensor) => sensorShortName(sensor.name)))],
+    rules: recording.network.detectors.find((detector) => detector.id === "pinned")?.name ?? null,
+  };
+}
+
 /** The rules of the lab's own that this run did not accept: their matches are not in the recording. */
 export function notAccepted(recording: Recording): RuleVerdict[] {
   return labVerdicts(recording).filter((verdict) => !verdict.accepted);
@@ -115,9 +145,10 @@ export function startWith(recording: Recording, step: Step, matches: MatchGroups
   return { kind: "nothing", why: `The recording cannot say how it went: ${step.visibility.basis}.` };
 }
 
-/** A sensor of the step's host: what the recording says of it and of its settings, and what it recorded of the step. */
+/** A sensor that watched or recorded the step: what the recording says of it and of its settings, and what it recorded of the step. */
 export interface SensorFacts {
   id: string;
+  /** Its name without its version, and its host when another sensor shares the name: "Wazuh agent on web". */
   name: string;
   version: string | null;
   records: string;
@@ -128,11 +159,15 @@ export interface SensorFacts {
   events: RecordingEvent[];
 }
 
-/** The sensors that watched the step's host, in the recording's order, each with the step's events it recorded. */
+/**
+ * The sensors that watched the step's host or recorded any of its events, in
+ * the recording's order, each with the step's events it recorded. In a range a
+ * step can be recorded by the agent of the host it ran from, not of its target.
+ */
 export function sensorsOf(recording: Recording, row: Pick<StepRow, "step" | "events">): SensorFacts[] {
   const settings = recording.source.setup?.sensors;
   return recording.network.sensors
-    .filter((sensor) => sensor.host === row.step.host)
+    .filter((sensor) => sensor.host === row.step.host || row.events.some((event) => event.sensor === sensor.id))
     .map((sensor) => {
       const name = sensorShortName(sensor.name);
       const tool = recording.source.tools.find((item) => item.role === "sensor" && item.name === name);
@@ -140,7 +175,7 @@ export function sensorsOf(recording: Recording, row: Pick<StepRow, "step" | "eve
       const digest = typeof settings === "object" ? settings[sensor.id] : undefined;
       return {
         id: sensor.id,
-        name,
+        name: sensorLabel(recording, sensor),
         version: tool?.version ?? (rest || null),
         records: sensor.records,
         settings: digest ?? null,

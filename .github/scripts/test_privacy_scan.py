@@ -197,6 +197,29 @@ class PrivacyScan(unittest.TestCase):
             ["bluefire/prepared_lab_install.py:1: user home path", "docs/notes.txt:1: user home path"],
         )
 
+    def test_the_range_path_recording_accepts_its_home_folder_and_no_other_file_does(self) -> None:
+        web_home = f"{HOME}/webadmin"
+        lines = (
+            f'"command": "find {web_home} -name id_rsa"\n'
+            f'"text": "cat {web_home}/.ssh/id_rsa {web_home}/.ssh/known_hosts"\n'
+        )
+        files = {
+            "bluefire/data/recordings/lab-range-one-path.json": f"{lines}{web_home}/notes.txt\n".encode(),
+            "bluefire/data/recordings/other.json": lines.encode(),
+            "docs/notes.md": f"{web_home}/notes.txt\n".encode(),
+        }
+        status, output = scan(files)
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            output.splitlines(),
+            [
+                "bluefire/data/recordings/lab-range-one-path.json:3: user home path",
+                "bluefire/data/recordings/other.json:1: user home path",
+                "bluefire/data/recordings/other.json:2: user home path",
+                "docs/notes.md:1: user home path",
+            ],
+        )
+
     def test_the_whole_repository_is_scanned_from_a_subfolder(self) -> None:
         with tempfile.TemporaryDirectory() as repository:
             git(repository, "init", "--quiet")

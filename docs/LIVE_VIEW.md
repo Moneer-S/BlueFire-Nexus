@@ -9,6 +9,13 @@ HTML file that holds the view and one recording, and plays in a browser with
 nothing installed. A recording whose run is still going plays as far as it
 goes, and the view says the run is still running.
 
+The app ships a recorded attack path: eleven steps of ten published tests on a
+path through range one, a network of seven containers watched by Wazuh,
+recorded in
+[CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964).
+Open it on the Runs screen, where it is listed first, or write it as one page
+with `bluefire recordings page 20261125T054314Z-037227 --out path.html`.
+
 ## What it shows, and what it never shows
 
 - **Only what the recording holds.** Every step, event, match, time and number
@@ -90,9 +97,10 @@ goes, and the view says the run is still running.
   soon as the earliest event it names has arrived; it does not wait for later
   events it names, which arrive after it as events of a match already told.
 - **An alert raised after its step ended arrives late, and is shown when it
-  arrives.** No real recording of a detector that ran live exists yet: the
-  view's handling of one, told here, is shown by tests on built examples
-  only. Where the rules ran live, a match fires at its `raised` time.
+  arrives.** In the path through range one shipped with the app, Wazuh's
+  manager judged the events as they arrived, and its first alert, on step 1,
+  was raised 280 ms after the step ended. Where the rules ran live, a match
+  fires at its `raised` time.
   While a step is on screen it is told as it stood at its end, so a step whose
   alert was not raised yet is told as seen (or unseen) with no alert by the end
   of the step. When a match of a step is raised after that step ended, on
@@ -141,11 +149,12 @@ goes, and the view says the run is still running.
   before its start); the race track's 00:00 says so in its tooltip. For an
   attack path it counts from the first step's recorded start, the same clock
   the race compares with the goal.
-- **An attack path's race and its goal.** No real recording of an attack path
-  exists yet: the view's handling of one, told here, is shown by tests on
-  built examples only. An attack path begins with a step of role `test` that
-  has a recorded start, and its race counts from that one moment: the first
-  alert's number,
+- **An attack path's race and its goal.** In the path through range one
+  shipped with the app, the first alert came 01:16.4 into the run and the
+  attacker reached its goal 12:10.5 into the run (see [the goal on the
+  map](#what-a-network-of-several-hosts-shows)). An attack path begins with a
+  step of role `test` that has a recorded start, and its race counts from that
+  one moment: the first alert's number,
   the goal, the race track's 00:00, the flags' places on it and the clock's
   time into the run.
   The goal falls `score.goal_seconds` after it, even where an event is stamped
@@ -233,20 +242,20 @@ same things as on one host, laid out for a network:
   1,439 kept" where the recording kept fewer of the step's events than were
   recorded. Every sensor that recorded the step is counted, the agent of the
   host it ran from too, and the log's key names each by its host ("Wazuh agent
-  on web 3", "Wazuh agent on build 16").
+  on web 3", "Wazuh agent on build 17" at step 9).
 - **An alert is told the same way everywhere.** The rule engine names it as an
   alert ("ALERT · HIGH", its title, where it was raised: host, step and rule
   number). An alert raised after its step ended says so in one wording, on the
-  engine, in the log and in the caption alike: "raised 922 ms after the step
+  engine, in the log and in the caption alike: "raised 280 ms after the step
   ended". The log calls that line "alert". The host it was raised on has its
   chip under its words, strong at the moment it fires and quieter after, with
   its time; the run's first alert carries the race line's orange diamond and
-  the race line's time ("first alert 01:01.6").
+  the race line's time ("first alert 01:16.4").
 - **The goal is a place on the map.** The host where the path reached its goal
   has a white ring and a "goal reached" badge with the race line's white
-  diamond and its time ("goal reached 10:28.4"). The race line's sentence at
+  diamond and its time ("goal reached 12:10.5"). The race line's sentence at
   the goal says both facts, the attacker's first: "The attacker reached its
-  goal, “build's signing secret reaches inet”, 9 min 27 s after the first
+  goal, “build's signing secret reaches inet”, 10 min 54 s after the first
   alert, with no step stopped."
 - **The step's words keep their room.** The log holds three lines on a
   network; lines a step leaves empty go to the story band below, which stands
@@ -255,7 +264,7 @@ same things as on one host, laid out for a network:
 - **The goal's badge stands clear of its host.** A badge stands above its
   host, clear of the ring a lit host wears. Where a row at the top of a short
   map leaves no room above it, the badge stands beside the host, starting past
-  that ring however wide the badge is ("goal reached 10:28.4" is the widest),
+  that ring however wide the badge is ("goal reached 12:10.5" is the widest),
   or under its words; it never lies on the host it marks or on a host's name,
   and a hop's numbers keep clear of it.
 - **A field's name stands in a free corner of its field.** The top left corner
@@ -465,7 +474,7 @@ for each kind of recording:
   tests alerted", "first alert · test 39", "Test 39 of 60".
 - **An attack path** names each step "step N" and counts steps, everywhere a
   step is named or counted: "1 / 11 steps alerted", "first alert · step 1",
-  "The defense raised its first alert on step 1, 01:01.6 into the run.", "Step
+  "The defense raised its first alert on step 1, 01:16.4 into the run.", "Step
   9 of 11" over the step's detail and beside the timeline, with no second line
   that says its place again, "step 10" under the lanes' time axis, and one tab
   of steps in the analyse table where a tab of tests would hold the same rows.

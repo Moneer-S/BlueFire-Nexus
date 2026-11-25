@@ -11,11 +11,11 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingSummary } from "../lib/api";
-import { activeProviderKind, backPath, browserStorage, candidates, draftKey, hasStableIds, keepDraft, labRulesCommit, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
+import { activeProviderKind, backPath, browserStorage, candidates, defenseHome, draftKey, hasStableIds, keepDraft, labRulesCommit, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type DefenseHome, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
 import { originWords, recordedRunPath, RUNNING_POLL_MS } from "../lib/recorded-runs";
 import { alertedByLabOnly, chipField, codeSpans, isOneRun, pairChangeWords, priceLead, resultWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows, type StepRow } from "../live/analyse";
-import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, sensorColours, stepLabel } from "../live/format";
+import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, sensorColours, stepLabel, unitWord } from "../live/format";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
 import { readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
@@ -96,6 +96,7 @@ function FixView({ recording, row, recordingId, file, sha256, list }: { recordin
     heading.current?.focus({ preventScroll: true });
   }, []);
   const start = startWith(recording, step, row.matches);
+  const home = defenseHome(recording);
   const colours = sensorColours(recording.network.sensors);
   const sensors = sensorsOf(recording, row);
   // The step's one name, as every other screen gives it: "test 39", "hardened rerun of test 12", "the control".
@@ -115,15 +116,15 @@ function FixView({ recording, row, recordingId, file, sha256, list }: { recordin
         </p>
       </header>
 
-      <WhereToStart row={row} start={start} />
-      <AlreadyTried here={here} stepId={step.id} tie={tie} noun={noun(step)} />
+      <WhereToStart recording={recording} row={row} start={start} home={home} />
+      <AlreadyTried here={here} stepId={step.id} tie={tie} noun={noun(recording, step)} />
       <Recorded recording={recording} row={row} sensors={sensors} colours={colours} start={start} runPath={recordedRunPath(recordingId, file)} />
       <Matched recording={recording} start={start} />
-      {start.kind === "rule" ? here.sha256 ? <Draft storageKey={draftKey(here.id, here.sha256, step.id)} />
+      {start.kind === "rule" ? here.sha256 ? <Draft storageKey={draftKey(here.id, here.sha256, step.id)} home={home} />
         : <section className="cmp-sec fx-draft" aria-labelledby="fx-draft"><h2 id="fx-draft">A draft</h2><p className="cmp-empty">This recording is still running. A draft is kept for one finished recording file, so it can be written once the run has finished.</p></section>
         : null}
       <ModelPlace />
-      <RunAgain />
+      <RunAgain home={home} />
     </div>
   </div>;
 }
@@ -133,9 +134,9 @@ function LabText({ text }: { text: string }) {
   return <>{codeSpans(text).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</>;
 }
 
-/** A step of role test is a test; any other step is a step. */
-function noun(step: Step): string {
-  return step.role === "test" ? "test" : "step";
+/** A step of role test is what the live view calls it, a test of a list or a step of an attack path; any other step is a step. */
+function noun(recording: Pick<Recording, "kind">, step: Step): string {
+  return step.role === "test" ? unitWord(recording) : "step";
 }
 
 /** How many other runs of the technique show before "Show all". */
@@ -181,7 +182,7 @@ function Recorded({ recording, row, sensors, colours, start, runPath }: { record
       </dl>
     </details>
     {start.kind === "sensor" ? <div className="fx-others">
-      <h3>Other tests of the same technique in this run<span>{step.technique.id} · {others.length ? plural(others.length, "step") : "none"}</span></h3>
+      <h3>Other {unitWord(recording)}s of the same technique in this run<span>{step.technique.id} · {others.length ? plural(others.length, "step") : "none"}</span></h3>
       {others.length ? <ul>{(allOthers ? others : others.slice(0, FIRST_OTHERS)).map(({ step: other, recorded: events }) => <li key={other.id}>
         <Link to={`${runPath}?${stepMoment(other.id).toString()}`} className="fx-other">
           <span className="fx-other-label">{stepLabel(recording, other)}</span>
@@ -228,17 +229,38 @@ function EventTable({ recording, events }: { recording: Recording; events: Recor
   </>;
 }
 
+/** Names joined in plain words: "a", "a or b", "a, b or c". */
+function orList(names: readonly string[]): string {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1] ?? ""}`;
+}
+
+/** Where a sensor's settings are, in a sentence: files of the lab, or a range's spec. */
+function SensorHome({ home }: { home: DefenseHome }) {
+  if (home.kind === "lab") return <p className="fx-why">A sensor's settings are files under <code>lab/sensors/</code> in the repository.</p>;
+  return <p className="fx-why">In this range each sensor is {home.sensors.length ? `a ${orList(home.sensors)}` : "an agent"} built into its host's image. The range's spec under <code>lab/range/</code> sets what it reads: the logs and folders under <code>defense.watch</code>, and each host's own <code>watch</code>.</p>;
+}
+
+/**
+ * Where a rule goes, in a sentence: a file of the lab, or the image of a range's manager.
+ * A range's rule set is named in the recording's own words, which may already name the host it ran
+ * on, so the sentence after it names the manager by its part and not the host again.
+ */
+function RuleHome({ home }: { home: DefenseHome }) {
+  if (home.kind === "lab") return <p className="fx-why">A rule is a file under <code>lab/rules/linux/</code> in the repository.</p>;
+  return <p className="fx-why">{home.rules ? `The rules that ran in this range were ${home.rules}. ` : null}The range has no rules of the lab's own yet. A new rule goes into the manager's image, which <code>lab/bluefire_lab/range/build.py</code> writes.</p>;
+}
+
 /** Where a fix starts, in a sentence or two, decided by what the recording holds: a sensor, a rule, or nothing to fix. */
-function WhereToStart({ row, start }: { row: StepRow; start: StartWith }) {
-  const what = noun(row.step);
+function WhereToStart({ recording, row, start, home }: { recording: Recording; row: StepRow; start: StartWith; home: DefenseHome }) {
+  const what = noun(recording, row.step);
   return <section className="cmp-sec fx-start" aria-labelledby="fx-start">
     <h2 id="fx-start">Where to start</h2>
     {start.kind === "sensor" ? <>
       <p className="fx-lead"><b>Nothing of this {what} was recorded. Start with a sensor's settings:</b> a rule can only match what a sensor records.</p>
-      <p className="fx-why">A sensor's settings are files under <code>lab/sensors/</code> in the repository.</p>
+      <SensorHome home={home} />
     </> : start.kind === "rule" ? <>
       <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert. Start with a rule</b> that matches what the sensor recorded.</p>
-      <p className="fx-why">A rule is a file under <code>lab/rules/linux/</code> in the repository.</p>
+      <RuleHome home={home} />
     </> : start.kind === "lab alerted" ? <>
       <p className="fx-lead"><b>One of the lab's own rules alerted on it, which the score does not count.</b> The score counts published rules only, and none of those alerted.</p>
       <p className="fx-why">The lab's own rules are the files under <code>lab/rules/linux/</code> in the repository.</p>
@@ -317,7 +339,7 @@ function RuleCard({ match }: { match: RuleMatch }) {
 }
 
 /** A plain text area for a rule, never filled in by the app, kept in this browser only. */
-function Draft({ storageKey }: { storageKey: string }) {
+function Draft({ storageKey, home }: { storageKey: string; home: DefenseHome }) {
   const id = useId();
   const [text, setText] = useState(() => readDraft(browserStorage(), storageKey));
   const [kept, setKept] = useState(true);
@@ -339,7 +361,9 @@ function Draft({ storageKey }: { storageKey: string }) {
     />
     <p className="fx-kept" id={`${id}-kept`}>Kept in this browser only. The file in the repository is what runs.</p>
     {!kept ? <p className="fx-kept is-problem" role="status">This browser could not keep the latest change, so what was typed since may go when the page closes.</p> : null}
-    <p className="fx-file" id={`${id}-file`}>Save it as a Sigma rule, a <code>.yml</code> file, in the folder of its kind under <code>lab/rules/linux/</code>: <code>process_creation/</code>, <code>file_event/</code> or <code>network_connection/</code> for Sysmon, <code>auditd/</code> for auditd. A run accepts it only if it is at level high or critical, it alerts on at least one published test, every test it alerts on has a rerun with changed input arguments that took effect, it alerts on every such rerun, and it matches no event of ordinary activity. Once the run accepts it, its alerts are lab alerts, which the score does not count.</p>
+    {home.kind === "lab"
+      ? <p className="fx-file" id={`${id}-file`}>Save it as a Sigma rule, a <code>.yml</code> file, in the folder of its kind under <code>lab/rules/linux/</code>: <code>process_creation/</code>, <code>file_event/</code> or <code>network_connection/</code> for Sysmon, <code>auditd/</code> for auditd. A run accepts it only if it is at level high or critical, it alerts on at least one published test, every test it alerts on has a rerun with changed input arguments that took effect, it alerts on every such rerun, and it matches no event of ordinary activity. Once the run accepts it, its alerts are lab alerts, which the score does not count.</p>
+      : <p className="fx-file" id={`${id}-file`}>In this range the host <code>{home.manager}</code> reads the rules, in its rule engine's own format. The range has no folder for rules of the lab's own yet, so this draft has no file to go in. Keep it as a note for a change to the image of <code>{home.manager}</code> in <code>lab/bluefire_lab/range/build.py</code>.</p>}
   </section>;
 }
 
@@ -356,14 +380,18 @@ function ModelPlace() {
 }
 
 /** What a rerun is here: a file in the repository, a pull request, and the lab's comparison of the two runs. */
-function RunAgain() {
+function RunAgain({ home }: { home: DefenseHome }) {
   return <section className="cmp-sec fx-again" aria-labelledby="fx-again">
     <h2 id="fx-again">Running it again</h2>
-    <ol>
+    {home.kind === "lab" ? <ol>
       <li>Make the change as a file in the repository: a rule under <code>lab/rules/linux/</code>, or a sensor's settings under <code>lab/sensors/</code>.</li>
       <li>Open a pull request. Its CI runs the list before and after the change: for a sensor's settings, two runs side by side; for a rule, one run judged with the old rules and with the new.</li>
       <li>The lab compares the two. Import the comparison with its two recordings here to see before against after.</li>
-    </ol>
+    </ol> : <ol>
+      <li>Make the change in the repository. What a sensor reads is set in the range's spec under <code>lab/range/</code>. A rule goes into the image of the host <code>{home.manager}</code>, which <code>lab/bluefire_lab/range/build.py</code> writes.</li>
+      <li>Open a pull request. Its CI builds the range, runs the path through it again and keeps the new recording in the run's artifact.</li>
+      <li>Import that recording here to watch the path again.</li>
+    </ol>}
     <p className="fx-note">This app runs no test and opens no pull request.</p>
   </section>;
 }

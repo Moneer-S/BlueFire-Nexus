@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Any, Iterator
@@ -20,6 +21,8 @@ from tests_platform.test_api import json_body, request, running_server
 ROOT = Path(__file__).resolve().parents[1]
 SHIPPED = ROOT / "bluefire" / "data" / "recordings" / "lab-linux-host.json"
 SHIPPED_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895"
+SHIPPED_PATH = ROOT / "bluefire" / "data" / "recordings" / "lab-range-one-path.json"
+SHIPPED_PATH_RUN = r"https://github\.com/Moneer-S/BlueFire-Nexus/actions/runs/[0-9]+"
 
 
 def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
@@ -145,9 +148,9 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     listed = service.recordings()
 
     assert listed["unreadable_count"] == 0
-    # The example, the two runs of the pair shipped with the app, and the run evaluated twice,
-    # listed once by its first file: all shipped.
-    assert [item["origin"]["kind"] for item in listed["recordings"]] == ["shipped"] * 4
+    # The example, the two runs of the pair shipped with the app, the run evaluated twice,
+    # listed once by its first file, and the path through range one: all shipped.
+    assert [item["origin"]["kind"] for item in listed["recordings"]] == ["shipped"] * 5
     [entry] = [item for item in listed["recordings"] if item["id"] == json.loads(SHIPPED.read_bytes())["id"]]
     assert entry["origin"] == {
         "kind": "shipped",
@@ -179,6 +182,37 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     assert again["created"] is False and again["summary"]["origin"]["kind"] == "shipped"
     assert refused.value.code == "recording_id_taken"
     assert imported(service) == []
+
+
+def test_the_shipped_path_through_range_one_is_listed_and_served_as_its_ci_run_wrote_it(
+    service: BlueFireService,
+) -> None:
+    payload = SHIPPED_PATH.read_bytes()
+    whole = json.loads(payload)
+    [entry] = [item for item in service.recordings()["recordings"] if item["id"] == whole["id"]]
+
+    assert entry["kind"] == "attack path"
+    assert entry["origin"]["kind"] == "shipped"
+    # Shipped as a CI run of this repository wrote it, named by the run the file itself names.
+    assert re.fullmatch(SHIPPED_PATH_RUN, entry["origin"]["run_url"])
+    assert entry["origin"]["run_url"] == whole["source"]["run_url"]
+    assert entry["source"]["environment"] == "GitHub-hosted runner"
+    assert entry["running"] is False
+    # The score and the race as the CI run measured them, every step accounted for, and the
+    # goal reached: a path's score holds the moment of its first alert and of its goal.
+    assert entry["score"] == whole["score"]
+    assert entry["score"]["steps"] == len(whole["steps"]) > 0
+    assert sum(entry["score"][key] for key in ("alerted", "seen", "unseen")) == entry["score"]["took_effect"]
+    assert entry["score"]["first_alert_seconds"] > 0 and entry["score"]["goal_seconds"] > 0
+    detail = service.recording(entry["id"])
+    assert detail["summary"] == entry
+    assert detail["recording"] == whole
+    assert detail["sha256"] == hashlib.sha256(payload).hexdigest()
+    # The network the live view draws: seven hosts, three of them watched by an agent.
+    assert [host["name"] for host in detail["recording"]["network"]["hosts"]] == [
+        "attacker", "inet", "client", "web", "db", "build", "manager",
+    ]  # fmt: skip
+    assert [sensor["host"] for sensor in detail["recording"]["network"]["sensors"]] == ["web", "db", "build"]
 
 
 def test_a_recording_is_imported_listed_and_read_back_whole(
@@ -1364,9 +1398,10 @@ def test_the_command_line_imports_and_lists_a_recording_file(
         "shipped",
         "shipped",
         "shipped",
+        "shipped",
         "imported",
     ]
-    assert listed_output["recordings"][4]["id"] == "rec-small"
+    assert listed_output["recordings"][5]["id"] == "rec-small"
 
 
 # Each kind of character the format refuses outside free text, then NUL and half of a pair.

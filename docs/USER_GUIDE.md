@@ -162,6 +162,25 @@ when it was recorded, "Shipped with BlueFire" or "Imported, not verified by
 BlueFire", its score in words, and "Still running" while its engine is still
 sending it. The runs of experiments from Build follow under **Experiment runs**.
 
+BlueFire ships one recorded attack path, listed first: **An attack path of 11
+steps through a network of 7 hosts**. Range one is a small network of
+disposable containers; the path guesses a password on the web server's SSH,
+looks around, finds a private key, logs in to the build server with it, copies
+the build server's `/etc` back with its signing secret
+(`buildbot/signing.env`) and uploads it to `inet`, a stand-in internet. Its
+goal, in the recording's words, is "build's signing secret reaches inet".
+Wazuh watches three of the hosts
+([CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)).
+Select it to watch each step cross the map of the network, with what the
+agents recorded and the race between the first alert and the attacker's goal
+(see [The map of a network](LIVE_VIEW.md#the-map-of-a-network)). An attack
+path counts steps where a test list counts tests: its card on **Runs** reads
+"1 of 11 steps alerted, 10 seen, 0 unseen" and gives the race in words: the
+first alert came after 1 min 16 s, 10 min 54 s before the attacker reached
+the goal. On a step seen
+with no alert, **Fix this** says where a range's defense is set: its sensors in the range's
+spec under `lab/range/`, its rules on the range's own Wazuh manager.
+
 Under **Before against after** come the changes to the defense that the lab
 compared, as the turns of one loop, in the order they were made and joined by
 arrows: those shipped with BlueFire first, then any you imported, marked as
@@ -244,7 +263,8 @@ by sensor; under **How we know**, the recording's own reason and the SHA-256 of
 each sensor's settings; for a step with no event, the other runs of the same
 technique; and the rules that matched it. Last come, for a rule, an empty draft
 kept in this browser only; the model's place, which says that nothing was sent;
-and what a rerun is (a pull request whose CI runs the list before and after).
+and what a rerun is (a pull request whose CI runs the list before and after,
+or for a range builds the range and runs the path through it again).
 The change itself is a file in the repository: the app runs nothing, holds no
 token and asks no model.
 

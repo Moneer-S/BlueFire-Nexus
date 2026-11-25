@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
@@ -57,6 +57,13 @@ describe("what the Overview offers of the recorded runs", () => {
     const real = screen.getByRole("region", { name: "A run recorded in CI" });
     expect(real).toHaveTextContent("60 published tests on one Linux host");
     expect(screen.getByRole("link", { name: "Play the run: 60 published tests on one Linux host" })).toHaveAttribute("href", "/runs/recorded/lab-run-1");
+  });
+
+  it("says apart what the lab's own rules alert on in the run that leads, never as part of the score", async () => {
+    mount([{ ...shipped, score: { ...shipped.score, alerted_with_lab_rules: 17 } }], []);
+    const real = await screen.findByRole("region", { name: "A run recorded in CI" });
+    expect(await within(real).findByText("With the lab's own rules too, 17 of 60 alerted. The score counts only published rules.")).toBeVisible();
+    expect(within(real).getByText("3 of 60 tests alerted, 56 seen, 1 unseen")).toBeVisible();
   });
 
   it("holds the real run's place above the workspace while the recordings are asked for", async () => {

@@ -79,8 +79,9 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(path!).getByText("Recording on containers on a developer machine, started 24 Nov 2026")).toBeVisible();
     expect(within(path!).getByText("Imported, not verified by BlueFire")).toBeVisible();
     expect(within(path!).getByText("Still running")).toBeVisible();
-    expect(within(path!).getByText("1 of 2 tests alerted, 1 seen, 0 unseen so far")).toBeVisible();
-    expect(within(path!).getByText("First alert after 500 ms, the goal after 1 min 3 s")).toBeVisible();
+    // An attack path counts its steps, as the live view does.
+    expect(within(path!).getByText("1 of 2 steps alerted, 1 seen, 0 unseen so far")).toBeVisible();
+    expect(within(path!).getByText("The first alert came after 500 ms, 1 min 3 s before the attacker reached the goal")).toBeVisible();
 
     // Only what BlueFire shipped is called real.
     expect(within(recorded).getByText(/^Runs recorded step by step/)).toHaveTextContent("Those shipped with BlueFire are real runs of this repository's CI; imported ones are shown as their files say.");
@@ -294,5 +295,18 @@ describe("the Runs screen's recorded runs", () => {
     mount();
     expect(await screen.findByText("Recorded runs unavailable")).toBeVisible();
     expect(await screen.findByRole("heading", { name: "Experiment runs" })).toBeVisible();
+  });
+
+  it("says who won an attack path's race: the goal before the alert, or with no alert at all", async () => {
+    const finished = { ...running, running: false, source: { ...running.source, finished: "2026-11-24T10:05:00Z" } };
+    const late: RecordingSummary = { ...finished, id: "late", title: "Goal first", score: { ...finished.score, first_alert_seconds: 75, goal_seconds: 63 } };
+    const quiet: RecordingSummary = { ...finished, id: "quiet", title: "No alert", score: { steps: 2, took_effect: 2, alerted: 0, seen: 2, unseen: 0, stopped: 0, goal_seconds: 63 } };
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [late, quiet], unreadable_count: 0, omitted_count: 0 });
+    mount();
+    const recorded = await screen.findByRole("region", { name: "Recorded runs" });
+    const [first, second] = await within(recorded).findAllByRole("listitem");
+    if (!first || !second) throw new Error("The list holds fewer than two runs.");
+    expect(within(first).getByText("The attacker reached the goal after 1 min 3 s, 12 s before the first alert")).toBeVisible();
+    expect(within(second).getByText("The attacker reached the goal after 1 min 3 s with no alert")).toBeVisible();
   });
 });

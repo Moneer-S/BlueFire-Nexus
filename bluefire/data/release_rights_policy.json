@@ -453,6 +453,9 @@
         "bluefire/data/recordings/lab-pair-history-watch-before.json",
         "bluefire/data/recordings/lab-rule-history-truncated-base.json",
         "bluefire/data/recordings/lab-rule-history-truncated-head.json"
+      ],
+      "range-recording-quoting-atomic-red-team-mit-and-naming-wazuh-gpl-rules": [
+        "bluefire/data/recordings/lab-range-one-path.json"
       ]
     },
     "third_party_integrity": {
@@ -467,6 +470,7 @@
       "bluefire/data/recordings/deltas/lab-pair-history-watch.json": "4470d56391eafa38a005ef003b36526a1afeba989251545725b343de9fc62646",
       "bluefire/data/recordings/lab-rule-history-truncated-base.json": "3be33c4987e190a1329bd74d70984707a4d8473a39b4d827dd1a54c170587118",
       "bluefire/data/recordings/lab-rule-history-truncated-head.json": "4802adcbec733a0e96048aa7463dea0d07b401d24c7e4768cc021c15c9e5f828",
+      "bluefire/data/recordings/lab-range-one-path.json": "659c049033d1727179bf87c9e638897f77acfa23f990f2aedf5c265144985bda",
       "bluefire/data/recordings/deltas/lab-rule-history-truncated.json": "51ad6e80f43f6e84f7551878db0903b4856804543fc83beb459ca058ddfd2ddc"
     },
     "third_party_binary_integrity": {

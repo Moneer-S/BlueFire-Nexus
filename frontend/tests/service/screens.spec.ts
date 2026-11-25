@@ -45,6 +45,13 @@ function smallRecording() {
   };
 }
 
+/** The path through range one that ships with BlueFire: its title and score, read from the shipped file. */
+const shippedPath = JSON.parse(readFileSync(join(resolve(process.cwd(), ".."), "bluefire/data/recordings/lab-range-one-path.json"), "utf-8")) as {
+  title: string;
+  score: { steps: number; alerted: number; seen: number; unseen: number };
+};
+const shippedPathScore = `${shippedPath.score.alerted} of ${shippedPath.score.steps} steps alerted, ${shippedPath.score.seen} seen, ${shippedPath.score.unseen} unseen`;
+
 function file(name: string, value: unknown) {
   return { name, mimeType: "application/json", buffer: Buffer.from(JSON.stringify(value)) };
 }
@@ -63,26 +70,26 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.goto(process.env.BLUEFIRE_SERVICE_URL ?? "");
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
-  // The Overview leads with the real run shipped with BlueFire, to watch, and the turns of the loop under it,
-  // above the workspace's own blocks.
+  // The Overview leads with the first run Runs lists on its own, shipped with BlueFire, to watch, and the
+  // turns of the loop under it, above the workspace's own blocks. On a fresh workspace that run is the
+  // shipped path through range one, recorded after the shipped pairs' runs.
   const real = page.getByRole("region", { name: "A run recorded in CI" });
-  await expect(real.getByText("60 published tests on one Linux host", { exact: true })).toBeVisible();
-  await expect(real.getByText("3 of 60 tests alerted, 56 seen, 1 unseen")).toBeVisible();
-  // The score counts only published rules; what the lab's own rules alert on is said apart, never as "no alert".
-  await expect(real.getByText("With the lab's own rules too, 17 of 60 alerted. The score counts only published rules.")).toBeVisible();
-  await expect(real.getByRole("link", { name: /^Play the run/ })).toHaveAttribute("href", /^#\/runs\/recorded\/[A-Za-z0-9_-]+$/);
+  await expect(real.getByText(shippedPath.title, { exact: true })).toBeVisible();
+  await expect(real.getByText(shippedPathScore, { exact: true })).toBeVisible();
+  const play = real.getByRole("link", { name: /^Play the run/ });
+  await expect(play).toContainText(shippedPath.title);
+  await expect(play).toHaveAttribute("href", /^#\/runs\/recorded\/[A-Za-z0-9_-]+$/);
   const turns = real.getByRole("list", { name: "The changes to the defense, in order" });
   await expect(turns.getByRole("link")).toHaveText(["Clear Bash history (echo) went from unseen to seen.", "4 steps went from seen to alerted."]);
   const realBox = await real.boundingBox();
   const draftBox = await page.getByRole("heading", { name: /^(Working draft|Example plan)$/ }).first().boundingBox();
   expect(realBox && draftBox && realBox.y < draftBox.y).toBe(true);
-  // The Overview offers the newest of what Runs lists: on a fresh workspace the newest shipped pair, the
-  // run evaluated with the new rule, whose run is listed only with its pair, never on its own.
-  const newestPair = page.getByRole("link", { name: /^See the newest change to the defense, before against after/ });
-  await expect(newestPair).toContainText("A new rule: Shell History File Truncated In Place");
-  await expect(newestPair).toContainText("Shipped with BlueFire · Clear Bash history (echo) and Clear Bash history (cat dev/null), each also with changed input arguments: seen to alerted with the lab's rules");
-  await expect(newestPair).toHaveAttribute("href", /^#\/runs\/compared\/[0-9a-f]{16}$/);
-  await expect(page.getByRole("link", { name: /^Watch the first recorded run on Runs/ })).toHaveCount(0);
+  // Recent outcomes offers the newest of what Runs lists: the same path, not a pair.
+  const newestRun = page.getByRole("link", { name: /^Watch the first recorded run on Runs/ });
+  await expect(newestRun).toContainText(shippedPath.title);
+  await expect(newestRun).toContainText(`Shipped with BlueFire · ${shippedPathScore}`);
+  await expect(newestRun).toHaveAttribute("href", /^#\/runs\/recorded\/[A-Za-z0-9_-]+$/);
+  await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toHaveCount(0);
   await expect(page.getByText("No experiment runs yet.")).toBeVisible();
 
   // What a fresh workspace holds: the packaged experiments, the recording that
@@ -146,7 +153,7 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const imported = recorded.getByRole("listitem").filter({ hasText: "Two steps toward a secrets file" });
   await expect(imported.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
-  await expect(imported.getByText("1 of 2 tests alerted, 1 seen, 0 unseen")).toBeVisible();
+  await expect(imported.getByText("1 of 2 steps alerted, 1 seen, 0 unseen")).toBeVisible();
 
   // A recording still running says so, and its page asks the service again until it has finished.
   let asked = 0;
@@ -172,21 +179,23 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.waitForTimeout(9_000);
   expect(asked).toBe(settled);
 
-  // An imported run recorded after the shipped pair is listed after what was shipped, and the
-  // Overview still offers the shipped pair: an imported file never takes a shipped run's place.
+  // An imported run recorded after the shipped runs is listed after what was shipped, and the
+  // Overview still offers the shipped path: an imported file never takes a shipped run's place.
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const later = JSON.parse(JSON.stringify({ ...smallRecording(), id: "small-later", title: "Two later steps toward a secrets file" }).replaceAll("2026-11-20", "2026-11-30"));
   await page.getByLabel("Recording file to import").setInputFiles(file("later.json", later));
   await expect(page).toHaveURL(/#\/runs\/recorded\/small-later/);
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const titles = recorded.getByRole("listitem").getByRole("link");
-  await expect(titles.first()).toHaveText("60 published tests on one Linux host");
+  await expect(titles.first()).toHaveText(shippedPath.title);
   await page.getByRole("link", { name: "Overview", exact: true }).first().click();
-  await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toContainText("Shipped with BlueFire");
-  await expect(page.getByRole("link", { name: /^Watch the first recorded run on Runs/ })).toHaveCount(0);
+  const stillNewest = page.getByRole("link", { name: /^Watch the first recorded run on Runs/ });
+  await expect(stillNewest).toContainText(shippedPath.title);
+  await expect(stillNewest).toContainText("Shipped with BlueFire");
+  await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toHaveCount(0);
   // The run that leads is still the real one shipped with BlueFire, never the later imported file.
   const stillReal = page.getByRole("region", { name: "A run recorded in CI" });
-  await expect(stillReal.getByText("60 published tests on one Linux host", { exact: true })).toBeVisible();
+  await expect(stillReal.getByText(shippedPath.title, { exact: true })).toBeVisible();
   await expect(stillReal.getByText("Two later steps toward a secrets file", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "An imported run" })).toHaveCount(0);
 
