@@ -76,7 +76,8 @@ test("a recorded run opens from Runs, plays in the live view and keeps its momen
   await expect(detail).toBeVisible();
   // The hint says where the gap is: nothing recorded it, so a sensor comes first.
   await expect(page.getByText(/^Start with a sensor/).first()).toBeVisible();
-  await expect(page).toHaveURL(/mode=analyse&select=/);
+  // The address names the test that was clicked. Before the click it named the step on screen, so wait for this one.
+  await expect(page).toHaveURL(/mode=analyse&select=43(&|$)/);
   const analysing = page.url();
 
   // Moving through the run replaced the address; it added nothing to the history.
