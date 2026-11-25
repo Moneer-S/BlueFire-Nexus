@@ -1016,6 +1016,10 @@ and are then kept by the build cache, the GitHub Actions cache of CI
 included, so ranges built from the same stage share them; `inet`'s
 certificate is kept the same way.
 
+Install the lab once, from the clone's top folder, with `pip install ./lab`
+(on Ubuntu's system Python, see [A range and its seal](#a-range-and-its-seal)
+for the virtual environment it needs). Then:
+
 ```bash
 bluefire-lab range run lab/range/range-one.yaml --out <new folder>
 bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files change
@@ -1292,7 +1296,8 @@ archive) and the events of each origin; without them, or when a job has no
 run in the archive, the score says "not scored" and gives no number. A run
 that did not end sealed (made invalid, a seal that failed, plants not in
 place) is no result either: its `score.md` is headed "not a result" with the
-run's result, exit code and reason, and its numbers follow under that. The
+run's result, exit code and reason, and its numbers follow under that, or,
+when the day could not be scored, the words that say why. The
 engine starts the seal's probes after the stop only once every job's window
 has closed, and a file whose modification time is before the go is no job's.
 A file a job links rather than writes keeps its older time: the first clone
@@ -1566,27 +1571,27 @@ the [front page](../README.md) and the single page
 ([the run on the front page](../docs/LIVE_VIEW.md#the-run-on-the-front-page)).
 
 **What a run shows.** In
-[run 45546532335](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45546532335)
-on a hosted runner (its job "range one's path, sealed and watched", and the
-artifact `range-one-run`), the stock rules raised their first alert at level
-12 or higher 69.46 s after the first step started: rule 40112, "Multiple
-authentication failures followed by a success", on `s01`. The path reached its
-goal 724.59 s after that start, so the alert came 655.13 s before the goal.
-Beside it, on the ordinary day of 13.11 minutes: 0 false alerts at level 12 or
-higher. The clock check held: 19 program starts in the steps' sessions, none
-outside its step's daemon times.
+[run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964),
+the run the app ships, on a hosted runner (its job "range one's path, sealed
+and watched", and the artifact `range-one-run`), the stock rules raised their
+first alert at level 12 or higher 76.367 s after the first step started: rule
+40112, "Multiple authentication failures followed by a success", on `s01`. The
+path reached its goal 730.488 s after that start, so the alert came 654.121 s
+before the goal. Beside it, on the ordinary day of 13.21 minutes: 0 false
+alerts at level 12 or higher. The clock check held: 19 program starts in the
+steps' sessions, none outside its step's daemon times.
 
 | Step | Host | Recorded | By | Tied by | First alert | Outcome |
 |---|---|---|---|---|---|---|
 | s01 | attacker to web | alert, 1,857 events | web | address 1,841, account 16 | 40112, level 12 | alerted |
 | s02 | web | 4 events | web | account 1, session 3 | none | seen |
-| s03 | web | 7 events | web | account 1, session 6 | none | seen |
+| s03 | web | 8 events | web | account 2, session 6 | none | seen |
 | s04 | web | 3 events | web | account 1, session 2 | none | seen |
 | s05a | web to build | 1 event | build | address 1 | none | seen |
 | s05b | web to db | 1 event | db | address 1 | none | seen |
 | s06 | web | 1 event | web | session 1 | none | seen |
 | s07 | web | 3 events | web | account 1, session 2 | none | seen |
-| s08 | web to build | 20 events | web 3, build 17 | account 18, address 1, session 1 | none | seen |
+| s08 | web to build | 20 events | web 3, build 17 | account 18, session 1, address 1 | none | seen |
 | s09 | web | 5 events | web | account 2, session 3 | none | seen |
 | s10 | web to inet | 1 event | web | session 1 | none | seen |
 
@@ -1604,17 +1609,18 @@ that step's own sentence, as this run's summary does for both scans. The
 range has no network sensor, so a scan of every port shows only where an open
 port's service logs a broken connection.
 
-One run is one sample. Three earlier hosted runs of the same job,
+One run is one sample. Four earlier hosted runs of the same job,
 [45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968),
-[45521926761](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45521926761)
+[45521926761](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45521926761),
+[45524094071](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45524094071)
 and
-[45524094071](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45524094071),
+[45546532335](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45546532335),
 gave the same outcome for every step, with the first alert after 61.56 s,
-77.05 s and 76.58 s and the goal after 628.44 s, 731.31 s and 730.87 s. They
-were scored before a program start that snoopy logged was counted for the
-engine by its tag alone, so `s08` has 19 events there: its own archive of
-`/etc` was counted as the engine's. Four runs do not say how far the times
-can vary.
+77.05 s, 76.58 s and 69.46 s and the goal after 628.44 s, 731.31 s, 730.87 s
+and 724.59 s. The first three were scored before a program start that snoopy
+logged was counted for the engine by its tag alone, so `s08` has 19 events
+there: its own archive of `/etc` was counted as the engine's. Five runs do not
+say how far the times can vary.
 
 ## Not yet shown
 

@@ -257,7 +257,7 @@ def basis(entry: dict, alert_level: int) -> str:
             f"raised at {first['raised']}"
         )
     elif entry["alerts"]:
-        said += f"; {lab.count(entry['alerts'], 'alert')} below level {alert_level}"
+        said += f"; {lab.count(entry['alerts'], 'rule match', 'rule matches')} below level {alert_level}"
     if entry["coincident events"]:
         said += (
             f"; {entry['coincident events']} more fell only inside the step's time span, from its start to "

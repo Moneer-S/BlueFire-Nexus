@@ -731,6 +731,28 @@ def test_the_recording_of_an_invalid_run_does_not_say_the_tests_ran_inside_the_s
     )
 
 
+def test_the_score_of_an_invalid_run_whose_path_ran_opens_with_not_a_result_and_the_reason(
+    tmp_path: Path,
+) -> None:
+    folder = small_run(tmp_path)
+    rewrite(
+        folder,
+        lambda m: m.update(
+            result="invalid", exit_code=4, reason="the seal failed after the path: event watch"
+        ),
+    )
+    scored(folder)
+
+    lines = (folder / "score.md").read_text().splitlines()
+    assert lines[:4] == [
+        "### Path of range-one: not a result, the run ended invalid (exit code 4)",
+        "",
+        "Reason: the seal failed after the path: event watch",
+        "",
+    ]
+    assert lines[4].startswith("What the run recorded, which is not a score of the range: ")
+
+
 def test_a_step_seen_by_the_address_rule_alone_names_its_line_and_counts_in_the_singular(
     tmp_path: Path,
 ) -> None:
@@ -764,9 +786,26 @@ def test_the_basis_of_a_step_counts_in_the_singular_and_says_what_its_time_span_
     }
 
     assert recording.basis(entry, 12) == (
-        "1 archived event tied to the step (1 by session); 1 alert below level 12; 1 more fell only inside the "
-        "step's time span, from its start to 5 s after its end, on a host it ran on or reached, not counted"
+        "1 archived event tied to the step (1 by session); 1 rule match below level 12; 1 more fell only inside "
+        "the step's time span, from its start to 5 s after its end, on a host it ran on or reached, not counted"
     )
+
+
+def test_matches_below_the_alert_level_are_rule_matches_in_a_steps_basis_not_alerts() -> None:
+    entry = {
+        "visibility": "telemetry only",
+        "host": "web",
+        "events": 5,
+        "events by tie": {"session": 5},
+        "first_alert": None,
+        "alerts": 5,
+        "coincident events": 0,
+    }
+
+    said = recording.basis(entry, 12)
+
+    assert said == "5 archived events tied to the step (5 by session); 5 rule matches below level 12"
+    assert "alert" not in said
 
 
 def test_a_line_of_a_databases_error_log_has_one_kind_whatever_its_decoder() -> None:

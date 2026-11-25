@@ -698,6 +698,46 @@ def test_a_way_out_found_before_the_ready_gate_stops_the_run_before_anything_wai
 
 
 @pytest.mark.parametrize(
+    ("path", "said"),
+    [
+        (
+            {
+                "steps": [
+                    {
+                        "id": "s01",
+                        "host": "web",
+                        "technique": "T1082",
+                        "name": "a test",
+                        "happened": "took effect",
+                    }
+                ]
+            },
+            "the seal failed after the path: host canary",
+        ),
+        (
+            {"steps": [], "stopped": "an event on the range that the engine did not cause"},
+            "the seal failed before any step of the path ran: host canary",
+        ),
+        (None, "the seal failed at the end of the run: host canary"),
+    ],
+    ids=["steps-ran", "no-step-ran", "no-path"],
+)
+def test_a_seal_that_fails_at_its_last_check_says_whether_a_step_of_the_path_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: dict | None, said: str
+) -> None:
+    # The third run of the checks is the last one, after the place of the path.
+    monkeypatch.setattr(engine, "docker", lambda *a, **k: subprocess.CompletedProcess(a, 0, "now\n", ""))
+    run = Ordered(tmp_path, broken=("segmentation 3",))
+    monkeypatch.setattr(run, "hold_window", lambda: run.manifest.update(path=path))
+    run.run()
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert (manifest["exit_code"], manifest["result"]) == (engine.EXIT_INVALID, "invalid")
+    assert manifest["reason"] == said
+    assert f"Reason: {said}\n" in (tmp_path / "seal.md").read_text()
+
+
+@pytest.mark.parametrize(
     ("broken", "code", "result"),
     [((), engine.EXIT_REFUSED, "not ready"), (("no way out 2",), engine.EXIT_SEAL, "seal failed")],
     ids=["sealed", "a-way-out-while-not-ready"],

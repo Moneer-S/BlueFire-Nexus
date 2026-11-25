@@ -440,7 +440,12 @@ def counted(**runs: int) -> dict:
 )
 def test_zero_false_alerts_is_no_result_without_its_denominators(activity, record, reason: str) -> None:
     result = score.ordinary_day([], [], {}, 12, activity, record)
-    manifest = {"range": "range-one", "ecs": {"error": None, "files": {}}, "score": result}
+    manifest = {
+        "range": "range-one",
+        "result": "sealed",
+        "ecs": {"error": None, "files": {}},
+        "score": result,
+    }
 
     text = score.summary(manifest)
 
@@ -493,3 +498,44 @@ def test_a_run_that_did_not_end_sealed_headlines_no_score() -> None:
     )
     assert "Reason: the seal failed after the path: event watch" in text
     assert "0 false alerts at level 12 or higher" not in text.splitlines()[0]
+
+
+INVALID = {
+    "range": "range-one",
+    "result": "invalid",
+    "exit_code": 4,
+    "reason": "the seal failed before any step of the path ran: event watch",
+}
+
+
+@pytest.mark.parametrize(
+    ("ecs_section", "day", "said"),
+    [
+        (
+            {"error": None, "files": {}},
+            score.ordinary_day([], [], {}, 12, jobs(), {"minutes": 3.1, "jobs": {}}),
+            "The ordinary day was not scored: a job had no run that reached the defense",
+        ),
+        (
+            {"error": "ValueError: a line that is not JSON", "files": {}},
+            None,
+            "The ordinary day was not scored: the conversion to ECS failed: ValueError: a line that is not JSON",
+        ),
+    ],
+    ids=["day-not-scored", "conversion-failed"],
+)
+def test_a_run_that_did_not_end_sealed_is_headed_not_a_result_also_when_nothing_was_scored(
+    ecs_section: dict, day: dict | None, said: str
+) -> None:
+    manifest = {**INVALID, "ecs": ecs_section, "score": day}
+
+    lines = score.markdown(manifest).splitlines()
+
+    assert lines[:4] == [
+        "### Ordinary day of range-one: not a result, the run ended invalid (exit code 4)",
+        "",
+        "Reason: the seal failed before any step of the path ran: event watch",
+        "",
+    ]
+    assert lines[4].startswith(said)
+    assert not any(line.startswith("### ") for line in lines[1:])
