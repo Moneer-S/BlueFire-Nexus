@@ -155,7 +155,7 @@ const CAPTION =
   "About eleven minutes later the build server's signing secret was copied to inet, the stand-in internet, with no alert.\")";
 const NO_ALERT_SECTION =
   'The section "Read what no rule alerted on" of README.md ("Every step after the password guessing was recorded, and no rule alerted on any of them. ' +
-  'Pictured: step 9 of the same run, where every stock rule that matched was below alert level and the screen names the one to start from.")';
+  'Drag the timeline to step 9, pictured: every stock rule that matched it was below alert level, and the screen names the one to start from.")';
 const NO_ALERT_PICTURE = 'The words of the picture under "Read what no rule alerted on" in README.md ("the step told seen with two rules matched for review and none at alert level")';
 const CHANGE_SECTION =
   'The section "Change a defense, see before and after" of README.md ("new auditd settings took "Clear Bash history (echo)" from unseen to seen, ' +

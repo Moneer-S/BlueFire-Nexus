@@ -510,6 +510,17 @@ export function priceWord(price: string, pair?: Pick<Delta, "declared_change" | 
 }
 
 /**
+ * The sentence a comparison's page gives under its price's big word or figure, taken from
+ * `priceWords` so that the page, the cards and the fix page cannot say a price differently: a
+ * counted price whole, under its figures; any other, the words after its big word.
+ */
+export function priceSentence(price: string, pair?: Pick<Delta, "declared_change" | "lab_rules">): string {
+  const words = priceWords(price, pair);
+  const at = words.indexOf(": ");
+  return `${capitalFirst(COUNTED_PRICE.test(price) || at < 0 ? words : words.slice(at + 2))}.`;
+}
+
+/**
  * A price for a list, in plain words, when every listed step has the same
  * price; null when there is none to say. `pair` is the comparison the steps
  * are of, which can name the one rule behind the price.

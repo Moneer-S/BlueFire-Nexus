@@ -20,7 +20,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 |---|---|
 | Overview | The first recorded run on Runs to watch and the turns of the defender loop, then readiness, recent runs, evidence mix, and next actions |
 | Getting Started | Choose an objective, review its environment, or follow a scenario through durable review |
-| Scenarios | Browse the eight seeded versioned graphs and open the authoritative active definition for editing/running |
+| Scenarios | Browse the 14 seeded versioned graphs and open the authoritative active definition for editing/running |
 | Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
 | Runs | Watch recorded runs in the live view, import a recording, and configure, preflight, start, and open durable run history or deep links |
 | Compare | Select a baseline and one or more candidate runs |
@@ -69,7 +69,7 @@ The Runs page repeats a compact **Builder handoff** summary before preflight. Tr
 
 ## Choose and validate a scenario
 
-The packaged graphs are listed in the README. For a first run, choose `scenario.sandbox.research.chain.v1`.
+The packaged graphs are the files under [`scenarios/`](../scenarios/), and the Scenarios screen, **Experiments** in the menu, lists all 14. For a first run, choose `scenario.sandbox.research.chain.v1`.
 
 Before running:
 

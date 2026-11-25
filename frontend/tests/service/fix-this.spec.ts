@@ -57,7 +57,7 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
   await expect(page.getByRole("heading", { level: 1, name: TEST })).toBeFocused();
 
   // Where to start, a sensor before any rule; what the recording says, one quiet line away.
-  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("Nothing of this test was recorded. Start with a sensor's settings");
+  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("Nothing of this test was recorded besides its launcher's start. Start with a sensor's settings");
   const recorded = page.getByRole("region", { name: /^What was recorded/ });
   await expect(recorded.getByRole("article", { name: /^Sensor auditd/ })).toContainText("0 events of this step");
   await recorded.getByText("How we know", { exact: true }).click();

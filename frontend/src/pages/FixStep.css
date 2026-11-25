@@ -634,6 +634,9 @@
 .fx-tie code { font-size: 11px; color: var(--lv-muted); }
 
 .fx-tried .cmp-verdict.fx-tried-verdict { margin-top: 6px; }
+/* The price, on its own line under the result, keyed as the cards on Runs key it. */
+.fx-tried-price { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--lv-muted-strong); }
+.fx-tried-price-key { margin-right: 8px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--lv-amber-soft); }
 .fx-tried .cmp-opens { margin-top: 8px; }
 
 /* The before and after keep to the right edge when a long title pushes them onto a line of their own. */

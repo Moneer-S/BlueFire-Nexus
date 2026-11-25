@@ -14,7 +14,7 @@ import { api, type Delta, type DeltaLabRule, type DeltaStep, type DeltaSummary }
 import { fixPath, stepMoment } from "../lib/fix-step";
 import { loopTurns, originWords, recordedRunPath } from "../lib/recorded-runs";
 import { stageSide, type StageSide } from "../lib/pair-stage";
-import { alertedByLabOnly, basisWords, creditedCount, headlineNamesStep, isCredited, isOneRun, judgedWords, keptNewRule, LAB_RULES, MARK_FIELD, pairHeadline, pairPath, priceWord, ruleAlerts, ruleChangeWords, ruleText, sideWhere, titlesWords, turnName } from "../lib/recording-pairs";
+import { alertedByLabOnly, basisWords, creditedCount, headlineNamesStep, isCredited, isOneRun, judgedWords, keptNewRule, LAB_RULES, MARK_FIELD, pairHeadline, pairPath, priceSentence, priceWord, ruleAlerts, ruleChangeWords, ruleText, sideWhere, titlesWords, turnName } from "../lib/recording-pairs";
 import { stepRows } from "../live/analyse";
 import { capital, count, MARK_WORDS, plural, sensorColours, sensorShortName, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
@@ -404,7 +404,7 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
     const reason = kept.after?.reason;
     body = <>
       <p className="cmp-cost-big is-word">{priceWord(price, delta)}</p>
-      <p>The new rule alerted on no ordinary activity in this run, which the lab requires before it keeps a rule. One run is a test the rule passed, not a price measured over time.</p>
+      <p>{priceSentence(price, delta)} One run is a test the rule passed, not a price measured over time.</p>
       <details className="cmp-more"><summary>The price in the lab's words</summary>
         {reason ? <p>Why the run kept the rule: <LabText text={reason} />.</p> : null}
         <p className="cmp-small">In the lab's words: <LabText text={price} /></p>
@@ -414,7 +414,7 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
     const rule = singleRule(delta);
     body = <>
       <p className="cmp-cost-big is-word">{priceWord(price, delta)}</p>
-      <p>The lab leaves any rule of its own that alerts on ordinary activity out of the recording, so the files hold no price for it.</p>
+      <p>{priceSentence(price, delta)} The files hold no price for these rules.</p>
       <details className="cmp-more"><summary>{rule?.after?.accepted ? "Why the run used the rule" : "The price in the lab's words"}</summary>
         {rule?.after?.accepted && rule.after.reason ? <p>Because {rule.after.reason}: a test it passed in this run, not a price measured over time.</p> : null}
         <p className="cmp-small">In the lab's words: <LabText text={price} /></p>
@@ -423,7 +423,7 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
   } else if (price.startsWith("price not known")) {
     body = <>
       <p className="cmp-cost-big is-word">{priceWord(price, delta)}</p>
-      <p>Each run counted its ordinary activity on a runner of its own, and the two runners differed.</p>
+      <p>{priceSentence(price, delta)}</p>
       <details className="cmp-more"><summary>The price in the lab's words</summary><p><LabText text={price} /></p></details>
     </>;
   } else {
@@ -434,7 +434,7 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
     const alerts = (list: typeof rulesBefore, rule: string) => list.filter((match) => match.rule === rule).reduce((sum, match) => sum + match.count, 0);
     body = <>
       {fa[0] !== undefined && fa[1] !== undefined ? <p className="cmp-cost-big"><b>{fa[0]}</b> before, <b>{fa[1]}</b> after</p> : null}
-      <p>Published rules that alerted on ordinary activity, outside every step.</p>
+      <p>{priceSentence(price, delta)}</p>
       <details className="cmp-more"><summary>Which rules, and on how much activity</summary>
         {names.length ? <ul>{names.map((rule) => <li key={rule}><b>{rule}</b>: {plural(alerts(rulesBefore, rule), "alert")} before, {count(alerts(rulesAfter, rule))} after</li>)}</ul> : null}
         {before?.ordinary && after?.ordinary ? <p>Ordinary activity: {count(before.ordinary.events)} events before, {count(after.ordinary.events)} after. The lab does not say how alike the two were. The lab's own rules are not counted here.</p> : null}

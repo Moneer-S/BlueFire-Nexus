@@ -23,7 +23,7 @@ The network is seven containers built from one spec file, on networks with no ro
 
 ### Read what no rule alerted on
 
-Every step after the password guessing was recorded, and no rule alerted on any of them. Pictured: step 9 of the same run, where every stock rule that matched was below alert level and the screen names the one to start from.
+Every step after the password guessing was recorded, and no rule alerted on any of them. Drag the timeline to step 9, pictured: every stock rule that matched it was below alert level, and the screen names the one to start from.
 
 ![The live view late in the step that logs in to the build server with the key it found and copies files back: the hop from the web server to the build server lit, the step told seen with two rules matched for review and none at alert level, Fix this beside it, and a hint to start from the rule "Integrity checksum changed"](docs/assets/front/path-no-alert.png)
 

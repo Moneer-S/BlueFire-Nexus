@@ -115,7 +115,7 @@ test("Fix this while watching opens the step's page, which says what the recordi
 
   // Where to start first, in plain words, on the first screen.
   const start = page.getByRole("region", { name: "Where to start" });
-  await expect(start).toContainText("Nothing of this test was recorded. Start with a sensor's settings: a rule can only match what a sensor records.");
+  await expect(start).toContainText("Nothing of this test was recorded besides its launcher's start. Start with a sensor's settings: a rule can only match what a sensor records.");
   await expect(start).toBeInViewport();
   await expect(page.getByRole("textbox")).toHaveCount(0);
   // The shipped example is older than stable step ids: the two shipped comparisons are tied to its test by the published test's id, as other runs of the same list.
@@ -189,7 +189,7 @@ test("at phone width the recorded run's page stacks the live view's bands and sc
   await fix.click();
   // It opens the step's own page, which fits the window's width too.
   await expect(page).toHaveURL(/\/fix\/43\?/);
-  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("Nothing of this test was recorded.");
+  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("Nothing of this test was recorded besides its launcher's start.");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 

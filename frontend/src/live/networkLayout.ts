@@ -161,6 +161,27 @@ export function fieldWhole(zone: Zone, zones: readonly Zone[], hosts: readonly H
   return zones.every((other) => other === zone || overlap(zone.box, other.box) === 0);
 }
 
+/** True when a level edge at `y` lies on a badge's box or within a pixel of it. */
+function edgeOnBadge(y: number, badge: Box): boolean {
+  return y > badge[1] - 1 && y < badge[3] + 1;
+}
+
+/**
+ * True when a badge of a host stands wholly inside or wholly outside each field the host is on, a pixel clear of its
+ * edge. A host on two fields standing on the border between them wears its badge across that border, as it stands
+ * across it: only the fields' tops and feet are kept off its badge.
+ */
+function badgeClearOfFields(node: HostNode, badge: Box, zones: readonly Zone[]): boolean {
+  const on = zones.filter((zone) => zone.hosts.includes(node.host.id));
+  return on.every(({ box: [x0, y0, x1, y1] }) => {
+    const inside = badge[0] >= x0 && badge[1] >= y0 && badge[2] <= x1 && badge[3] <= y1;
+    const clear = badge[0] - 1 >= x1 || badge[2] + 1 <= x0 || badge[1] - 1 >= y1 || badge[3] + 1 <= y0;
+    if (inside || clear) return true;
+    const onBorder = on.length > 1 && (Math.abs(node.x - x0) < 1 || Math.abs(node.x - x1) < 1);
+    return onBorder && !edgeOnBadge(y0, badge) && !edgeOnBadge(y1, badge);
+  });
+}
+
 /** The radius of a zone's corners, and the room it keeps round its hosts' rings and words. */
 export const ZONE_RADIUS = 26;
 const ZONE_PAD = 12;
@@ -2184,6 +2205,10 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
     }
     // It stays under the column heads, on the map and inside the page's side margins.
     box = [Math.max(box[0], ENGINE_EDGE), Math.max(box[1], HEADS_MANY + 4), Math.min(box[2], W - ENGINE_EDGE), Math.min(box[3], H - 4)];
+    // Where the heads leave no room above a host's badge, the top edge runs under the badge, never across it: the badge
+    // then stands above the field. A field whose top this brings onto its own hosts is not whole, and none is drawn.
+    const tops = (own.length > 0 ? own : members).filter((node) => BADGED.has(node.host)).map((node) => badgeBox({ x: node.x, y: node.y - node.r - BADGE.above }));
+    for (let crossed = tops.find((badge) => edgeOnBadge(box[1], badge)); crossed; crossed = tops.find((badge) => edgeOnBadge(box[1], badge))) box = [box[0], crossed[3] + 3, box[2], box[3]];
     fields.push({ zone, members, box });
   }
   // Two fields side by side never overlap: where their boxes meet, they share the room between their hosts, a gap apart.
@@ -2339,10 +2364,14 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
       }
       // Off the map a badge would be cut: any place on the map is better.
       if (box[0] < 4 || box[2] > W - 4 || box[1] < 2 || box[3] > H - 2) score += 100_000;
+      // Of the two places beside a host, kept from the lines alike, the one that keeps the badge off its fields' edges.
+      if (BADGED.has(node.host) && !badgeClearOfFields(node, box, drawnZones)) score += 50;
       if (!best || score < best.score) best = { score, anchor };
     }
     if (best) node.badge = best.anchor;
   });
+  // At the map's least height no place near a host may keep its badge off its field's edge. The fields stay drawn there:
+  // a badge a few pixels across an edge reads better than a network with no fields.
   // The line about the sensors stands clear of every host's circle, the ring it wears when lit, its words and its badge,
   // and of the sensors' words: where the foot of the defense's side has no such room, it is left out.
   if (defenseSide?.note && !noteClear(defenseSide, [...hosts.values()], sensorBoxes)) defenseSide.note = null;

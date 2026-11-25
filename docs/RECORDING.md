@@ -530,7 +530,9 @@ unchanged. Of 93 paired steps, "Clear Bash history (echo)" and "Clear Bash
 history (cat dev/null)", and a run of each with changed input arguments, are
 better, seen before and alerted after with the lab's rules; the other 89 are
 the same. Its price is not counted, in the lab's words: the lab leaves a rule
-that matched ordinary activity out of the recording. The two recordings of that
+that matched ordinary activity out of the recording. The run after kept the new
+rule, which it does only for a rule that alerted on no ordinary activity in that
+run, so the app shows this price as "None in this run". The two recordings of that
 run, about 1.2 MB each, ship as one entry of the list with a second file.
 
 The Runs screen lists the pairs that declare a change under "Before against
@@ -546,7 +548,8 @@ picture of the moved path drawn from the step's `recorded` and mark, a headline
 of what the change did built from the steps the delta credits and its
 `counts`, the tests it moved, how the runs were made (side by side, one run
 evaluated with two rule sets, or the two dates), the price as the delta words
-it (the service lists each moved step with its `price`), and one line of the
+it (the service lists each moved step with its `price`), or "None in this run"
+for a new rule of the lab's own that the run after kept, and one line of the
 result: how many paired steps read the same, or, for a limited or refused
 comparison, the delta's counts in words. It opens one at
 `#/runs/compared/<id>`. A recording that is one side of a listed pair is opened
@@ -572,8 +575,11 @@ both stages is drawn dim and named once under them. Each stage links to the
 step in the live view, paused at its start, and the after stage offers Fix this, which opens
 the step's fix page in the after run, when the step still raises no alert. Under the stages: the price (false alerts of published rules on
 ordinary activity, `score.false_alerts` and `ordinary` of each recording, with
-the delta's price in its words; or "Not counted" when the price is not counted,
-with the rule's reason; or "Not known" under a limit), what else moved (every
+the delta's price in its words; "None in this run" when the price is not
+counted for a new rule of the lab's own that the run after kept, which it does
+only for a rule that alerted on no ordinary activity in that run; otherwise "Not
+counted" when the price is not counted, with the rule's reason; or "Not known"
+under a limit), what else moved (every
 paired step before and after as a cell, the moved ones marked, with the counts
 of the delta), what comes next (the next comparison of the list, or the tests
 of the after recording that still raise no alert, seen or unseen, counted with

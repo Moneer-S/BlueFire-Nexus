@@ -419,6 +419,49 @@ describe("the badges on the shipped recordings' maps", () => {
   );
 });
 
+describe("the fields on the shipped path's map", () => {
+  it(
+    "are drawn in every room from 1280 px wide, the map's least height included",
+    () => {
+      const none = shippedLayouts("lab-range-one-path")
+        .filter(({ layout }) => layout.width >= 1280 && !layout.zones.some((zone) => zone.drawn))
+        .map(({ room }) => room);
+      expect(none).toEqual([]);
+    },
+    LAYOUTS_TIMEOUT,
+  );
+
+  it(
+    "hold the badge of each host a step runs on wholly inside or wholly outside, never across their edge, wherever the map has more than its least height",
+    () => {
+      const found: string[] = [];
+      for (const { room, layout, value } of shippedLayouts("lab-range-one-path")) {
+        // At its least heights the map has no place for a badge that is clear of every edge: the fields stay, and a badge may lie a few pixels across one.
+        if (layout.height <= leastHeights(value.network, layout.width).roomy) continue;
+        const wearers = new Set(value.steps.map((item) => item.host));
+        const drawn = layout.zones.filter((zone) => zone.drawn);
+        for (const zone of drawn) {
+          const box = zone.box;
+          for (const node of layout.hosts.filter((item) => wearers.has(item.host.id) && zone.hosts.includes(item.host.id))) {
+            const badge = badgeBoxOf(node);
+            const within = badge[0] >= box[0] && badge[1] >= box[1] && badge[2] <= box[2] && badge[3] <= box[3];
+            // Clear of the edge's line, which is a pixel wide.
+            const clear = !(badge[0] - 1 < box[2] && badge[2] + 1 > box[0] && badge[1] - 1 < box[3] && badge[3] + 1 > box[1]);
+            // A host on two fields stands on the border between them, and its badge with it: only the top and the foot are kept off it.
+            const bridge = drawn.filter((other) => other.hosts.includes(node.host.id)).length > 1 && (Math.abs(node.x - box[0]) < 1 || Math.abs(node.x - box[2]) < 1);
+            const level = (y: number) => y > badge[1] - 1 && y < badge[3] + 1;
+            if (within || clear || (bridge && !level(box[1]) && !level(box[3]))) continue;
+            const edges = [badge[0] < box[0] ? "left" : "", badge[2] > box[2] ? "right" : "", badge[1] < box[1] ? "top" : "", badge[3] > box[3] ? "foot" : ""].filter(Boolean).join(" and ");
+            found.push(`${room}: the ${edges} edge of ${zone.words} across the badge of ${node.host.id}`);
+          }
+        }
+      }
+      expect([...new Set(found)]).toEqual([]);
+    },
+    LAYOUTS_TIMEOUT,
+  );
+});
+
 describe("a hop's numbers on the shipped path's map", () => {
   /** The numbers' box as the browser draws them at 11 px: a figure 7 px wide, the dot 4, a space 3, and 12 px tall. */
   function numbersBox(numbers: string, at: { x: number; y: number }): Box {
