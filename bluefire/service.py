@@ -4628,6 +4628,12 @@ class BlueFireService(
         ]
         return {"schema_version": "bluefire.run-list.v1", "runs": runs}
 
+    def read_shipped_recordings(self) -> None:
+        """Read the recordings and comparisons shipped with BlueFire, once; the HTTP
+        service calls it as it starts, so that its first screen does not wait for them."""
+
+        self.delta_library.read_shipped()
+
     def recordings(self) -> Mapping[str, Any]:
         return self.recording_library.list()
 

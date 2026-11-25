@@ -1133,13 +1133,21 @@ class RecordingLibrary:
         # other evaluations of that run.
         self._shipped_files: dict[str, dict[str, tuple[Mapping[str, Any], dict[str, Any]]]] = {}
         self._file_digests: dict[Path, tuple[tuple[int, int, int], str]] = {}
+        # The service reads the shipped files on a thread of its own when it starts; a
+        # request that comes meanwhile waits here for that reading instead of starting one.
+        self._shipped_lock = threading.Lock()
 
     def _shipped_recordings(self) -> dict[str, tuple[Mapping[str, Any], dict[str, Any]]]:
         """Read the packaged recordings once; they do not change while the app runs. The
         first file of an id, by file name, is the one listed; a later one must be another
-        evaluation of the same run."""
+        evaluation of the same run. A reading that fails keeps nothing, so the next call
+        reads again and raises the same error."""
 
-        if self._shipped_entries is None:
+        if self._shipped_entries is not None:
+            return self._shipped_entries
+        with self._shipped_lock:
+            if self._shipped_entries is not None:
+                return self._shipped_entries
             folder = resources.files("bluefire.data").joinpath("recordings")
             entries: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] = {}
             files: dict[str, dict[str, tuple[Mapping[str, Any], dict[str, Any]]]] = {}
@@ -1158,7 +1166,12 @@ class RecordingLibrary:
                     files.setdefault(recording["id"], {})[digest] = (recording, summary)
             self._shipped_files = files
             self._shipped_entries = entries
-        return self._shipped_entries
+            return entries
+
+    def read_shipped(self) -> None:
+        """Read and check the shipped recordings now rather than at the first request."""
+
+        self._shipped_recordings()
 
     def _digest(self, path: Path) -> str:
         """The SHA-256 of a kept file, read again only once the file is replaced."""

@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from http import HTTPStatus
 from importlib import resources
 from pathlib import Path
@@ -987,6 +988,8 @@ class DeltaLibrary:
         self.root = recordings.root / "deltas"
         self._shipped_entries: dict[str, Mapping[str, Any]] | None = None
         self._read_files: dict[Path, tuple[tuple[int, int, int], Mapping[str, Any] | None]] = {}
+        # As for the shipped recordings: one reading, which a request made meanwhile waits for.
+        self._shipped_lock = threading.Lock()
 
     def _recording_entries(self, delta: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         """The list entries of the delta's two recordings, by side, each of the very file the
@@ -1150,9 +1153,15 @@ class DeltaLibrary:
             raise RecordingError(problems)
 
     def _shipped(self) -> dict[str, Mapping[str, Any]]:
-        """Read the packaged deltas once; each must hold for the shipped recordings."""
+        """Read the packaged deltas once; each must hold for the shipped recordings. A
+        reading that fails keeps nothing, so the next call reads again and raises the same
+        error."""
 
-        if self._shipped_entries is None:
+        if self._shipped_entries is not None:
+            return self._shipped_entries
+        with self._shipped_lock:
+            if self._shipped_entries is not None:
+                return self._shipped_entries
             folder = _shipped_folder()
             entries: dict[str, Mapping[str, Any]] = {}
             names = sorted(item.name for item in folder.iterdir()) if folder.is_dir() else []
@@ -1162,7 +1171,14 @@ class DeltaLibrary:
                     self._check_recordings(delta)
                     entries[delta_id(delta)] = delta
             self._shipped_entries = entries
-        return self._shipped_entries
+            return entries
+
+    def read_shipped(self) -> None:
+        """Read and check the shipped recordings and comparisons now rather than at the
+        first request."""
+
+        self.recordings.read_shipped()
+        self._shipped()
 
     def _read(self, path: Path) -> Mapping[str, Any] | None:
         """An imported delta, or None when it is unreadable; read again only once replaced."""
