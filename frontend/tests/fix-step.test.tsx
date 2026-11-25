@@ -182,7 +182,8 @@ describe("the page for fixing a step", () => {
     const { user } = mount("1");
     expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo)" })).toBeVisible();
     const start = screen.getByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("Nothing of this test was recorded. Start with a sensor's settings: a rule can only match what a sensor records.");
+    // The recording says its launcher's start was recorded, and the page says so too, as analyse mode does.
+    expect(start).toHaveTextContent("Nothing of this test was recorded besides its launcher's start. Start with a sensor's settings: a rule can only match what a sensor records.");
     expect(start).toHaveTextContent("lab/sensors/");
 
     const recorded = screen.getByRole("region", { name: /^What was recorded/ });
@@ -418,7 +419,9 @@ describe("the page for fixing a step", () => {
 
     const unseen = mount("2", { recording: range, pairs: [] });
     const sensorStart = await screen.findByRole("region", { name: "Where to start" });
+    // No launcher in the recording's words for this step, so none in the page's.
     expect(sensorStart).toHaveTextContent("Nothing of this step was recorded. Start with a sensor's settings");
+    expect(sensorStart).not.toHaveTextContent("launcher");
     expect(screen.getByRole("heading", { level: 3, name: /^Other steps of the same technique in this run/ })).toBeVisible();
     expect(sensorStart).toHaveTextContent("In this range each sensor is a Wazuh agent built into its host's image. The range's spec under lab/range/ sets what it reads: the logs and folders under defense.watch, and each host's own watch.");
     expect(sensorStart).not.toHaveTextContent("lab/sensors/");
@@ -483,6 +486,14 @@ describe("the page for fixing a step", () => {
     expect(watch).toHaveTextContent("Imported");
     // The price in the words the comparison's card on Runs gives it.
     expect(within(watch).getByText("2 published rules alert on ordinary activity, before and after")).toHaveClass("cmp-price");
+    // The price stands on a line of its own under the result, keyed as the cards key it, so the two never read as one sentence.
+    const priceLine = within(watch).getByText("2 published rules alert on ordinary activity, before and after").closest("p");
+    expect(priceLine?.textContent).toBe("Price2 published rules alert on ordinary activity, before and after");
+    const resultLine = within(watch).getByText("better").closest("p");
+    expect(resultLine).not.toBe(priceLine);
+    expect(resultLine).not.toHaveTextContent("ordinary activity");
+    if (!resultLine || !priceLine) throw new Error("The result and the price should each have a line.");
+    expect(resultLine.compareDocumentPosition(priceLine) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(watch).getByRole("link", { name: "Open the comparison at this step" })).toHaveAttribute("href", "/runs/compared/0000000000000001?step=1");
     expect(within(watch).getByRole("link", { name: "Open the same step in the after run" })).toHaveAttribute("href", `/runs/recorded/rec-2/${OTHER_SHA}?step=1&at=0&paused=1&mode=analyse&select=1`);
     // A comparison of other runs, tied by the step's stable id, and said to be of another run.

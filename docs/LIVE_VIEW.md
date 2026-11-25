@@ -286,7 +286,12 @@ same things as on one host, laid out for a network:
   or under its words; it never lies on the host it marks or on a host's name,
   no line runs through the place of a badge of a host a step runs on (the
   host's own links included, as wide as the widest badge it wears), and a
-  hop's numbers keep clear of it.
+  hop's numbers keep clear of it. A field's edge does not run across the badge
+  of one of its hosts: where the column heads leave no room above a badge, the
+  field's top runs under it, and the badge stands above the field. A host that
+  stands on the border between two fields wears its badge across that border.
+  At the map's least height, where no place near a host is clear of every
+  edge, the fields stay drawn and a badge may lie a few pixels across one.
 - **A field's name stands in a free corner of its field.** The top left corner
   first, then the top right, the bottom left and the bottom right: the first
   where no host, name, badge's place or line is under it, and where no hop's
@@ -630,8 +635,12 @@ than 30 seconds old. A screen is pictured from its top, since one opened from a
 scrolled screen can keep a few pixels of the old scroll. And the app's
 entrance animation, once ended, is let go, so the page is drawn as its own
 style draws it rather than as the animation's last frame, which can come out a
-shade apart. Three runs of the script on one commit give the same bytes in
-every file.
+shade apart. CI runs
+[45697835609](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45697835609)
+and
+[45699524060](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45699524060),
+on two commits that differ only in the pictures copied in, gave the same bytes
+in every file but the artifact's own note of its commit.
 
 The script fails if a page prints an error, if a replay page asks for anything
 beyond its own file or the app for anything beyond the service, if a picture
@@ -647,9 +656,10 @@ rules alerted on the first step, the password guessing against the web server,
 about a minute in; the goal, the build server's signing secret on the
 stand-in internet, was reached about eleven minutes after that, by a last step
 no rule alerted on), "Read what no rule alerted on" (every step after the
-first seen with no alert; at step 9, the step of its picture, published rules
-matched and none at alert level; the picture tells two rules matched for
-review and names a rule to start from), "Change a defense, see before and
+first seen with no alert; at step 9, the step of its picture and the one it
+says to drag the timeline to, published rules matched and none at alert level;
+the picture tells two rules matched for review and names a rule to start
+from), "Change a defense, see before and
 after" (the new auditd settings took "Clear Bash history (echo)" from unseen
 to seen; the one new rule then took 4 steps from seen to alerted with the
 lab's rules, and the score, which counts published rules only, still marks

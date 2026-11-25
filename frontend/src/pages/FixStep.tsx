@@ -258,7 +258,7 @@ function WhereToStart({ recording, row, start, home }: { recording: Recording; r
   return <section className="cmp-sec fx-start" aria-labelledby="fx-start">
     <h2 id="fx-start">Where to start</h2>
     {start.kind === "sensor" ? <>
-      <p className="fx-lead"><b>Nothing of this {what} was recorded. Start with a sensor's settings:</b> a rule can only match what a sensor records.</p>
+      <p className="fx-lead"><b>{start.launcher ? `Nothing of this ${what} was recorded besides its launcher's start.` : `Nothing of this ${what} was recorded.`} Start with a sensor's settings:</b> a rule can only match what a sensor records.</p>
       <SensorHome home={home} />
     </> : start.kind === "rule" ? <>
       {hint && start.review.length ? <>
@@ -470,9 +470,9 @@ function TriedLine({ item }: { item: Tried }) {
     <p className="fx-where"><WhereWords item={item} oneRun={oneRun} /></p>
     <p className="cmp-verdict fx-tried-verdict">
       <span className={`cmp-result is-${result}`}>{resultWords(step.result)}</span>
-      {/* The price on the line; the lab's whole verdict, with the price as the lab wrote it, one click away. */}
-      {price ? <span className={`cmp-price${price.unknown ? " is-unknown" : ""}`}>{price.words}</span> : null}
     </p>
+    {/* The price on a line of its own under the result, with the key the cards give it; the lab's whole verdict, with the price as the lab wrote it, one click away. */}
+    {price ? <p className="fx-tried-price"><span className="fx-tried-price-key">Price</span><span className={`cmp-price${price.unknown ? " is-unknown" : ""}`}>{price.words}</span></p> : null}
     <details className="fx-quoted">
       <summary>The comparison's own words</summary>
       <p><LabText text={step.verdict} /></p>

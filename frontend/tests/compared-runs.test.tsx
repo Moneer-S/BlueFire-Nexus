@@ -10,7 +10,7 @@ import sensorDeltaText from "../../bluefire/data/recordings/deltas/lab-pair-hist
 import sensorBeforeText from "../../bluefire/data/recordings/lab-pair-history-watch-before.json?raw";
 import sensorAfterText from "../../bluefire/data/recordings/lab-pair-history-watch-after.json?raw";
 import { api, readDelta, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
-import { codeSpans, listedPrice, movedWords, pairChangeWords, pairHeadline, pairResultWords, raceWords, titlesWords, turnName, variationWords, verdictParts } from "../src/lib/recording-pairs";
+import { codeSpans, listedPrice, movedWords, priceWords, pairChangeWords, pairHeadline, pairResultWords, raceWords, titlesWords, turnName, variationWords, verdictParts } from "../src/lib/recording-pairs";
 import { ComparedRunsPage } from "../src/pages/ComparedRuns";
 import { alert, event, recording, step } from "./live-fixture";
 
@@ -243,7 +243,9 @@ describe("the page of a change to the defense", () => {
   it("never shows the gain without its price, and says the price is in the lab's words", async () => {
     mount(sensorDelta());
     const cost = await screen.findByRole("region", { name: "What it cost" });
-    expect(cost).toHaveTextContent("Published rules that alerted on ordinary activity, outside every step.");
+    // The sentence the cards on Runs and the fix page give the same price, word for word.
+    expect(within(cost).getByText("2 published rules alert on ordinary activity, before and after.")).toBeVisible();
+    expect(priceWords(PRICE)).toBe("2 published rules alert on ordinary activity, before and after");
     expect(cost).toHaveTextContent(`In the lab's words: ${PRICE}`);
   }, 20_000);
 
@@ -547,7 +549,8 @@ describe("the two comparisons shipped with the app", () => {
     // The run after kept the new rule, which it does only for a rule that alerted on no ordinary activity in it: that is its price in this run.
     const cost = screen.getByRole("region", { name: "What it cost" });
     expect(within(cost).getByText("None in this run")).toBeVisible();
-    expect(cost).toHaveTextContent("The new rule alerted on no ordinary activity in this run, which the lab requires before it keeps a rule. One run is a test the rule passed, not a price measured over time.");
+    // The sentence under the big word is the rest of what the cards and the fix page say of this price.
+    expect(cost).toHaveTextContent("None in this runThe new rule alerted on no ordinary activity, which the lab requires before it keeps a rule. One run is a test the rule passed, not a price measured over time.");
     expect(cost).not.toHaveTextContent("Not counted");
     expect(cost).not.toHaveTextContent("the files hold no price");
     // The run's reason and the lab's own sentence, one click away.
@@ -576,7 +579,7 @@ describe("the two comparisons shipped with the app", () => {
     mount({ ...delta, lab_rules: [{ ...only, after: { ...only.after, accepted: false, reason: "not every procedure it alerts on ran again" } }] }, { files });
     const cost = await screen.findByRole("region", { name: "What it cost" });
     expect(within(cost).getByText("Not counted")).toBeVisible();
-    expect(cost).toHaveTextContent("The lab leaves any rule of its own that alerts on ordinary activity out of the recording, so the files hold no price for it.");
+    expect(cost).toHaveTextContent("Not countedThe lab keeps its own rules' matches on ordinary activity out of the recording. The files hold no price for these rules.");
     expect(cost).not.toHaveTextContent("None in this run");
   }, 30_000);
 });
