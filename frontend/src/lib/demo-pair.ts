@@ -67,7 +67,7 @@ async function load(file: string, text: string): Promise<DeltaEntry> {
       moved: delta.steps
         .filter((step) => step.result === "better" || step.result === "worse" || step.result === "changed")
         .slice(0, MOVED_LISTED)
-        .map(({ id, role, title, technique, result, before: was, after: now }) => ({ id, role, title, technique, result, before: was, after: now })),
+        .map(({ id, role, title, technique, result, before: was, after: now, price }) => ({ id, role, title, technique, result, before: was, after: now, ...(price === undefined ? {} : { price }) })),
       before: delta.before,
       after: delta.after,
       recordings: { before, after },

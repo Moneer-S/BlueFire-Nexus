@@ -49,6 +49,7 @@ const FILES = [
   "SOURCE.txt",
   "analyse-unseen.png",
   "analyse.png",
+  "app-overview.png",
   "app-pair.png",
   "app-recorded-run.png",
   "app-rule-pair.png",
@@ -314,11 +315,15 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "wide-first-alert.png");
 
-  // Inside the app: the Runs screen with the recorded run, and the run's page on its first alert.
+  // Inside the app: the Overview, which leads with the real run and the turns of the loop.
   await page.setViewportSize({ width: 1440, height: 900 });
   reachable = service;
   await page.goto(address);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Watch a real run" }).getByRole("list", { name: "The changes to the defense, in order" }).getByRole("link")).toHaveCount(2);
+  await picture(page, folder, "app-overview.png");
+
+  // The Runs screen with the recorded run, and the run's page on its first alert.
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const recorded = page.getByRole("region", { name: "Recorded runs" });
   const link = recorded.getByRole("link", { name: shipped.title, exact: true });
@@ -327,23 +332,25 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
 
   // The pair of runs shipped with the app: its part of the Runs screen alone, and its own page.
   const pairs = page.getByRole("region", { name: "Before against after" });
-  const pair = pairs.getByRole("link", { name: "The settings of sensor auditd", exact: true });
+  const pair = pairs.getByRole("link", { name: "One test that nobody saw is now seen.", exact: true });
   await pairs.scrollIntoViewIfNeeded();
   await expect(pair).toBeVisible();
   await settle(page);
   await pairs.screenshot({ path: join(folder, "app-runs-pair.png") });
   await pair.click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
-  await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
-  await expect(page.getByRole("region", { name: /^What the change moved/ }).getByRole("button", { name: /Clear Bash history \(echo\)/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
+  // The stages are drawn from both recordings before the picture is taken.
+  await expect(page.getByRole("group", { name: "Clear Bash history (echo), before and after" }).getByRole("article")).toHaveCount(2);
   await picture(page, folder, "app-pair.png");
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   await expect(link).toBeVisible();
 
-  // The run evaluated with two rule sets, the rule drafted from what the watch saw: its own page, with the rule's text loaded.
-  await pairs.getByRole("link", { name: "A new rule: Shell History File Truncated In Place", exact: true }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "A new rule: Shell History File Truncated In Place" })).toBeVisible();
-  await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toBeVisible();
+  // The run evaluated with two rule sets, the rule drafted from what the watch saw: its own page, with its stages drawn.
+  await pairs.getByRole("link", { name: "Four steps that were seen with no alert now raise an alert.", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Four steps that were seen with no alert now raise an alert." })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Clear Bash history (echo), before and after" }).getByRole("article")).toHaveCount(2);
+  await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toBeAttached();
   await picture(page, folder, "app-rule-pair.png");
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   await expect(link).toBeVisible();
@@ -398,7 +405,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
     join(folder, "SOURCE.txt"),
     [
       "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire,",
-      "and of the Runs screen and the pages of the pair of runs and the run evaluated twice shipped with it.",
+      "and of the Overview, the Runs screen and the pages of the pair of runs and the run evaluated twice shipped with it.",
       `Recording: ${shipped.id} (${RECORDING})`,
       `Recorded in the CI run: ${shipped.source.run_url ?? "not named in the recording"}`,
       `Pair: ${PAIR} (made in the CI run ${pairRun})`,

@@ -520,48 +520,67 @@ the same. Its price is not counted, in the lab's words: the lab leaves a rule
 that matched ordinary activity out of the recording. The two recordings of that
 run, about 1.2 MB each, ship as one entry of the list with a second file.
 
-The Runs screen lists the pairs under "Before against after", in the order
-they happened (by when the later of their runs started), each with what changed
-(the rule, by its change and title, when the delta names one rule of the
-lab's own, otherwise the declared change), how the runs were made (side by
-side, one run evaluated with two rule sets, or the two dates), in one line what
-the change moved (the steps it is credited with, and from which outcome to
-which), one line of the result, a limited verdict's said as limited with its
-steps credited by the mark, and opens one at `#/runs/compared/<id>`. A recording
-that is one side of a listed pair is opened from its pair, by its file, and not
-listed again on its own, so that the two runs of one pair do not read as
-unrelated runs. The Overview offers the newest of what the Runs screen lists: a
-pair when the later of its runs is newer than every run listed on its own, and
-that run otherwise. The page of a pair draws
-the delta alone: the declared change with both values, or "No verdict" with
-every reason and every difference; under a limit, at the top, that the verdict
-is limited, in what the two runners differed with both values, and what alone
-is credited; what was recorded as the same in both and whether the lab's code
-was; the two runs
-side by side, each with where and when, its CI run (a link only for a recording
-shipped with the app) and a way to open it; each step the change moved as one
-line, with the before and after outcomes, the delta's verdict with its price,
-what changed underneath, the step's mark when it is credited by one, and what
-the declared sensor recorded of it in one run only; the control, the steps
-where it varied, named as run variation, and the steps that changed without a
-cause (under a limit, the steps not attributable, named as the runners' as
-well); new and gone steps,
-listed and not counted; and the race only when the delta has one with numbers,
-otherwise its reason. A step's title opens its detail from both recordings,
-next to each other, each by its file, and the address keeps it (`?step=<id>`).
+The Runs screen lists the pairs under "Before against after" as the turns of
+one loop, in the order they happened (by when the later of their runs
+started). Each turn has a short name (`New <sensor> settings`, the rule's
+change such as "A new rule" with its title under it, or the declared change),
+the marks of what moved before and after in `outcome_with_lab_rules` (an alert
+of the lab's rules alone drawn in violet and said to be theirs), a small
+picture of the moved path drawn from the step's `recorded` and mark, a headline
+of what the change did built from the steps the delta credits and its
+`counts`, the tests it moved, how the runs were made (side by side, one run
+evaluated with two rule sets, or the two dates), the price as the delta words
+it (the service lists each moved step with its `price`), and one line of the
+result: how many paired steps read the same, or, for a limited or refused
+comparison, the delta's counts in words. It opens one at
+`#/runs/compared/<id>`. A recording that is one side of a listed pair is opened
+from its pair, by its file, and not listed again on its own, so that the two
+runs of one pair do not read as unrelated runs. The Overview leads with the
+newest run listed on its own and the turns of the loop under it, and still
+offers the newest of what the Runs screen lists among its recent outcomes.
 
-For a change of the lab's rules, the page names the rule in its title when
-`lab_rules` names one, and shows each rule of `lab_rules`: its change, title and
-file, how each evaluation judged it (not there, or accepted or not with the
-lab's reason), and its text line by line as the recording that has it carries
-it (`lines` of its verdict), as text that can be selected. Each step the change
-moved also shows the alert of such a rule on it and the events that alert rests
-on, from the evaluation that has it. When every moved step has the same price,
-each step carries the price's lead and the price is said once, whole, under the
-steps. For one run evaluated twice the page says at the top that it is one run,
-not a pair of runs, with no second runner and no run variation, and shows that
-one run (where and when, its CI run, the commit each evaluation took the lab's
-rules from, and a way to open it with either set of rules) after the steps.
+The page of a pair draws the delta and the two recordings it names, and nothing
+is compared there: the two turns of a loop are never compared with each other.
+At the top, where the comparison stands among those the service keeps (a
+stepper of the turns, by name), the headline of what the change did, the tests
+it moved, and the basis of the verdict (`claim`, and whether it is one pair of
+runs side by side or one run read with two rule sets). Then the move: the marks
+before and after with the declared change between them, or, when several steps
+moved, a row for each, which puts that step on two stages. Each stage draws
+what one recording holds of the step: the host and whether the step took
+effect, each sensor with the events it recorded of it, each rule engine with
+what it matched, an alert or a match below alert level; what reads the same on
+both stages is drawn dim and named once under them. Each stage links to the
+step in the live view, paused at its start, and the after stage offers Fix this when the step still
+raises no alert. Under the stages: the price (false alerts of published rules on
+ordinary activity, `score.false_alerts` and `ordinary` of each recording, with
+the delta's price in its words; or "Not counted" when the price is not counted,
+with the rule's reason; or "Not known" under a limit), what else moved (every
+paired step before and after as a cell, the moved ones marked, with the counts
+of the delta), what comes next (the next comparison of the list, or the tests
+of the after recording that still raise no alert, seen or unseen, counted with
+the lab's own rules too, beside what its score gives), and one line on why the
+comparison is fair, which opens: the claim and how the runs were made, the
+declared change highlighted with both values, each run's id, where and when,
+commits, CI run (a link only for a recording shipped with the app) and the
+SHA-256 of its file, what was recorded as the same and whether the lab's code
+was, the control and the steps where it varied, the race only when the delta
+has one with numbers, new and gone steps listed and not counted, and each step
+that differs in the delta's own words: its result, verdict with price, what
+changed underneath, its mark, and why a key gives no mark. A refused delta reads
+"No verdict." with every reason and every difference, and its steps are listed
+as not judged; under a limit, the page says at the top that the verdict is
+limited, in what the two runners differed with both values and what alone is
+credited, and lists the steps not attributable apart. Below come what made the
+difference (for a sensor's change, the events it recorded of the step, marked
+when only the after run holds them, and the audit keys only one run's events
+carry; for a change of the lab's rules, the events each alert of such a rule
+rests on, and each rule of `lab_rules` with its change, file, how each
+evaluation judged it and its text line by line as the recording carries it),
+every published test of the step's technique in the after recording with its
+mark and the rules that alerted on it, and links to play either run. The
+step's whole detail from both recordings, each by its file, opens under the
+stages, and the address keeps it (`?step=<id>&detail=1`).
 
 ## A delta
 

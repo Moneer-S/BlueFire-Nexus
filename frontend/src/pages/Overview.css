@@ -136,6 +136,44 @@
   .overview-context-facts dd { padding-left: 0; }
 }
 
+/* The real run first, in the live view's own dark look whatever the app's theme, and the loop's turns under it. */
+.overview-real { display: grid; gap: 14px; }
+.overview-watch {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px 40px;
+  padding: 26px 30px;
+  overflow: hidden;
+  border-radius: 12px;
+  color: #eef7ff;
+  background: radial-gradient(90% 140% at 78% 40%, rgba(22, 157, 255, 0.16), transparent 60%), radial-gradient(120% 90% at 42% 42%, #071a2b 0%, #030e1a 55%, #020913 100%);
+  box-shadow: inset 0 0 0 1px rgba(101, 163, 212, 0.36), var(--shadow-soft);
+  color-scheme: dark;
+}
+.overview-watch h2 { margin: 0; font-size: .72rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: #7bcaff; }
+.overview-watch-title { margin: 6px 0 0; font-size: 1.6rem; font-weight: 650; line-height: 1.2; letter-spacing: -.015em; color: #eef7ff; }
+.overview-watch-outcome { margin: 6px 0 0; font-size: .95rem; color: #d9e8f6; }
+.overview-watch-meta { margin: 8px 0 0; font-size: .76rem; color: #90a6bc; }
+.overview-watch-meta > span + span::before { content: "\00b7"; margin: 0 8px; color: rgba(101, 163, 212, 0.36); }
+.overview-watch-meta .recorded-run-origin.is-shipped { color: #7bcaff; }
+.overview-watch-meta .recorded-run-origin.is-imported { color: #ffd27d; }
+.overview-watch-lab { margin: 4px 0 0; font-size: .8rem; color: #b8a9ff; }
+.overview-watch-play { display: inline-flex; align-items: center; gap: 12px; color: #eef7ff; font-size: .95rem; font-weight: 600; text-decoration: none; }
+.overview-watch-button { display: grid; place-items: center; width: 54px; height: 54px; border-radius: 50%; background: rgba(13, 34, 53, 0.9); box-shadow: inset 0 0 0 1.5px #7bcaff, 0 0 26px rgba(22, 157, 255, 0.3); transition: box-shadow 160ms ease; }
+.overview-watch-button svg { width: 20px; height: 20px; margin-left: 3px; fill: currentColor; }
+.overview-watch-play:hover .overview-watch-button { box-shadow: inset 0 0 0 1.5px #eef7ff, 0 0 32px rgba(22, 157, 255, 0.45); }
+.overview-watch-play:focus-visible { outline: 2px solid #7bcaff; outline-offset: 4px; border-radius: 30px; }
+.overview-loop { padding: 14px 16px 16px; border: 1px solid var(--line); border-radius: 10px; background: linear-gradient(135deg, var(--surface), var(--ink-900)); }
+.overview-loop h3 { margin: 0; font-size: .86rem; font-weight: 650; }
+.overview-loop > p { margin: 3px 0 12px; font-size: .76rem; color: var(--muted); }
+@container overview (max-width: 520px) {
+  .overview-watch { grid-template-columns: minmax(0, 1fr); padding: 20px; }
+  .overview-watch-title { font-size: 1.3rem; }
+}
+
 .active-work-state .attention { color: var(--amber-soft); font-weight: 600; }
 .recent-work-name .recent-work-mode::after { content: "·"; margin-left: 6px; color: var(--muted); }
 .recent-work-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

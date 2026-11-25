@@ -3,13 +3,12 @@
 // view, and one control to import a recording file.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, FileUp, GitCompareArrows, Radio, RotateCcw } from "lucide-react";
+import { ArrowRight, FileUp, Radio, RotateCcw } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, ApiError, type DeltaSummary, type RecordingSummary } from "../lib/api";
-import { day } from "../live/format";
+import { api, ApiError, type RecordingSummary } from "../lib/api";
 import { originWords, ownRuns, pairsInOrder, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
-import { codeSpans, isOneRun, movedWords, pairChangeWords, pairPath, pairResultWords } from "../lib/recording-pairs";
+import { DefenderLoop } from "./DefenderLoop";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
 /** The problems a refused import names, in the service's own words. */
@@ -107,38 +106,11 @@ export function RecordedRuns() {
     {inPairs > 0 ? <p className="recorded-pairs-note">{inPairs === 1 ? "1 more recorded run is listed with its" : `${inPairs} more recorded runs are listed with their`} {pairList.length === 1 ? "pair" : "pairs"} under Before against after.</p> : null}
     {pairList.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
       <h3 id="recorded-pairs-heading">Before against after</h3>
-      <p>A change to the defense, compared by the lab in the order the changes were made: what changed, and what it moved.</p>
-      <ul className="recorded-run-list">{pairList.map((summary) => <RecordedPairItem key={summary.id} summary={summary} />)}</ul>
+      <p>Change one defense, run the tests again, see what moved. Each turn is one change, in the order it was made.</p>
+      <DefenderLoop pairs={pairList} label="The changes to the defense, in order" />
     </section> : null}
     {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}
   </Panel>;
-}
-
-function RecordedPairItem({ summary }: { summary: DeltaSummary }) {
-  const dates = [summary.before.started, summary.after.started].map((started) => (started ? day(started) : "not recorded"));
-  const oneRun = isOneRun(summary);
-  const how = oneRun ? `One run evaluated with two rule sets, ${dates[0]}`
-    : summary.runners === 2 ? `Two runs side by side, ${dates[1] === dates[0] ? dates[0] : `${dates[0]} and ${dates[1]}`}`
-    : `Before ${dates[0]}, after ${dates[1]}`;
-  const moved = summary.comparable ? movedWords(summary) : null;
-  return <li className={`recorded-run-item recorded-pair-item${summary.comparable ? "" : " is-refused"}${summary.limit ? " is-limited" : ""}`}>
-    <span className="recorded-run-symbol" aria-hidden="true"><GitCompareArrows /></span>
-    <div className="recorded-run-main">
-      <Link className="recorded-run-link" to={pairPath(summary.id)}>{pairChangeWords(summary)}</Link>
-      <p className="recorded-run-meta">
-        <span>{how}</span>
-        <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>
-      </p>
-      {moved ? <p className="recorded-pair-moved">{moved}</p> : null}
-      <p className="recorded-run-score">
-        <span className={summary.comparable && !summary.limit ? undefined : "recorded-pair-refused"}>{codeSpans(pairResultWords(summary)).map((part, index) => (part.code ? <code key={index}>{part.text}</code> : part.text))}</span>
-      </p>
-      <p className="recorded-pair-runs">
-        {(["before", "after"] as const).map((side) => <Link key={side} to={recordedRunPath(summary[side].id, summary[side].sha256)}>{oneRun ? `Play with the rules ${side}` : `Play the ${side} run`}<span className="sr-only">, {recordedWhere(summary.recordings[side])}</span></Link>)}
-      </p>
-    </div>
-    <span className="recorded-run-open" aria-hidden="true">Compare<ArrowRight /></span>
-  </li>;
 }
 
 /** A thin bar of the score: alerted, seen and unseen, as parts of the tests that took effect. */

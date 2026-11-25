@@ -261,9 +261,11 @@ and takes pictures of it, paused at moments it finds by the steps' outcomes:
 the first alert on a test, the unseen test, a test seen with no alert, a
 hardened rerun that was stopped, analyse mode with the whole run and with the
 unseen test's detail, and the first alert again at 1920 by 1080. Inside the app
-it takes the Runs screen, the Runs screen at the pairs shipped with the app,
-the page of the pair of runs (`app-pair.png`), the page of the run evaluated
-with two rule sets with its rule's text loaded (`app-rule-pair.png`), and the
+it takes the Overview, which leads with the shipped run and the turns of the
+loop (`app-overview.png`), the Runs screen, its part "Before against after"
+with the two comparisons shipped with the app (`app-runs-pair.png`), the page
+of the pair of runs (`app-pair.png`) and the page of the run evaluated with two
+rule sets (`app-rule-pair.png`), each with both stages drawn, and the
 recorded run's page on the first alert, at 1920 by 1080 so that every rule
 title fits. Before that it opens the recorded run's page at 1440 by 900 too,
 on the first alert, and on the test with the longest command, whose command
