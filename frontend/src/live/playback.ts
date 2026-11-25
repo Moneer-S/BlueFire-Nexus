@@ -12,7 +12,9 @@
 // about 10.8 s, and no step gets more than 12 s. Inside the body, real time
 // runs linearly, so events keep their order and spacing. When the light of a
 // match fired in the body would reach its rule engine too late to be told, the
-// step holds after its body, its clock stopped, until a moment after it lands.
+// step holds after its body, its clock stopped, until a moment after it lands;
+// so does a step told by what was recorded, until the light of its last event
+// has reached the rule engines.
 // Every silence between two steps, whatever its real length, becomes one short
 // beat.
 //
@@ -416,16 +418,45 @@ function lastBegun(segments: readonly Segment[], t: number): number {
 }
 
 /**
+ * True when a step is told by its first counting alert, at the moment that
+ * alert's light lands: an alerted step whose first such alert fires inside the
+ * step, not late. Any other step is told once its events and matches are judged.
+ */
+function toldByAlert(step: Step, firstCounting: ReadonlyMap<string, Fire>): boolean {
+  const first = firstCounting.get(step.id);
+  return step.outcome === "alerted" && first !== undefined && !first.late;
+}
+
+/**
+ * The screen time at which an event's light, arrived at `at`, has reached the
+ * rule engines: from then the engines have judged it, and a step told by what
+ * was recorded may count it.
+ */
+export function judged(at: number): number {
+  return at + PLAYBACK_RULE.travel;
+}
+
+/**
  * How long each step holds after its body so that the light of every match
- * fired by its end lands a moment before the step ends; and how long a step or
+ * fired by its end lands a moment before the step ends, and, for a step told
+ * by what was recorded, the light of its last event too; and how long a step or
  * a silence holds so that a late arrival fired on it stays to be read.
  */
-function holdsFor(laid: { segments: readonly Segment[]; gaps: readonly Gap[] }, fires: readonly Fire[]): Holds {
+function holdsFor(laid: { segments: readonly Segment[]; gaps: readonly Gap[] }, fires: readonly Fire[], arrivals: readonly Arrival[]): Holds {
   const segmentOf = new Map(laid.segments.map((segment) => [segment.step.id, segment]));
   const holds: Holds = { steps: new Map(), gaps: new Map() };
   const hold = (key: string, need: number) => {
     if (need > (holds.steps.get(key) ?? 0)) holds.steps.set(key, need);
   };
+  // A step told by what was recorded is told once its last event has been judged: it never counts an event still to come.
+  const lastArrival = new Map<string, number>();
+  for (const { event, at } of arrivals) lastArrival.set(event.step, Math.max(at, lastArrival.get(event.step) ?? at));
+  const firstCounting = new Map<string, Fire>();
+  for (const fire of fires) if (countsForScore(fire.alert) && !firstCounting.has(fire.alert.step)) firstCounting.set(fire.alert.step, fire);
+  for (const segment of laid.segments) {
+    const last = lastArrival.get(segment.step.id);
+    if (last !== undefined && !toldByAlert(segment.step, firstCounting)) hold(segment.step.id, judged(last) + PLAYBACK_RULE.told - segment.end);
+  }
   // The late arrivals that fire in each silence: it holds at the last of them.
   const inSilence = new Map<number, Fire[]>();
   for (const fire of fires) {
@@ -465,7 +496,7 @@ export function buildTimeline(recording: Recording): Timeline {
   let placed = placeAll(recording, laid);
   // A hold moves only what comes after it: a match keeps its place inside its
   // own body, and a late arrival inside the body or the beat it fires in.
-  const holds = holdsFor(laid, placed.fires);
+  const holds = holdsFor(laid, placed.fires, placed.arrivals);
   if (holds.steps.size > 0 || holds.gaps.size > 0) {
     laid = layOut(recording, facts, holds);
     placed = placeAll(recording, laid);

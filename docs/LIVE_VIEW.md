@@ -67,6 +67,14 @@ goes, and the view says the run is still running.
   last match fires near its end stays on screen, its clock held at the step's
   end, until that match's light has reached the rule engine and the step's
   outcome is told.
+- **A step is told once what it counts has arrived.** An alerted step is told
+  when its first alert's light reaches the rule engine. Any other step is told
+  only once the light of its last event has reached the rule engines, so the
+  caption's "1 event recorded" never stands beside a log that says "Nothing
+  recorded." or a map that counts "0 events": the three count the same events
+  at every moment, and the log says "Nothing recorded." only of a told step
+  that has no event at all. A step whose last event comes near its end holds,
+  its clock stopped at the step's end, until then.
 - **A step plays its own stretch of the run, unmoved.** A step's bar plays
   from its `started`, or its earliest event or match when a sensor stamped one
   a moment before, to its `ended`, or its latest event or match. The format
@@ -122,19 +130,22 @@ goes, and the view says the run is still running.
   have no times in a recording, so watch mode shows them only at the end. In
   analyse mode it is the whole run's score from the start. False alerts are
   shown only with the ordinary activity they are counted from. The time to the
-  first alert on a test is read from the alerts themselves, up to the moment
-  that alert fires (its `raised` time where the rules ran live), and counted
-  as the screen counts it. For a test list it is a time "into the run", on the
-  same clock as the clock under the map and the race track: from the start of
-  the first step's stretch, its `started` or an event of it stamped a moment
-  before (in the shipped run, the canary's first event, 2 ms before its
-  start); the race track's 00:00 says so in its tooltip. For an attack path it
-  is counted from the first test's start, the same clock the race compares
-  with the goal.
+  first alert on a test (on an attack path, on a step) is read from the alerts
+  themselves, up to the moment that alert fires (its `raised` time where the
+  rules ran live), and counted as the screen counts it. It is a time "into the
+  run", on the same clock as the clock beside the timeline and the race track,
+  and is named the same way wherever it is said: "The defense raised its first
+  alert on step 1, 01:16.4 into the run." For a test list that clock counts
+  from the start of the first step's stretch, its `started` or an event of it
+  stamped a moment before (in the shipped run, the canary's first event, 2 ms
+  before its start); the race track's 00:00 says so in its tooltip. For an
+  attack path it counts from the first step's recorded start, the same clock
+  the race compares with the goal.
 - **An attack path's race and its goal.** No real recording of an attack path
   exists yet: the view's handling of one, told here, is shown by tests on
-  built examples only. An attack path begins with a test that has a recorded
-  start, and its race counts from that one moment: the first alert's number,
+  built examples only. An attack path begins with a step of role `test` that
+  has a recorded start, and its race counts from that one moment: the first
+  alert's number,
   the goal, the race track's 00:00, the flags' places on it and the clock's
   time into the run.
   The goal falls `score.goal_seconds` after it, even where an event is stamped
@@ -208,7 +219,7 @@ same things as on one host, laid out for a network:
 - **The attack's path is the strongest line.** The hop of the step on screen
   glows, with an arrowhead; each earlier hop keeps its arrowhead and grows
   fainter the longer ago it was crossed. Beside each hop, never on its line,
-  stand the numbers of the tests that crossed it ("5 · 9"), so the picture of
+  stand the numbers of the steps that crossed it ("5 · 9"), so the picture of
   the goal tells the order of the attack. A step that stays on its host (no
   `from`, or `from` the same host) lights a short bright arc on that host while
   it runs. The caption names a crossing step's hop in words beside its number:
@@ -222,7 +233,7 @@ same things as on one host, laid out for a network:
   host it ran from too, and the log's key names each by its host ("Wazuh agent
   on web 3", "Wazuh agent on build 16").
 - **An alert is told the same way everywhere.** The rule engine names it as an
-  alert ("ALERT · HIGH", its title, where it was raised: host, test and rule
+  alert ("ALERT · HIGH", its title, where it was raised: host, step and rule
   number). An alert raised after its step ended says so in one wording, on the
   engine, in the log and in the caption alike: "raised 922 ms after the step
   ended". The log calls that line "alert". The host it was raised on has its
@@ -452,17 +463,18 @@ for each kind of recording:
   tests alerted", "first alert · test 39", "Test 39 of 60".
 - **An attack path** names each step "step N" and counts steps, everywhere a
   step is named or counted: "1 / 11 steps alerted", "first alert · step 1",
-  "The defense raised its first alert on step 1, 01:01.6 after the first step
-  began.", "Step 9 of 11" over the step's detail and beside the timeline, with
-  no second line that says its place again, and one tab of steps in the
-  analyse table where a tab of tests would hold the same rows. The published
-  test a step ran keeps its own title and technique: the technique's chip and
-  the test's title beside it.
+  "The defense raised its first alert on step 1, 01:01.6 into the run.", "Step
+  9 of 11" over the step's detail and beside the timeline, with no second line
+  that says its place again, "step 10" under the lanes' time axis, and one tab
+  of steps in the analyse table where a tab of tests would hold the same rows.
+  The published test a step ran keeps its own title and technique: the
+  technique's chip and the test's title beside it.
 
 Any other step is named by its role and, for a rerun, by the step it reruns
 ("canary 1", "the control", "hardened rerun of test 12", "variant 2 of test
 39"). Where room is short, the analyse table's first
-column writes a test as its number alone, and the lanes' time axis as "#28";
+column writes a test as its number alone, and the lanes' time axis a test of
+a list as "#28";
 an axis label of a rerun or a variant holds its time alone, with the name in
 its tooltip.
 Its place in the list of steps is shown only as progress ("42 of 91 steps"). In the shipped run, `?step=43` opens test 40.

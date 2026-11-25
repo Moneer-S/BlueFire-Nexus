@@ -172,10 +172,11 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
 
   // Axis labels: the first step, then every tenth, as long as they do not crowd each other or a silence mark.
   // A label that would crowd one moves to the next step that has room. Each names its step as the table
-  // does, a test by its number ("#28") and any other step by its short name where that is short ("canary 1");
+  // does, a test of a list by its number ("#28"), a step of an attack path by its name ("step 10"), which
+  // the table and the detail use too, and any other step by its short name where that is short ("canary 1");
   // a longer name, a rerun's, is left to the label's tooltip, which holds every label's whole name. Only the
   // choice of which steps get one goes by their place in the run.
-  const numbers = testNumbers(recording);
+  const numbers = unitWord(recording) === "step" ? new Map<string, number>() : testNumbers(recording);
   const ticks: { x: number; text: string; full: string }[] = [];
   let lastRight = -Infinity;
   let wanted = 0;

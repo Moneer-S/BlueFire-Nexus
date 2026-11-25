@@ -3,8 +3,8 @@
 import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepEnd, stepMatchesFiredBy } from "./playback";
-import { matchKind, span, stepLabel, strongerKind, unitWord } from "./format";
+import { judged, landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepEnd, stepMatchesFiredBy } from "./playback";
+import { matchKind, span, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
 /** Screen seconds a recorded event takes to travel from its host to the rule engines. */
@@ -100,9 +100,10 @@ const REVEALS = new WeakMap<Segment, number>();
  * The screen time at which a step's outcome is told. An alerted step is told
  * when the light of its first alert that counts reaches the rule engine. Any
  * other step is told once the rule engines have judged what was recorded: a
- * little before the middle of its body, or when its last match lands, and
- * always a moment before the step ends. The step holds after its body for as
- * long as that takes, so each light lands while the step is on screen.
+ * little before the middle of its body, or when the light of its last event or
+ * its last match lands, and always a moment before the step ends. The step
+ * holds after its body for as long as that takes, so each light lands while
+ * the step is on screen.
  */
 export function revealTime(timeline: Timeline, segment: Segment): number {
   const known = REVEALS.get(segment);
@@ -122,9 +123,13 @@ function workOutReveal(timeline: Timeline, segment: Segment): number {
     // seen first and then taken back.
     if (fire && (!fire.late || fire.at <= segment.end)) return Math.max(landing(fire), segment.bodyStart);
   }
-  // The step's own fires, which leave out its late arrivals.
-  const fires = timeline.byStep.get(segment.step.id)?.fires ?? [];
-  const last = Math.max(middle, maxOf(fires.map(landing)));
+  // The step's own fires, which leave out its late arrivals, and its events: the
+  // outcome is told once the last of them has reached the rule engines, so the
+  // caption never counts an event that the log and the map have not shown yet.
+  const own = timeline.byStep.get(segment.step.id);
+  const fires = own?.fires ?? [];
+  const lastEvent = own?.arrivals[own.arrivals.length - 1];
+  const last = Math.max(middle, maxOf(fires.map(landing)), lastEvent ? judged(lastEvent.at) : middle);
   return Math.max(segment.bodyStart, Math.min(last, segment.end - PLAYBACK_RULE.told));
 }
 
@@ -240,14 +245,17 @@ export function momentOf(timeline: Timeline, frame: Frame, matches: ReturnType<t
 }
 
 /**
- * The time to the first alert on a test, the same wherever it is shown. For
+ * The time to the first alert on a test, the same wherever it is shown, and
+ * named as the clock beside the timeline names its time: "into the run". For
  * an attack path it counts from the start of the first test step to the
  * moment the alert fires, like the format's `score.first_alert_seconds`; null
- * when that start was not recorded. For a test list it
- * counts into the run from the first step, like the clock and the race track.
+ * when that start was not recorded. An attack path begins with that step, and
+ * its clock counts from that same start (`runFacts`), so the two are one clock.
+ * For a test list it counts into the run from the first step, like the clock
+ * and the race track.
  */
 export function firstAlertClock(recording: Recording, facts: RunFacts, first: FirstAlert): { seconds: number; words: string } | null {
-  if (recording.kind === "attack path") return first.secondsFromFirstTest === null ? null : { seconds: first.secondsFromFirstTest, words: `after the first ${unitWord(recording)} began` };
+  if (recording.kind === "attack path") return first.secondsFromFirstTest === null ? null : { seconds: first.secondsFromFirstTest, words: "into the run" };
   return { seconds: (first.real - facts.start) / 1000, words: "into the run" };
 }
 

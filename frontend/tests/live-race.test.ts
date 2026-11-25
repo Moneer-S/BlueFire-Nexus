@@ -58,7 +58,7 @@ describe("the race sentence on an attack path", () => {
   it("names the first alert's time from the first step before the goal is reached", () => {
     const value = path([alert("a", "1", 10.8, ["1-1"])], 12);
     const timeline = buildTimeline(value);
-    expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The defense raised its first alert on step 1, 00:00.8 after the first step began.");
+    expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The defense raised its first alert on step 1, 00:00.8 into the run.");
   });
 
   it("times a live alert from when it was raised, in the sentence, the flag's clock and the goal comparison", () => {
@@ -68,7 +68,7 @@ describe("the race sentence on an attack path", () => {
     value.score = { ...value.score, first_alert_seconds: 0.8 };
     const timeline = buildTimeline(value);
     const first = timeline.firstAlert;
-    expect(first ? firstAlertClock(value, runFacts(value, timeline), first) : null).toEqual({ seconds: 15, words: "after the first step began" });
+    expect(first ? firstAlertClock(value, runFacts(value, timeline), first) : null).toEqual({ seconds: 15, words: "into the run" });
     expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The attacker reached the goal 3.0 s before the first alert.");
   });
 
@@ -204,7 +204,7 @@ describe("naming a step", () => {
     expect(stepLabel(value, first)).toBe("step 1");
     expect(stepLabel(value, second)).toBe("step 2");
     const timeline = buildTimeline(value);
-    expect(sentenceAt(value, timeline, timeline.duration)).toBe("The defense raised its first alert on step 2, 00:10.5 after the first step began.");
+    expect(sentenceAt(value, timeline, timeline.duration)).toBe("The defense raised its first alert on step 2, 00:10.5 into the run.");
   });
 });
 
