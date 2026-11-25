@@ -75,7 +75,7 @@ MEMORY = "256m"
 # The Wazuh manager needs about a gigabyte.
 MEMORY_DEFENSE = "1g"
 PIDS_LIMIT = "1024"
-WATCH_SECONDS = 15
+WATCH_SECONDS = range_path.WATCH_SECONDS
 READY_SECONDS = 30
 # For a range with a defense: the manager's ports, each agent connected with its real-time file
 # monitoring started, the manager listing each agent, and a nonce from each agent host in the archive.
@@ -1652,7 +1652,11 @@ class Run:
             host: seal.addresses(inspect("inspect", identifier)[0], self.spec)
             for host, identifier in self.containers.items()
         }
-        range_path.Executor(self, self.plan, addresses).run_path()
+        executor = range_path.Executor(self, self.plan, addresses)
+        executor.run_path()
+        if executor.blind:
+            # The watch may report later and find nothing, but the steps were not watched: the run is invalid.
+            raise EngineError(executor.blind)
 
     def hold_window(self) -> None:
         """After the path: keep the sealed range up for --hold seconds, and stop at once on a finding of the watch."""

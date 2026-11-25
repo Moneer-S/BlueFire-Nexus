@@ -6,6 +6,7 @@ built in the test in the form `docker events --format '{{json .}}'` prints.
 """
 
 import copy
+import dataclasses
 import hashlib
 import io
 import json
@@ -162,6 +163,11 @@ def test_a_step_that_reaches_a_host_it_shares_a_network_with_loads(tmp_path: Pat
             DOWNLOAD,
             a_step(to="outside"),
             "step s01 goes to 'outside', which is not a host of the spec",
+        ),
+        (
+            SCAN,
+            a_step(to="build", args={"host": "db"}, cleanup="none"),
+            "step s01 reaches db, which its to does not name: add db to the step's to",
         ),
         (
             DOWNLOAD,
@@ -410,6 +416,109 @@ def test_a_step_whose_daemon_end_comes_before_its_start_is_timed_by_the_engines_
     assert watch.findings == []
 
 
+def test_a_watch_that_does_not_report_a_steps_exec_in_time_stops_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = range_path.Step(
+        id="s03",
+        technique="T1082",
+        guid=GUID,
+        name="List OS Information",
+        host="web",
+        to=(),
+        account="webadmin",
+        workdir="/tmp",
+        args={},
+        timeout=60,
+        cleanup="none",
+        check=None,
+        expect=(),
+        attack=("sh", "-c", UNAME),
+        prereqs=(),
+        undo=None,
+    )
+    # A stalled `docker events`: the watch still runs, and reports nothing.
+    watch = engine.Watch("bluefire-lab-r1", tmp_path / "events.ndjson", inspect=lambda _: None)
+    watch.containers.add(CONTAINER)
+    watch.alive = True
+    monkeypatch.setattr(range_path, "EVENT_SECONDS", 0.1)
+    monkeypatch.setattr(range_path, "WATCH_SECONDS", 0.1)
+    run = a_sealed_run(tmp_path, watch)
+    run.containers = {"web": CONTAINER}
+
+    class Exec:
+        returncode = 0
+
+        def __init__(self, *_, **__) -> None:
+            pass
+
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(range_path.subprocess, "Popen", Exec)
+    executor = range_path.Executor(run, range_path.Plan((step,), None, None), {})
+
+    found = executor.exec(step, "step:s03", step.attack, 60, tmp_path, "attack")
+
+    assert found["stopped"]
+    assert "the event watch did not report the start of the exec of attack on web" in executor.stop_reason()
+
+
+def test_an_earlier_engine_command_still_running_does_not_stop_a_step_the_watch_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = range_path.Step(
+        id="s03",
+        technique="T1082",
+        guid=GUID,
+        name="List OS Information",
+        host="web",
+        to=(),
+        account="webadmin",
+        workdir="/tmp",
+        args={},
+        timeout=60,
+        cleanup="none",
+        check=None,
+        expect=(),
+        attack=("sh", "-c", UNAME),
+        prereqs=(),
+        undo=None,
+    )
+    watch = engine.Watch("bluefire-lab-r1", tmp_path / "events.ndjson", inspect=lambda _: None)
+    watch.containers.add(CONTAINER)
+    watch.alive = True
+    # An effect check that outlived its timeout: its exec_die is still awaited when the next step runs.
+    watch.expect("container", "exec_die", required=True, id=CONTAINER)
+    monkeypatch.setattr(range_path, "EVENT_SECONDS", 0.1)
+    monkeypatch.setattr(range_path, "WATCH_SECONDS", 0.1)
+    run = a_sealed_run(tmp_path, watch)
+    run.containers = {"web": CONTAINER}
+
+    class Exec:
+        returncode = 0
+
+        def __init__(self, *_, **__) -> None:
+            watch.feed(
+                [
+                    exec_event(f"exec_create: sh -c {UNAME}", "e4", 1_795_554_323_269_207_781),
+                    exec_event(f"exec_start: sh -c {UNAME}", "e4", 1_795_554_323_271_196_036),
+                    exec_event("exec_die", "e4", 1_795_554_323_521_993_782, exitCode="0"),
+                ]
+            )
+
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(range_path.subprocess, "Popen", Exec)
+    executor = range_path.Executor(run, range_path.Plan((step,), None, None), {})
+
+    found = executor.exec(step, "step:s03", step.attack, 60, tmp_path, "attack")
+
+    assert executor.stop_reason() is None and not found["stopped"]
+    assert found["time_source"] == "daemon"
+
+
 def tar_gz(members: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
@@ -562,6 +671,18 @@ def test_a_spec_with_a_path_and_no_built_host_is_refused_with_the_fix(tmp_path: 
     assert range_path.plan(range_spec.load(seal_check), None).steps == ()
 
 
+def test_a_step_on_a_host_that_runs_a_pinned_image_is_refused_with_the_fix(tmp_path: Path) -> None:
+    spec = range_spec.load(RANGE_ONE)
+    # One host of a spec whose other hosts are built: web runs a pinned image instead.
+    spec.hosts["web"] = dataclasses.replace(spec.hosts["web"], image="nginx@sha256:" + "0" * 64)
+
+    with pytest.raises(range_spec.SpecError) as refused:
+        range_path.load(spec, {"steps": [a_step()]}, technique(tmp_path, DOWNLOAD))
+
+    assert "step s01 runs on web, which runs a pinned image" in str(refused.value)
+    assert "so build web from base or run the step on another host" in str(refused.value)
+
+
 def test_the_daemons_nanoseconds_are_written_to_the_microsecond_in_utc() -> None:
     assert range_path.iso(1_795_472_122_151_157_163) == "2026-11-23T22:15:22.151157Z"
 
@@ -589,6 +710,8 @@ def test_the_summary_shows_each_step_the_goal_and_the_first_steps_time() -> None
     assert "| s01 | web | T1048.002 | Example test | 98.2 | 0 | took effect | pass |" in text
     assert "| 0.4 (engine clock) |" in text
     assert "Goal, a file reaches inet: passed." in text
+    # The two steps run the same published test, as range one's two port scans do.
+    assert "2 steps, which ran 1 published test." in text
     assert "The first step, s01, took 98.2 s." in text
 
 

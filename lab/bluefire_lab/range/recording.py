@@ -43,6 +43,7 @@ COUNTING = ("high", "critical")
 FORMAT_LEVEL = min(low for low, _, word in WORDS if word in COUNTING)
 RULES_LOADED = re.compile(r"Total rules enabled: '([0-9]+)'")
 KINDS = {"creation": "file created", "change": "file changed", "deletion": "file deleted"}
+DATABASE_LINE = "database error log line"
 
 
 def level_word(level: object) -> str:
@@ -163,8 +164,19 @@ def sensor_id(host: str) -> str:
     return f"wazuh-agent-{host}"
 
 
-def kind_of(document: dict) -> str:
-    """An event's kind in plain words, from its ECS categorization."""
+def error_logs(spec: dict) -> set[str]:
+    """The error logs of the spec's databases (`database.log_error`)."""
+
+    found = set()
+    for settings in spec["hosts"].values():
+        database = (settings.get("database") or {}) if isinstance(settings, dict) else {}
+        if isinstance(database, dict) and database.get("log_error"):
+            found.add(str(database["log_error"]))
+    return found
+
+
+def kind_of(document: dict, database_logs: set[str] = frozenset()) -> str:
+    """An event's kind in plain words, from its ECS categorization, or the log it comes from."""
 
     event = document.get("event") or {}
     categories, types = event.get("category") or [], event.get("type") or []
@@ -176,6 +188,9 @@ def kind_of(document: dict) -> str:
         return "login succeeded" if event.get("outcome") == "success" else "login failed"
     if "web" in categories:
         return "web request"
+    # The decoder Wazuh picks for a database's line differs from run to run: the log names it.
+    if (document.get("wazuh") or {}).get("location") in database_logs:
+        return DATABASE_LINE
     decoder = ((document.get("wazuh") or {}).get("decoder") or {}).get("name")
     return f"{decoder} line" if decoder else "log line"
 
@@ -190,7 +205,7 @@ def text_of(document: dict) -> str:
     return str((document.get("event") or {}).get("original") or "")
 
 
-def event_of(document: dict, step: str, number: int) -> dict:
+def event_of(document: dict, step: str, number: int, database_logs: set[str] = frozenset()) -> dict:
     wazuh = document.get("wazuh") or {}
     host = (document.get("host") or {}).get("name")
     return {
@@ -198,7 +213,7 @@ def event_of(document: dict, step: str, number: int) -> dict:
         "time": document["@timestamp"],
         "host": host,
         "sensor": sensor_id(host),
-        "kind": kind_of(document),
+        "kind": kind_of(document, database_logs),
         "text": text_of(document),
         "step": step,
         "tied_by": document["labels"]["tied_by"],
@@ -228,7 +243,13 @@ def basis(entry: dict, alert_level: int) -> str:
     if entry["visibility"] == "not applicable":
         return "the test did not start, so nothing could be tied to it"
     ties = ", ".join(f"{n} by {how}" for how, n in entry["events by tie"].items())
-    said = f"{entry['events']} archived events tied to the step" + (f" ({ties})" if ties else "")
+    said = lab.count(entry["events"], "archived event") + " tied to the step" + (f" ({ties})" if ties else "")
+    shown = entry.get("lines tied by address alone") or []
+    if shown:
+        said += (
+            f", only because {'the line' if entry['events'] == 1 else 'each line'} names {entry['host']}'s address or container name, or comes from its "
+            "address: " + "; ".join(shown)
+        )
     first = entry.get("first_alert")
     if first:
         said += (
@@ -236,9 +257,12 @@ def basis(entry: dict, alert_level: int) -> str:
             f"raised at {first['raised']}"
         )
     elif entry["alerts"]:
-        said += f"; {entry['alerts']} alerts below level {alert_level}"
+        said += f"; {lab.count(entry['alerts'], 'alert')} below level {alert_level}"
     if entry["coincident events"]:
-        said += f"; {entry['coincident events']} more only inside its window, not counted"
+        said += (
+            f"; {entry['coincident events']} more fell only inside the step's time span, from its start to "
+            f"{score.GRACE} s after its end, on a host it ran on or reached, not counted"
+        )
     return said
 
 
@@ -290,6 +314,7 @@ def build(folder: Path) -> dict:
         if isinstance(step, dict)
     }
     scores = {entry["id"]: entry for entry in scored["steps"]}
+    databases = error_logs(spec)
     steps, kept_events, kept_alerts, cut, late_cut = [], [], [], 0, 0
     for order, record in enumerate(path.get("steps") or [], start=1):
         step_id, entry = record["id"], scores[record["id"]]
@@ -298,7 +323,9 @@ def build(folder: Path) -> dict:
         placed: dict[str, dict] = {}
         for number, document in enumerate(mine, start=1):
             if number <= lab.KEPT_EVENTS or (document.get("event") or {}).get("id") in named:
-                placed[(document.get("event") or {}).get("id")] = event_of(document, step_id, number)
+                placed[(document.get("event") or {}).get("id")] = event_of(
+                    document, step_id, number, databases
+                )
         kept_events += placed.values()
         held_alerts = []
         for document in on_step.get(step_id, []):
@@ -406,6 +433,8 @@ def build(folder: Path) -> dict:
     }
 
     tests = [step for step in steps if step["role"] == "test"]
+    # A published test that runs twice, as the port scan does against two hosts, is one test of two steps.
+    distinct = {step["test"]["guid"] for step in tests}
     took = [step for step in tests if step["happened"]["answer"] == "took effect"]
     words = Counter(step["outcome"] for step in took)
     totals: dict = {"steps": len(tests), "took_effect": len(took)}
@@ -427,7 +456,7 @@ def build(folder: Path) -> dict:
     made = lab.known(
         schema="bluefire.recording/1",
         id=manifest["run_id"],
-        title=f"{lab.count(len(tests), 'published test')} on a path through {len(spec['hosts'])} hosts of "
+        title=f"{lab.count(len(tests), 'step')} of {lab.count(len(distinct), 'published test')} in "
         f"{manifest.get('range')}",
         kind="attack path",
         source=lab.known(
@@ -441,11 +470,6 @@ def build(folder: Path) -> dict:
                 {"name": name, "version": version, "role": role}
                 for name, version, role in (
                     ("Atomic Red Team", atomic.get("commit"), "tests"),
-                    (
-                        "bluefire-lab executor, checked against Invoke-AtomicRedTeam",
-                        (spec.get("executor") or {}).get("commit"),
-                        "executor",
-                    ),
                     ("Wazuh agent", defense.get("wazuh_version"), "sensor"),
                     ("snoopy", installed(folder, defense.get("agents") or [], "snoopy"), "sensor"),
                     ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
@@ -467,7 +491,11 @@ def build(folder: Path) -> dict:
                 for part in (
                     str(spec.get("sentence") or "").strip(),
                     "The engine ran each published test of the path in turn inside the sealed range, through "
-                    "docker exec as the step's account.",
+                    "docker exec as the step's account."
+                    if manifest.get("result") == "sealed"
+                    else f"The engine started {lab.count(len(tests), 'step')} of the path's "
+                    f"{len(path.get('planned') or tests)} in turn, through docker exec as the step's account; "
+                    f"then the run ended {manifest.get('result')}: {manifest.get('reason')}.",
                 )
                 if part
             ),
@@ -493,6 +521,13 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     hand_off = (spec.get("path") or {}).get("hand_off")
     if hand_off:
         said.append(f"Hand-off: {hand_off}.")
+    reference = (spec.get("executor") or {}).get("commit")
+    if reference:
+        # The engine runs the steps itself; Invoke-AtomicRedTeam is only what its reading is checked against.
+        said.append(
+            "The engine's own executor ran each step, reading the test as Invoke-AtomicRedTeam "
+            f"{reference} does; the atomic-parity job of the range one workflow checks that."
+        )
     said += list(path.get("notes") or [])
     said += list(scored.get("notes") or [])
     check = scored.get("clock") or {}
@@ -516,9 +551,9 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     coincident = (scored.get("events") or {}).get("unattributed, coincident with a step")
     if coincident:
         said.append(
-            f"{coincident} archived events fall only inside a step's window, on a host it ran on or reached: "
-            "they are coincident in time, are not counted as the step's and are not in the recording; "
-            "events.ecs.ndjson holds them with the step and tied_by window."
+            f"{lab.count(coincident, 'archived event')} fell only inside a step's time span, from its start to "
+            f"{score.GRACE} s after its end, on a host it ran on or reached: coincident in time, not counted as "
+            "the step's and not in the recording; events.ecs.ndjson holds them with the step and tied_by window."
         )
     if cut:
         said.append(
