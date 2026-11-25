@@ -220,6 +220,23 @@ class PrivacyScan(unittest.TestCase):
             ],
         )
 
+    def test_the_range_path_page_accepts_its_home_folder_and_no_other_page_does(self) -> None:
+        web_home = f"{HOME}/webadmin"
+        line = (
+            f'{{"command":"find {web_home} -name id_rsa",'
+            f'"text":"cat {web_home}/.ssh/id_rsa","text":"cat {web_home}/.ssh/known_hosts"}}\n'
+        )
+        files = {
+            "docs/live-view/attack-path.html": f"{line}{web_home}/notes.txt\n".encode(),
+            "docs/live-view/replay.html": line.encode(),
+        }
+        status, output = scan(files)
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            output.splitlines(),
+            ["docs/live-view/attack-path.html:2: user home path", "docs/live-view/replay.html:1: user home path"],
+        )
+
     def test_the_whole_repository_is_scanned_from_a_subfolder(self) -> None:
         with tempfile.TemporaryDirectory() as repository:
             git(repository, "init", "--quiet")
