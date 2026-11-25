@@ -110,8 +110,9 @@ export function stageSentence(side: StageSide, newRules: ReadonlySet<string> = n
   if (outcome === "alerted") {
     const alert = matches.find((match) => match.state === "alert") ?? matches.find((match) => match.state === "lab");
     if (!alert) return lead;
-    const who = alert.state === "alert" ? "A published rule" : newRules.has(alert.rule) ? "The new rule" : "A rule of the lab's own";
-    return `${lead} ${who} raised an alert: ${alert.title} (${alert.level}).`.trim();
+    if (alert.state === "alert") return `${lead} A published rule raised an alert: ${alert.title} (${alert.level}).`.trim();
+    const who = newRules.has(alert.rule) ? "The new rule" : "One of the lab's own rules";
+    return `${lead} ${who} alerted, which the score does not count: ${alert.title} (${alert.level}).`.trim();
   }
   if (outcome === "seen") {
     const review = matches.find((match) => match.state === "review");

@@ -398,7 +398,7 @@
 
 .fx-other {
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) 120px 80px;
+  grid-template-columns: 70px minmax(0, 1fr) 190px 80px;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
@@ -408,7 +408,8 @@
 }
 
 .fx-other:hover { background: rgba(123, 202, 255, 0.06); }
-.fx-other .lv-ow { justify-self: start; }
+.fx-other-marks { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.fx-other-marks .fx-labword { font-size: 12px; }
 
 .fx-other-label {
   font-size: 12px;
@@ -638,6 +639,8 @@
 /* The before and after keep to the right edge when a long title pushes them onto a line of their own. */
 .fx-tried .cmp-move { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .fx-tried .cmp-move .lv-word { white-space: nowrap; }
+/* Alerted by the lab's own rules only: violet, as on the Runs screen and the comparison pages. */
+.fx-tried .cmp-move .lv-word.is-alerted.is-lab { color: #160c36; background: var(--lv-violet); box-shadow: 0 0 18px rgba(168, 146, 255, 0.4); }
 
 .fx-quoted {
   margin-top: 4px;
@@ -649,7 +652,7 @@
 .fx-quoted p { max-width: 70em; margin: 6px 0 0; line-height: 1.55; }
 
 @media (max-width: 640px) {
-  .fx-other { grid-template-columns: minmax(0, 1fr) auto; }
+  .fx-other { grid-template-columns: minmax(0, 1fr) minmax(0, 45%); }
   .fx-other-label,
   .fx-other-events { display: none; }
   .fx-events thead { display: none; }

@@ -794,7 +794,13 @@ def test_a_limited_verdict_is_kept_and_refused_when_its_limit_marks_and_counts_d
         "steps[1].mark.keys names 'shell-history', which audit_keys says can carry no mark of the "
         "change's own."
     ]
-    assert changed(key_that_does_not_say) == ["audit_keys.only_after.shell-history.mark is missing."]
+    # A key with no mark is what an earlier version of the lab's compare wrote: the refusal says what to do.
+    assert changed(key_that_does_not_say) == [
+        "audit_keys.only_after.shell-history.mark is missing: an earlier version of the lab's "
+        "compare wrote this comparison, before an audit key said whether it can carry the "
+        "change's own mark. Write both recordings again from their runs' folders with "
+        "bluefire-lab recording and compare them again, or run the pair again."
+    ]
     assert changed(no_mark_without_why) == [
         "audit_keys.only_after.shell-history.no_mark is missing.",
         "steps[1].mark.keys names 'shell-history', which audit_keys says can carry no mark of the "

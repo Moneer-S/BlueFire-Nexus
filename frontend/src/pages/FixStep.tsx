@@ -13,9 +13,9 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingSummary } from "../lib/api";
 import { activeProviderKind, backPath, browserStorage, candidates, draftKey, hasStableIds, keepDraft, labRulesCommit, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
 import { originWords, recordedRunPath, RUNNING_POLL_MS } from "../lib/recorded-runs";
-import { chipField, codeSpans, isOneRun, pairChangeWords, priceLead, resultWords, verdictParts } from "../lib/recording-pairs";
+import { alertedByLabOnly, chipField, codeSpans, isOneRun, pairChangeWords, priceLead, resultWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows, type StepRow } from "../live/analyse";
-import { clockTime, count, outcomeClass, outcomeWords, plural, sensorColours, stepLabel } from "../live/format";
+import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, sensorColours, stepLabel } from "../live/format";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
 import { readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
@@ -186,7 +186,11 @@ function Recorded({ recording, row, sensors, colours, start, runPath }: { record
         <Link to={`${runPath}?${stepMoment(other.id).toString()}`} className="fx-other">
           <span className="fx-other-label">{stepLabel(recording, other)}</span>
           <span className="fx-other-title">{other.title}{other.role !== "test" ? <span className="lv-role-tag">{other.role}</span> : null}</span>
-          <span className={`lv-ow is-${outcomeClass(other.outcome)}`}>{outcomeWords(other.outcome)}</span>
+          <span className="fx-other-marks">
+            <span className={`lv-ow is-${outcomeClass(other.outcome)}`}>{outcomeWords(other.outcome)}</span>
+            {/* As the step's own line: the score's outcome, and the lab's rules' where they differ. */}
+            {other.outcome_with_lab_rules !== undefined && other.outcome_with_lab_rules !== other.outcome ? <span className="fx-labword">with the lab's rules: <b>{outcomeWords(other.outcome_with_lab_rules)}</b>, not in the score</span> : null}
+          </span>
           <span className="fx-other-events">{events === null ? "events not tied" : plural(events, "event")}</span>
         </Link>
       </li>)}</ul> : null}
@@ -236,7 +240,7 @@ function WhereToStart({ row, start }: { row: StepRow; start: StartWith }) {
       <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert. Start with a rule</b> that matches what the sensor recorded.</p>
       <p className="fx-why">A rule is a file under <code>lab/rules/linux/</code> in the repository.</p>
     </> : start.kind === "lab alerted" ? <>
-      <p className="fx-lead"><b>One of the lab's own rules raised an alert on it: it is caught.</b> The score counts published rules only, and none of those alerted, so the score leaves it out.</p>
+      <p className="fx-lead"><b>One of the lab's own rules alerted on it, which the score does not count.</b> The score counts published rules only, and none of those alerted.</p>
       <p className="fx-why">The lab's own rules are the files under <code>lab/rules/linux/</code> in the repository.</p>
     </> : start.kind === "alerted" ? <>
       <p className="fx-lead"><b>A published rule raised an alert on it.</b> There is nothing to fix here.</p>
@@ -256,7 +260,7 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
       <RuleGroup title="The lab's own rules that matched" empty={recording.network.detectors.some((detector) => detector.id === "lab") ? "None of the lab's own rules matched it." : "This run did not try the lab's own rules."} matches={start.lab} />
       {start.launcher.length ? <RuleGroup title="Matched only the line that starts the test, which never counts" matches={start.launcher} /> : null}
     </> : start.kind === "lab alerted" ? <>
-      <RuleGroup title="The rule that raised the alert" matches={start.alerted} />
+      <RuleGroup title={`The rule that raised the ${MARK_WORDS.lab}`} matches={start.alerted} />
       {labCommit ? <p className="fx-why">The run loaded it from commit <code>{labCommit.slice(0, 8)}</code>.</p> : null}
       {start.review.length ? <RuleGroup title="Published rules that matched, below alert level" matches={start.review} /> : null}
     </> : <>
@@ -280,7 +284,7 @@ function RuleGroup({ title, empty, matches }: { title: string; empty?: string; m
 function matchChip(match: RuleMatch): { words: string; className: string } {
   const [first] = match.alerts;
   if (first?.launcher_only === true) return { words: "launcher line", className: "is-launcher" };
-  if (match.rule.origin === "lab") return { words: first?.counts ? `would alert · ${match.rule.level}` : `lab · ${match.rule.level}`, className: "is-lab" };
+  if (match.rule.origin === "lab") return { words: first?.counts ? `${MARK_WORDS.lab} · ${match.rule.level}` : `lab · ${match.rule.level}`, className: "is-lab" };
   return { words: first?.counts ? `alert · ${match.rule.level}` : `review · ${match.rule.level}`, className: first?.counts ? "is-alert" : "is-review" };
 }
 
@@ -335,7 +339,7 @@ function Draft({ storageKey }: { storageKey: string }) {
     />
     <p className="fx-kept" id={`${id}-kept`}>Kept in this browser only. The file in the repository is what runs.</p>
     {!kept ? <p className="fx-kept is-problem" role="status">This browser could not keep the latest change, so what was typed since may go when the page closes.</p> : null}
-    <p className="fx-file" id={`${id}-file`}>Save it as a Sigma rule, a <code>.yml</code> file, in the folder of its kind under <code>lab/rules/linux/</code>: <code>process_creation/</code>, <code>file_event/</code> or <code>network_connection/</code> for Sysmon, <code>auditd/</code> for auditd. A run accepts it only if it alerts on every rerun of a test with changed arguments and on nothing in ordinary activity. Once the run accepts it, a rule at level high or critical raises an alert.</p>
+    <p className="fx-file" id={`${id}-file`}>Save it as a Sigma rule, a <code>.yml</code> file, in the folder of its kind under <code>lab/rules/linux/</code>: <code>process_creation/</code>, <code>file_event/</code> or <code>network_connection/</code> for Sysmon, <code>auditd/</code> for auditd. A run accepts it only if it is at level high or critical, it alerts on at least one published test, every test it alerts on has a rerun with changed input arguments that took effect, it alerts on every such rerun, and it matches no event of ordinary activity. Once the run accepts it, its alerts are lab alerts, which the score does not count.</p>
   </section>;
 }
 
@@ -390,8 +394,8 @@ function WhereWords({ item, oneRun }: { item: Tried; oneRun: boolean }) {
   if (item.where !== "another run") return <>{oneRun ? `This run, with the rules from ${item.where} the change.` : `This run is the one ${item.where} the change.`}</>;
   const tie = item.tie;
   return tie?.by === "published test"
-    ? <>Another run of the same list, not this one, with the same published test as the list runs it. <small className="fx-tie">Published test <code title={tie.guid}>{tie.guid.slice(0, 8)}</code></small></>
-    : <>Another run of the same list, not this one, with the same published test. <small className="fx-tie">Step <code>{item.step.id}</code></small></>;
+    ? <>Another run of the same list, not this one, with the same published test as the list runs it. <small className="fx-tie">Tied by the published test's id <code title={tie.guid}>{tie.guid.slice(0, 8)}</code></small></>
+    : <>Another run of the same list, not this one, with the same published test. <small className="fx-tie">Tied by the step's id <code>{item.step.id}</code></small></>;
 }
 
 function TriedLine({ item }: { item: Tried }) {
@@ -411,7 +415,7 @@ function TriedLine({ item }: { item: Tried }) {
       <span className="cmp-move">
         <span className="lv-sr">Before </span><span className={`lv-word is-${outcomeClass(step.before[field])}`}>{outcomeWords(step.before[field])}</span>
         <ArrowRight className="cmp-arrow" aria-hidden="true" />
-        <span className="lv-sr">, after </span><span className={`lv-word is-${outcomeClass(step.after[field])}`}>{outcomeWords(step.after[field])}</span>
+        <span className="lv-sr">, after </span><span className={`lv-word is-${outcomeClass(step.after[field])}${field === "outcome_with_lab_rules" && alertedByLabOnly(step.after) ? " is-lab" : ""}`}>{outcomeWords(step.after[field])}</span>
         {field === "outcome_with_lab_rules" ? <small>with the lab's rules</small> : null}
       </span>
     </div>

@@ -520,9 +520,12 @@ the same. Its price is not counted, in the lab's words: the lab leaves a rule
 that matched ordinary activity out of the recording. The two recordings of that
 run, about 1.2 MB each, ship as one entry of the list with a second file.
 
-The Runs screen lists the pairs under "Before against after" as the turns of
-one loop, in the order they happened (by when the later of their runs
-started). Each turn has a short name (`New <sensor> settings`, the rule's
+The Runs screen lists the pairs that declare a change under "Before against
+after" as the turns of one loop: those shipped with BlueFire first, then the
+imported ones, whatever their dates, each part in the order it happened (by
+when the later of its runs started). A comparison that declares no change is
+listed under them on its own, with no number, and opens as a comparison
+outside the loop. Each turn has a short name (`New <sensor> settings`, the rule's
 change such as "A new rule" with its title under it, or the declared change),
 the marks of what moved before and after in `outcome_with_lab_rules` (an alert
 of the lab's rules alone drawn in violet and said to be theirs), a small
@@ -536,13 +539,15 @@ comparison, the delta's counts in words. It opens one at
 `#/runs/compared/<id>`. A recording that is one side of a listed pair is opened
 from its pair, by its file, and not listed again on its own, so that the two
 runs of one pair do not read as unrelated runs. The Overview leads with the
-newest run listed on its own and the turns of the loop under it, and still
-offers the newest of what the Runs screen lists among its recent outcomes.
+first run the Runs screen lists on its own (what was shipped with BlueFire
+before what was imported, whatever the dates) and the turns of the loop under
+it, holds their place while they load, and still offers the newest of what
+the Runs screen lists among its recent outcomes.
 
 The page of a pair draws the delta and the two recordings it names, and nothing
 is compared there: the two turns of a loop are never compared with each other.
 At the top, where the comparison stands among those the service keeps (a
-stepper of the turns, by name), the headline of what the change did, the tests
+stepper of the turns, by name, an imported turn marked as imported), the headline of what the change did, the tests
 it moved, and the basis of the verdict (`claim`, and whether it is one pair of
 runs side by side or one run read with two rule sets). Then the move: the marks
 before and after with the declared change between them, or, when several steps
@@ -551,8 +556,8 @@ what one recording holds of the step: the host and whether the step took
 effect, each sensor with the events it recorded of it, each rule engine with
 what it matched, an alert or a match below alert level; what reads the same on
 both stages is drawn dim and named once under them. Each stage links to the
-step in the live view, paused at its start, and the after stage offers Fix this when the step still
-raises no alert. Under the stages: the price (false alerts of published rules on
+step in the live view, paused at its start, and the after stage offers Fix this, which opens
+the step's fix page in the after run, when the step still raises no alert. Under the stages: the price (false alerts of published rules on
 ordinary activity, `score.false_alerts` and `ordinary` of each recording, with
 the delta's price in its words; or "Not counted" when the price is not counted,
 with the rule's reason; or "Not known" under a limit), what else moved (every
@@ -577,8 +582,9 @@ when only the after run holds them, and the audit keys only one run's events
 carry; for a change of the lab's rules, the events each alert of such a rule
 rests on, and each rule of `lab_rules` with its change, file, how each
 evaluation judged it and its text line by line as the recording carries it),
-every published test of the step's technique in the after recording with its
-mark and the rules that alerted on it, and links to play either run. The
+the published tests of the step's technique that ran in the after recording,
+each once, the canary's test among them, with its mark and the rules that
+alerted on it, and links to play either run. The
 step's whole detail from both recordings, each by its file, opens under the
 stages, and the address keeps it (`?step=<id>&detail=1`).
 

@@ -128,6 +128,11 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(noVerdict).getByRole("link", { name: "No verdict." })).toBeVisible();
     expect(within(noVerdict).getByText("Nothing declared")).toBeVisible();
     expect(within(noVerdict).getByText("No verdict: the before recording has no source.setup, so what it was made with is not known (and 1 more reason)")).toBeVisible();
+    // A comparison that declares no change is listed and opens as a comparison, outside the loop: no turn, no number.
+    expect(within(within(list).getByRole("list", { name: "The changes to the defense, in order" })).getAllByRole("listitem")).toEqual([changed]);
+    expect(within(list).getByRole("list", { name: "Comparisons that declare no change" })).toContainElement(noVerdict);
+    expect(noVerdict).not.toHaveTextContent(/Turn/);
+    expect(within(noVerdict).getByRole("link", { name: "See the difference" })).toHaveAttribute("href", "/runs/compared/0000000000000002");
     // Each run of a pair opens from its pair, by the file the pair names, and is not listed again as a run of its own.
     expect(within(changed).getByRole("link", { name: /^Play the before run/ })).toHaveAttribute("href", `/runs/recorded/lab-run-1/${"a".repeat(64)}`);
     expect(within(changed).getByRole("link", { name: /^Play the after run/ })).toHaveAttribute("href", `/runs/recorded/lab-run-2/${"a".repeat(64)}`);
@@ -203,6 +208,33 @@ describe("the Runs screen's recorded runs", () => {
     // The run evaluated twice opens with either set of rules, each by its own file.
     expect(within(rule).getByRole("link", { name: /^Play with the rules before/ })).toHaveAttribute("href", `/runs/recorded/rule-run/${"b".repeat(64)}`);
     expect(within(rule).getByRole("link", { name: /^Play with the rules after/ })).toHaveAttribute("href", `/runs/recorded/rule-run/${"c".repeat(64)}`);
+  });
+
+  it("keeps the turns shipped with BlueFire first, before an imported one from earlier runs, which is marked imported", async () => {
+    vi.spyOn(api, "recordings").mockResolvedValue({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 });
+    const counts = { paired: 91, same: 90, better: 1, worse: 0, changed: 0, "not attributable": 0, "without cause": 0, "no verdict": 0, new: 0, gone: 0 };
+    const side = (id: string, started: string) => ({ sha256: "a".repeat(64), id, environment: "GitHub-hosted runner", started });
+    const at = (id: string, started: string) => ({ ...shipped, id, source: { ...shipped.source, started } });
+    const ours: DeltaSummary = {
+      id: "0000000000000006", claim: "one pair of runs", declared_change: "sensors:auditd", comparable: true, refused_because: [], counts,
+      before: side("ours-before", "2026-11-24T09:00:00Z"), after: side("ours-after", "2026-11-24T09:10:00Z"),
+      recordings: { before: at("ours-before", "2026-11-24T09:00:00Z"), after: at("ours-after", "2026-11-24T09:10:00Z") },
+      origin: { kind: "shipped", run_url: "https://github.com/example/bluefire/actions/runs/9", note: "Shipped." },
+    };
+    const theirs: DeltaSummary = {
+      ...ours, id: "0000000000000007", declared_change: "sensors:sysmon",
+      before: side("theirs-before", "2026-11-20T09:00:00Z"), after: side("theirs-after", "2026-11-20T09:10:00Z"),
+      recordings: { before: at("theirs-before", "2026-11-20T09:00:00Z"), after: at("theirs-after", "2026-11-20T09:10:00Z") },
+      origin: { kind: "imported", note: "Imported." },
+    };
+    mount({ deltas: [theirs, ours] });
+    const loop = await screen.findByRole("list", { name: "The changes to the defense, in order" });
+    const [first, second] = within(loop).getAllByRole("listitem");
+    if (!first || !second) throw new Error("Both turns should be listed.");
+    expect(first).toHaveTextContent("Turn 1: New auditd settings");
+    expect(first).toHaveTextContent("Shipped with BlueFire");
+    expect(second).toHaveTextContent("Turn 2: New sysmon settings");
+    expect(second).toHaveTextContent("Imported, not verified by BlueFire");
   });
 
   it("shows no pairs, and no heading for them, when the service keeps none", async () => {

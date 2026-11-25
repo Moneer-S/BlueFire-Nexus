@@ -69,7 +69,7 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await expect(real.getByText("60 published tests on one Linux host", { exact: true })).toBeVisible();
   await expect(real.getByText("3 of 60 tests alerted, 56 seen, 1 unseen")).toBeVisible();
   // The score counts only published rules; what the lab's own rules alert on is said apart, never as "no alert".
-  await expect(real.getByText("With the lab's own rules, 17 of 60 would alert. The score counts only published rules.")).toBeVisible();
+  await expect(real.getByText("With the lab's own rules too, 17 of 60 alerted. The score counts only published rules.")).toBeVisible();
   await expect(real.getByRole("link", { name: /^Play the run/ })).toHaveAttribute("href", /^#\/runs\/recorded\/[A-Za-z0-9_-]+$/);
   const turns = real.getByRole("list", { name: "The changes to the defense, in order" });
   await expect(turns.getByRole("link")).toHaveText(["Clear Bash history (echo) went from unseen to seen.", "4 steps went from seen to alerted."]);

@@ -26,9 +26,11 @@ export function ruleChangeWords(change: DeltaLabRule["change"]): string {
 /**
  * What changed, in the words a list and a page lead with: for a change of the
  * lab's rules that the delta names one by one, the rule ("A new rule: Shell
- * History File Truncated In Place"); otherwise the declared change.
+ * History File Truncated In Place"); for a sensor's settings, the turn's own
+ * name ("New auditd settings"); otherwise the declared change.
  */
 export function pairChangeWords(pair: Pick<Delta, "declared_change" | "lab_rules">): string {
+  if (pair.declared_change?.startsWith("sensors:")) return turnName(pair);
   const rules = pair.declared_change === LAB_RULES ? pair.lab_rules ?? [] : [];
   const [only] = rules;
   if (rules.length === 1 && only) return `${ruleChangeWords(only.change)}: ${only.title}`;
@@ -130,8 +132,9 @@ const GROUPS: Record<string, string> = {
   tools: "the version of",
 };
 
-/** A name of the setup in words: `sensors:auditd` is "the settings of sensor auditd". */
+/** A name of the setup in words: `sensors:auditd` is "the settings of sensor auditd", `detectors:lab` "the lab's rules". */
 export function setupWords(name: string): string {
+  if (name === LAB_RULES) return "the lab's rules";
   const cut = name.indexOf(":");
   if (cut < 0) return GROUPS[name] ?? name;
   const group = name.slice(0, cut);

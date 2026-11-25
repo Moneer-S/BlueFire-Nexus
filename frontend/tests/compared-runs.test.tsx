@@ -364,8 +364,9 @@ describe("the page of a change to the defense", () => {
     expect(beforeStage).toHaveTextContent("Nothing of the test was recorded besides its launcher's start.");
     expect(afterStage).toHaveTextContent("Sysmon recorded 1 event. No rule matched it.");
     expect(within(beforeStage).getByRole("link", { name: "Play it in the run before" })).toHaveAttribute("href", `/runs/recorded/run-before/${"a".repeat(64)}?step=2&at=0&paused=1`);
-    // A step still with no alert offers Fix this, in the run after.
-    expect(within(afterStage).getByRole("link", { name: "Fix this" })).toHaveAttribute("href", `/runs/recorded/run-after/${"a".repeat(64)}?step=2&paused=1&mode=analyse&select=2`);
+    // A step still with no alert offers Fix this, which opens the step's fix page in the run after, once on the page.
+    expect(within(afterStage).getByRole("link", { name: "Fix this" })).toHaveAttribute("href", `/runs/recorded/run-after/${"a".repeat(64)}/fix/2?step=2&at=0&paused=1&mode=analyse&select=2`);
+    expect(screen.getAllByRole("link", { name: /^Fix this/ })).toHaveLength(1);
 
     await user.click(within(stages).getByRole("button", { name: "Every detail of this step, from both runs" }));
     const detail = await screen.findByRole("region", { name: "Clear Bash history (echo), every detail before and after" });
@@ -388,7 +389,7 @@ describe("the page of a change to the defense", () => {
     const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4), step("3", 5, 6)] }), id: "run-before" };
     const after = { ...recording({ steps: [step("1", 1, 2, { outcome: "unseen" }), step("2", 3, 4, { outcome_with_lab_rules: "alerted" }), step("3", 5, 6)] }), id: "run-after" };
     after.score = { ...after.score, seen: 2, unseen: 1 };
-    const { fetched } = mount(delta);
+    const { fetched } = mount(delta, { loop: [pairSummary(delta, ID)] });
     fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
 
     const next = await screen.findByRole("region", { name: "What comes next" });
@@ -406,7 +407,7 @@ describe("the page of a change to the defense", () => {
     const noEffect = { happened: { answer: "not attempted", basis: "the test did not start" }, visibility: { answer: "no telemetry", basis: "no events", events: 0 }, outcome: "no effect" } as const;
     const after = { ...recording({ steps: [step("1", 1, 2, { outcome: "alerted" }), step("2", 3, 4, noEffect), step("3", 5, 6, noEffect)] }), id: "run-after" };
     after.score = { ...after.score, seen: 0, unseen: 0 };
-    const { fetched } = mount(delta);
+    const { fetched } = mount(delta, { loop: [pairSummary(delta, ID)] });
     fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
 
     const next = await screen.findByRole("region", { name: "What comes next" });
@@ -417,6 +418,19 @@ describe("the page of a change to the defense", () => {
     expect(card).toHaveTextContent("Every test the run can judge raised an alert or was stopped");
     expect(card).toHaveTextContent("See the run after. 2 tests had no effect, so the run says nothing about them");
     expect(card).not.toHaveTextContent("The tests with no alert");
+  }, 20_000);
+
+  it("offers no next change on a comparison that declares none, since it is no turn of the loop", async () => {
+    const delta = sensorDelta();
+    const before = { ...recording({ steps: [step("1", 1, 2)] }), id: "run-before" };
+    const after = { ...recording({ steps: [step("1", 1, 2, { outcome: "unseen" })] }), id: "run-after" };
+    const { fetched } = mount(delta, { loop: [{ ...pairSummary(delta, ID), declared_change: null }] });
+    fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
+
+    const go = await screen.findByRole("region", { name: "Where to go from here" });
+    expect(await within(go).findByRole("link", { name: /^Play the run after/ })).toBeVisible();
+    expect(within(go).queryByRole("link", { name: /^Next change, not made yet/ })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "The defender loop" })).toBeNull();
   }, 20_000);
 
   it("shows the alert a changed rule no longer raises, with the rule and the event it matched, from the before recording alone", async () => {
@@ -464,7 +478,7 @@ describe("the page of a change to the defense", () => {
     expect(evidence).toHaveTextContent("Clear Bash history (echo)");
     expect(evidence).toHaveTextContent("with the rules before");
     expect(within(evidence).getByText("/home/bluefire-lab/.bash_history")).toBeVisible();
-    expect(evidence).toHaveTextContent("alert · high");
+    expect(evidence).toHaveTextContent("lab alert · high");
   }, 20_000);
 });
 
@@ -472,12 +486,19 @@ describe("the two comparisons shipped with the app", () => {
   it("reads the change of auditd's settings as the first turn of the loop: the test, the event it now records, and the next turn", async () => {
     const { delta, files } = shippedSensor();
     const rule = shippedRule();
-    const loop = [pairSummary(delta, "0000000000000001"), pairSummary(rule.delta, "0000000000000002")];
+    const shipped = (summary: DeltaSummary): DeltaSummary => ({ ...summary, origin: { kind: "shipped", run_url: "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367", note: "Shipped with BlueFire." } });
+    // An imported comparison listed first, from runs no later than the shipped ones, and one that declares no change.
+    const imported = pairSummary(rule.delta, "0000000000000003");
+    const undeclared = { ...pairSummary(delta, "0000000000000004"), declared_change: null };
+    const loop = [imported, undeclared, shipped(pairSummary(delta, "0000000000000001")), shipped(pairSummary(rule.delta, "0000000000000002"))];
     mount(delta, { files, loop, id: "0000000000000001" });
     expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
     const bar = screen.getByRole("navigation", { name: "The defender loop" });
     expect(within(bar).getByText("New auditd settings").closest("[aria-current]")).toHaveAttribute("aria-current", "page");
+    // What was shipped stays turn 1 and turn 2; the imported turn comes after them, marked; the one that declares no change is no turn.
     expect(within(bar).getByRole("link", { name: /^Turn 2:\s*A new rule$/ })).toHaveAttribute("href", "/runs/compared/0000000000000002");
+    expect(within(bar).getByRole("link", { name: /^Turn 3:\s*A new rule,\s*Imported, not verified by BlueFire$/ })).toHaveAttribute("href", "/runs/compared/0000000000000003");
+    expect(within(bar).queryByText("Nothing declared")).toBeNull();
     // The headline names the test; the line under it says what the test is, and does not name it again.
     expect(await screen.findByText("A published test of Atomic Red Team for T1070.003, Indicator Removal: Clear Command History.")).toBeVisible();
 
@@ -498,9 +519,10 @@ describe("the two comparisons shipped with the app", () => {
     expect(within(difference).getByText("/home/bluefire-lab/.bash_history")).toBeVisible();
     expect(within(difference).getByText("only after")).toBeVisible();
     expect(difference).toHaveTextContent("It marks 9 events on 9 steps.");
-    const ways = screen.getByRole("region", { name: "Every published test of T1070.003" });
-    expect(ways).toHaveTextContent("2 of 4 alerted.");
-    expect(within(ways).getAllByRole("listitem")).toHaveLength(4);
+    // Each published test of the technique that ran, once: the canary's, which ran twice, among them.
+    const ways = screen.getByRole("region", { name: "The 5 published tests of T1070.003 that ran" });
+    expect(ways).toHaveTextContent("Each published test of Indicator Removal: Clear Command History in the run after, the canary among them. With published rules, 2 of 5 alerted; with the lab's own rules too, 3 of 5.");
+    expect(within(ways).getAllByRole("listitem")).toHaveLength(5);
   }, 30_000);
 
   it("reads the new rule as one run evaluated twice: four rows, a row chooses the stages, the rule's text and the price not counted", async () => {
@@ -508,7 +530,7 @@ describe("the two comparisons shipped with the app", () => {
     const { user, fetched } = mount(delta, { files });
     expect(await screen.findByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
     expect(screen.getByText("One run, its telemetry read with two rule sets, 24 Nov 2026.")).toBeVisible();
-    expect(screen.getByText("Only the rules of detector lab differed.")).toBeVisible();
+    expect(screen.getByText("Only the lab's rules differed.")).toBeVisible();
     const move = screen.getByRole("region", { name: "What the change did" });
     const rows = within(move).getAllByRole("button", { pressed: false }).concat(within(move).getAllByRole("button", { pressed: true }));
     expect(rows).toHaveLength(4);
@@ -518,7 +540,9 @@ describe("the two comparisons shipped with the app", () => {
     expect(echoAgain).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByLabelText("Address")).toHaveTextContent("?step=variant%3Acbf506a5%3A27e9e5");
     const stages = screen.getByRole("group", { name: "Clear Bash history (echo), before and after" });
-    expect(await within(stages).findByRole("article", { name: /^After with the new rule/ })).toHaveTextContent("The new rule raised an alert: Shell History File Truncated In Place (high).");
+    expect(await within(stages).findByRole("article", { name: /^After with the new rule/ })).toHaveTextContent("The new rule alerted, which the score does not count: Shell History File Truncated In Place (high).");
+    // The same match is a lab alert on the stage's chip as in the step's own sentence.
+    expect(within(stages).getByRole("article", { name: /^After with the new rule/ })).toHaveTextContent("lab alert · high");
 
     expect(screen.getByRole("region", { name: "What it cost" })).toHaveTextContent("Not counted");
     const rule = screen.getByRole("article", { name: "Shell History File Truncated In Place" });

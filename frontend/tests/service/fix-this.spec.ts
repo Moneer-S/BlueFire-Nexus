@@ -48,7 +48,7 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
 
   // Runs, the watch's before run, the test nobody saw.
   await page.getByRole("link", { name: "Runs", exact: true }).click();
-  const watch = page.getByRole("region", { name: "Before against after" }).getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  const watch = page.getByRole("region", { name: "Before against after" }).getByRole("listitem").filter({ hasText: "New auditd settings" });
   await watch.getByRole("link", { name: /^Play the before run/ }).click();
   await page.getByRole("button", { name: "Analyse", exact: true }).click();
   await page.getByRole("button", { name: TEST, exact: true }).click();
@@ -67,12 +67,12 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
 
   // What was already tried, on the first screen: the watch, of which this run is the before, and the rule, on a later run tied by the test's id.
   const tried = page.getByRole("region", { name: /^What was already tried/ });
-  const watchLine = tried.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  const watchLine = tried.getByRole("listitem").filter({ hasText: "New auditd settings" });
   const ruleLine = tried.getByRole("listitem").filter({ hasText: `A new rule: ${RULE}` });
   await expect(watchLine).toContainText("This run is the one before the change.");
   await watchLine.getByText("The comparison's own words", { exact: true }).click();
   await expect(watchLine).toContainText("no telemetry to recorded by the sensors");
-  await expect(ruleLine).toContainText(`Another run of the same list, not this one, with the same published test. Step ${unseen.id}`);
+  await expect(ruleLine).toContainText(`Another run of the same list, not this one, with the same published test. Tied by the step's id ${unseen.id}`);
   const fixing = page.url();
 
   // The watch's own page, at the step.
@@ -83,7 +83,7 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
   await expect(page).toHaveURL(fixing);
 
   // The same test in the after run, and "Fix this" there: the event the watch recorded, and an empty draft.
-  await page.getByRole("region", { name: /^What was already tried/ }).getByRole("listitem").filter({ hasText: "The settings of sensor auditd" }).getByRole("link", { name: "Open the same step in the after run" }).click();
+  await page.getByRole("region", { name: /^What was already tried/ }).getByRole("listitem").filter({ hasText: "New auditd settings" }).getByRole("link", { name: "Open the same step in the after run" }).click();
   await expect(page.getByRole("heading", { name: TEST, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Fix this", exact: true }).click();
   await expect(page.getByRole("heading", { level: 1, name: TEST })).toBeVisible();
@@ -95,7 +95,7 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
   await expect(page.getByRole("textbox", { name: "Your rule" })).toHaveValue("");
   await expect(page.getByText("Kept in this browser only. The file in the repository is what runs.")).toBeVisible();
   const afterTried = page.getByRole("region", { name: /^What was already tried/ });
-  await expect(afterTried.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" })).toContainText("This run is the one after the change.");
+  await expect(afterTried.getByRole("listitem").filter({ hasText: "New auditd settings" })).toContainText("This run is the one after the change.");
 
   // The rule's comparison, where the ids tie the runs, and on its after recording the test alerted with the rule that alerted.
   await afterTried.getByRole("listitem").filter({ hasText: `A new rule: ${RULE}` }).getByRole("link", { name: "Open the comparison at this step" }).click();
@@ -105,7 +105,7 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
   // The test comes before its run with changed input arguments, which has the same title.
   await page.getByRole("button", { name: TEST, exact: true }).first().click();
   await page.getByRole("button", { name: "Fix this", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("One of the lab's own rules raised an alert on it: it is caught.");
+  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("One of the lab's own rules alerted on it, which the score does not count.");
   const rule = page.getByRole("region", { name: "Rules that matched it" }).getByRole("article", { name: RULE });
   await expect(rule).toContainText("accepted");
   await expect(rule).toContainText("lab/rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml");
@@ -128,10 +128,10 @@ test("Fix this on the example shipped with the app reaches both shipped comparis
   await page.goto(page.url().replace(/(#\/runs\/recorded\/[A-Za-z0-9_-]+).*$/, "$1/fix/43"));
   await expect(page.getByRole("heading", { level: 1, name: TEST })).toBeVisible();
   const tried = page.getByRole("region", { name: /^What was already tried/ });
-  const watchLine = tried.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  const watchLine = tried.getByRole("listitem").filter({ hasText: "New auditd settings" });
   const ruleLine = tried.getByRole("listitem").filter({ hasText: `A new rule: ${RULE}` });
   for (const line of [watchLine, ruleLine]) {
-    await expect(line).toContainText("Another run of the same list, not this one, with the same published test as the list runs it. Published test cbf506a5");
+    await expect(line).toContainText("Another run of the same list, not this one, with the same published test as the list runs it. Tied by the published test's id cbf506a5");
   }
   await expect(watchLine).toBeInViewport({ ratio: 1 });
   // The watch's page opens at the same test, now recorded.
@@ -145,6 +145,6 @@ test("Fix this on the example shipped with the app reaches both shipped comparis
   await expect(page).toHaveURL(/\?step=test%3Acbf506a5$/);
   // Of the four steps it moved, the one chosen is the test as published, and the stages draw it.
   await expect(page.getByRole("region", { name: "What the change did" }).getByRole("button", { pressed: true })).toContainText(/^Clear Bash history \(echo\)\s*as published/);
-  await expect(page.getByRole("group", { name: `${TEST}, before and after` }).getByRole("article", { name: /^After/ })).toContainText("The new rule raised an alert");
+  await expect(page.getByRole("group", { name: `${TEST}, before and after` }).getByRole("article", { name: /^After/ })).toContainText("The new rule alerted, which the score does not count");
   expect(problems).toEqual([]);
 });
