@@ -1559,13 +1559,13 @@ The `range-one` job keeps `recording.json`, the three ECS files and
 `replay.html` in its artifact, and shows the path's score in its summary.
 
 **What a run shows.** In
-[run 45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968)
+[run 45546532335](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45546532335)
 on a hosted runner (its job "range one's path, sealed and watched", and the
 artifact `range-one-run`), the stock rules raised their first alert at level
-12 or higher 61.56 s after the first step started: rule 40112, "Multiple
+12 or higher 69.46 s after the first step started: rule 40112, "Multiple
 authentication failures followed by a success", on `s01`. The path reached its
-goal 628.44 s after that start, so the alert came 566.88 s before the goal.
-Beside it, on the ordinary day of 11.48 minutes: 0 false alerts at level 12 or
+goal 724.59 s after that start, so the alert came 655.13 s before the goal.
+Beside it, on the ordinary day of 13.11 minutes: 0 false alerts at level 12 or
 higher. The clock check held: 19 program starts in the steps' sessions, none
 outside its step's daemon times.
 
@@ -1579,11 +1579,9 @@ outside its step's daemon times.
 | s05b | web to db | 1 event | db | address 1 | none | seen |
 | s06 | web | 1 event | web | session 1 | none | seen |
 | s07 | web | 3 events | web | account 1, session 2 | none | seen |
-| s08 | web to build | not yet shown | not yet shown | not yet shown | none | seen |
+| s08 | web to build | 20 events | web 3, build 17 | account 18, address 1, session 1 | none | seen |
 | s09 | web | 5 events | web | account 2, session 3 | none | seen |
 | s10 | web to inet | 1 event | web | session 1 | none | seen |
-
-<!-- s08's row: the score now ties s08's own tar of /etc on build to s08, not to the engine. Fill in its Recorded, By and Tied by from the score.md of this change's own range-one CI run, and link that run here. -->
 
 One step alerted and ten were seen with no alert; none was unseen. **Each of
 the two port scans is tied by one line only.** On `build` it is sshd's line
@@ -1594,10 +1592,22 @@ pipe, are in the archive but count only as coincident, since their text does
 not name `web`. On `db` it is MariaDB's line about a connection from `web`'s
 container that closed without authentication. Each is tied by the `address`
 rule because its text names `web`. Where a step is tied by the `address`
-rule alone, `score.md` and the recording now quote its lines (up to three) in
-that step's own sentence; run 45507244968 was scored before they did. The range has no network sensor, so a scan of every port shows only
-where an open port's service logs a broken connection. One run is one sample:
-how much this varies between runs is not yet shown.
+rule alone, `score.md` and the recording quote its lines (up to three) in
+that step's own sentence, as this run's summary does for both scans. The
+range has no network sensor, so a scan of every port shows only where an open
+port's service logs a broken connection.
+
+One run is one sample. Three earlier hosted runs of the same job,
+[45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968),
+[45521926761](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45521926761)
+and
+[45524094071](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45524094071),
+gave the same outcome for every step, with the first alert after 61.56 s,
+77.05 s and 76.58 s and the goal after 628.44 s, 731.31 s and 730.87 s. They
+were scored before a program start that snoopy logged was counted for the
+engine by its tag alone, so `s08` has 19 events there: its own archive of
+`/etc` was counted as the engine's. Four runs do not say how far the times
+can vary.
 
 ## Not yet shown
 
