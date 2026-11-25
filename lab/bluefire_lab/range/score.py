@@ -913,11 +913,32 @@ def _cell(value: object) -> str:
 
 
 def summary(manifest: dict) -> str:
-    """The ordinary day's score as Markdown, for a CI job's summary."""
+    """The ordinary day's score as Markdown, for a CI job's summary.
+
+    A run that did not end sealed is headed "not a result", with its result, exit code and reason,
+    on every branch: what could or could not be scored follows under that heading.
+    """
 
     section = manifest.get("ecs") or {}
     score = manifest.get("score")
+    invalid = []
+    if manifest.get("result") != "sealed":
+        invalid = [
+            f"### Ordinary day of {manifest.get('range')}: not a result, the run ended "
+            f"{manifest.get('result')} (exit code {manifest.get('exit_code')})",
+            "",
+            f"Reason: {manifest.get('reason')}",
+            "",
+        ]
     if section.get("error") or not score:
+        if invalid:
+            return "\n".join(
+                [
+                    *invalid,
+                    f"The ordinary day was not scored: the conversion to ECS failed: {section.get('error')}",
+                    "",
+                ]
+            )
         return (
             f"### Ordinary day of {manifest.get('range')}: not scored\n\n"
             f"The conversion to ECS failed: {section.get('error')}\n"
@@ -937,6 +958,10 @@ def summary(manifest: dict) -> str:
         else []
     )
     if not score["scored"]:
+        if invalid:
+            return "\n".join(
+                [*invalid, f"The ordinary day was not scored: {score['not scored']}.", "", *counts]
+            )
         return "\n".join(
             [f"### Ordinary day of {manifest.get('range')}: not scored: {score['not scored']}", "", *counts]
         )
@@ -946,17 +971,9 @@ def summary(manifest: dict) -> str:
     minutes = denominators["minutes of activity"]
     title = f"{score['false alerts']} false alerts at level {level} or higher on {minutes} minutes of ordinary work"
     lines = []
-    if manifest.get("result") != "sealed":
+    if invalid:
         # A run that did not end sealed has no score to headline: what it recorded is shown, labelled.
-        lines += [
-            f"### Ordinary day of {manifest.get('range')}: not a result, the run ended "
-            f"{manifest.get('result')} (exit code {manifest.get('exit_code')})",
-            "",
-            f"Reason: {manifest.get('reason')}",
-            "",
-            f"What the run recorded, which is not a score of the range: {title}.",
-            "",
-        ]
+        lines += [*invalid, f"What the run recorded, which is not a score of the range: {title}.", ""]
     else:
         lines += [f"### Ordinary day of {manifest.get('range')}: {title}", ""]
     lines += [
@@ -1037,6 +1054,8 @@ def path_summary(manifest: dict) -> str:
         lines += [
             f"### Path of {manifest.get('range')}: not a result, the run ended {manifest.get('result')} "
             f"(exit code {manifest.get('exit_code')})",
+            "",
+            f"Reason: {manifest.get('reason')}",
             "",
             f"What the run recorded, which is not a score of the range: {race_['says']}.",
             "",

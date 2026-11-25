@@ -1880,7 +1880,7 @@ class Run:
                 self.activity_tail()
             after = self.sealed_checks(watch_command, services_up=True)
             if not self.phase("after path", after):
-                reason = "the seal failed after the path: " + failing(after)
+                reason = last_seal_reason(self.manifest.get("path"), failing(after))
                 return code
             if self.spec.wazuh:
                 self.end()
@@ -2058,6 +2058,20 @@ def failing(checks: list[dict]) -> str:
     """The names of the checks that failed, for a run's reason."""
 
     return ", ".join(sorted({item["check"] for item in checks if not item["pass"]}))
+
+
+def last_seal_reason(path: dict | None, failed: str) -> str:
+    """The reason of a run whose seal failed at its last check, worded by whether a step of the path ran.
+
+    `path` is the manifest's record of the path, None for a range without one: a step is in it from
+    the moment it starts.
+    """
+
+    if (path or {}).get("steps"):
+        return "the seal failed after the path: " + failed
+    if path is not None:
+        return "the seal failed before any step of the path ran: " + failed
+    return "the seal failed at the end of the run: " + failed
 
 
 def outcome(
