@@ -49,8 +49,8 @@ function bluefire(...args: string[]): void {
 }
 
 /** Runs the lab's command line from this checkout, as the lab workflow does after a run. */
-function bluefireLab(...args: string[]): void {
-  const run = spawnSync(process.env.BLUEFIRE_PYTHON ?? "python3", ["-m", "bluefire_lab", ...args], { cwd: join(repository, "lab"), encoding: "utf-8" });
+function bluefireLab(environment: Record<string, string>, ...args: string[]): void {
+  const run = spawnSync(process.env.BLUEFIRE_PYTHON ?? "python3", ["-m", "bluefire_lab", ...args], { cwd: join(repository, "lab"), encoding: "utf-8", env: { ...process.env, ...environment } });
   if (run.status !== 0) throw new Error(`bluefire-lab ${args.join(" ")} exited with ${run.status}:\n${run.stdout}\n${run.stderr}`);
 }
 
@@ -90,11 +90,15 @@ test.beforeAll(() => {
   unsaidPage = join(workspace, "unsaid.html");
   writeFileSync(unsaidPage, `${made.slice(0, start)}null${made.slice(made.indexOf("</script>", start))}`);
 
-  // The page a run of the lab leaves beside its recording, from the same template, written by the run that recorded it.
+  // The page a run of the lab leaves beside its recording, from the same template, written by the run that recorded it:
+  // GitHub's own variables name that run, as they do inside it.
   const labRecording = join(workspace, "recording.json");
   writeFileSync(labRecording, JSON.stringify(shipped));
   labPage = join(workspace, "lab.html");
-  bluefireLab("replay", labRecording, "--template", join(repository, "bluefire/ui/replay.html"), "--out", labPage, "--run-url", String(shipped.source.run_url));
+  const recordedIn = /^(https:\/\/[^/]+)\/(.+)\/actions\/runs\/(\d+)$/.exec(String(shipped.source.run_url));
+  if (!recordedIn?.[1] || !recordedIn[2] || !recordedIn[3]) throw new Error("The shipped recording names no CI run.");
+  const inThatRun = { GITHUB_ACTIONS: "true", GITHUB_SERVER_URL: recordedIn[1], GITHUB_REPOSITORY: recordedIn[2], GITHUB_RUN_ID: recordedIn[3] };
+  bluefireLab(inThatRun, "replay", labRecording, "--template", join(repository, "bluefire/ui/replay.html"), "--out", labPage);
 });
 
 test.afterAll(() => {

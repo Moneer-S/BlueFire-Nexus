@@ -670,3 +670,104 @@ def test_an_alert_the_managers_time_puts_before_its_line_counts_from_its_line(tm
     assert "raised" not in made["alerts"][0]
     assert made["steps"][0]["first_alert"] == made["alerts"][0]["time"]
     assert any("behind" in note for note in made["notes"])
+
+
+def test_a_program_start_snoopy_logged_is_the_engines_by_its_tag_alone(tmp_path: Path) -> None:
+    # s03's own tar names the engine's mark file, whose name holds the run's ID, as a glob of /etc does.
+    mark = "bluefire-mark-20261101T000000Z-abcdef.txt"
+    archive = [
+        snoopy("web", T0 + 20.1, "(undefined)", f"tar -zcvf - adduser.conf {mark} buildbot"),
+        line("web", T0 + 20.15, "/var/log/auth.log", f"logger[9]: {mark}"),
+    ]
+    folder = small_run(tmp_path, archive, [])
+
+    score_of(folder)
+
+    labels = [document["labels"] for document in ecs_lines(folder, score.EVENTS_FILE)]
+    assert (labels[0]["origin"], labels[0]["step_id"], labels[0]["tied_by"]) == ("step", "s03", "account")
+    # Any other line that holds the run's ID is still the engine's.
+    assert labels[1]["origin"] == "engine"
+
+
+def test_the_recordings_title_counts_steps_and_the_published_tests_they_run(tmp_path: Path) -> None:
+    folder = small_run(tmp_path)
+    scored(folder)
+    assert json.loads((folder / recording.FILE).read_text())["title"] == (
+        "2 steps of 2 published tests in range-one"
+    )
+
+    # The same published test run twice, as the port scan is against two hosts.
+    rewrite(folder, lambda m: m["path"]["steps"][1].update(guid=m["path"]["steps"][0]["guid"]))
+    scored(folder)
+    assert json.loads((folder / recording.FILE).read_text())["title"] == (
+        "2 steps of 1 published test in range-one"
+    )
+
+
+def test_the_recording_of_an_invalid_run_does_not_say_the_tests_ran_inside_the_sealed_range(
+    tmp_path: Path,
+) -> None:
+    folder = small_run(tmp_path)
+
+    def invalid(manifest: dict) -> None:
+        manifest.update(result="invalid", exit_code=4, reason="the seal failed after the path: event watch")
+        manifest["path"]["planned"].append("s04")
+
+    rewrite(folder, invalid)
+    scored(folder)
+
+    said = json.loads((folder / recording.FILE).read_text())["attacker"]["description"]
+    assert "sealed range" not in said
+    assert said.endswith(
+        "The engine started 2 steps of the path's 3 in turn, through docker exec as the step's account; then "
+        "the run ended invalid: the seal failed after the path: event watch."
+    )
+
+
+def test_a_step_seen_by_the_address_rule_alone_names_its_line_and_counts_in_the_singular(
+    tmp_path: Path,
+) -> None:
+    text = "sshd[51]: banner exchange: Connection from 10.9.1.2 port 4100: invalid format"
+    folder = small_run(tmp_path, [line("build", T0 + 20.1, "/var/log/auth.log", text)], [])
+    rewrite(folder, lambda m: m["path"]["steps"][1].update(to=["build"]))
+
+    manifest = score_of(folder)
+
+    s03 = manifest["score"]["path"]["steps"][1]
+    said = recording.basis(s03, 12)
+    assert said.startswith(
+        "1 archived event tied to the step (1 by address), only because the line names web's address or "
+        "container name, or comes from its address: build, /var/log/auth.log: "
+    )
+    assert said.endswith(text)
+    summary = (folder / "score.md").read_text()
+    assert "| telemetry only (1 event) |" in summary
+    assert "s03 is seen only through 1 line tied by the address rule alone: the line names web's" in summary
+
+
+def test_the_basis_of_a_step_counts_in_the_singular_and_says_what_its_time_span_is() -> None:
+    entry = {
+        "visibility": "telemetry only",
+        "host": "web",
+        "events": 1,
+        "events by tie": {"session": 1},
+        "first_alert": None,
+        "alerts": 1,
+        "coincident events": 1,
+    }
+
+    assert recording.basis(entry, 12) == (
+        "1 archived event tied to the step (1 by session); 1 alert below level 12; 1 more fell only inside the "
+        "step's time span, from its start to 5 s after its end, on a host it ran on or reached, not counted"
+    )
+
+
+def test_a_line_of_a_databases_error_log_has_one_kind_whatever_its_decoder() -> None:
+    logs = recording.error_logs({"hosts": {"db": {"database": {"log_error": "/var/log/mysql/error.log"}}}})
+
+    for decoder in ("windows-date-format", None):
+        document = {
+            "event": {},
+            "wazuh": {"location": "/var/log/mysql/error.log", "decoder": {"name": decoder}},
+        }
+        assert recording.kind_of(document, logs) == "database error log line"

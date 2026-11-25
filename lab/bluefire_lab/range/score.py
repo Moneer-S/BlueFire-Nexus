@@ -2,9 +2,10 @@
 
 Every archived event and every alert gets one origin, by the first rule that holds:
 
-1. `engine`: snoopy tagged its program start `engine:*`, or the line holds the
-   run's ID, which every nonce and mark of the engine carries, and so does the
-   name of every mark file the engine makes. What the plant checks and the
+1. `engine`: snoopy tagged its program start `engine:*` (a program start is
+   decided by its tag alone, since a step's command can name a mark file), or
+   another line holds the run's ID, which every nonce and mark of the engine
+   carries, and so does the name of every mark file the engine makes. What the plant checks and the
    seal's probes leave behind (a login's session lines, a PHP session file)
    carries no ID.
 2. `cleanup`: snoopy tagged its program start `cleanup:<id>`, or it is a file
@@ -79,6 +80,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..recording import outcome as score_word
+from ..report import count
 from . import activity, ecs, wazuh
 
 ENGINE = "engine"
@@ -99,6 +101,9 @@ WORD = re.compile(r"[^\s;|&<>()'\"`]+")
 # Wazuh's levels in bands: informational, low, medium, high and critical.
 BANDS = ((0, 3, "0 to 3"), (4, 6, "4 to 6"), (7, 11, "7 to 11"), (12, 14, "12 to 14"), (15, 15, "15"))
 REVIEW_FROM = 7
+# A step seen only by the address rule names this many of its lines, each cut to this many characters.
+SHOWN_LINES = 3
+LINE_CHARACTERS = 240
 EVENTS_FILE = "events.ecs.ndjson"
 ALERTS_FILE = "alerts.ecs.ndjson"
 
@@ -109,9 +114,20 @@ def _tag(event: dict) -> str:
     return str((event.get("data") or {}).get("tag") or "")
 
 
+def _line(event: dict) -> str:
+    """An archived line in a few words: its agent, its log and its text, cut short."""
+
+    text = str(event.get("full_log") or "").strip()
+    text = text if len(text) <= LINE_CHARACTERS else text[: LINE_CHARACTERS - 3] + "..."
+    return f"{(event.get('agent') or {}).get('name')}, {event.get('location')}: {text}"
+
+
 def _engine(event: dict, run_id: str) -> bool:
+    if event.get("location") == activity.SNOOPY_LOG:
+        # A step's own command can name a mark file, as s08's tar of /etc does: its tag decides.
+        return _tag(event).startswith("engine:")
     path = str((event.get("syscheck") or {}).get("path") or "")
-    return _tag(event).startswith("engine:") or run_id in (event.get("full_log") or "") or run_id in path
+    return run_id in (event.get("full_log") or "") or run_id in path
 
 
 @dataclass(frozen=True)
@@ -683,6 +699,7 @@ def path_score(
             if step == step_id
         ]
         counted = [event for event, tied_by in mine if tied_by in COUNTED]
+        ties = Counter(tied_by for _, tied_by in mine if tied_by in COUNTED)
         on_step = [
             alert
             for alert, (_, _, step, tied_by) in zip(alerts, picked, strict=True)
@@ -723,7 +740,11 @@ def path_score(
             "visibility": seen,
             "outcome": score_word(happened, seen),
             "events": len(counted),
-            "events by tie": dict(Counter(tied_by for _, tied_by in mine if tied_by in COUNTED)),
+            "events by tie": dict(ties),
+            # What "seen" rests on, when it rests on the address rule alone: the lines themselves.
+            "lines tied by address alone": [_line(event) for event in counted[:SHOWN_LINES]]
+            if set(ties) == {"address"}
+            else [],
             "coincident events": sum(1 for _, tied_by in mine if tied_by == "window"),
             "agents": dict(Counter((e.get("agent") or {}).get("name") for e in counted)),
             "first_event": ecs.iso(min(_when(e) for e in counted)) if counted else None,
@@ -765,8 +786,9 @@ def path_score(
         },
         "notes": [
             "Events are tied to a step by snoopy's tag of its session, the accounts only the path uses, the "
-            "address or container name of the host it ran on and the paths it was given, inside its window; an "
-            "event that only falls inside its window is coincident and never counts.",
+            "address or container name of the host it ran on and the paths it was given, inside its time span, "
+            f"from its start to {GRACE} s after its end; an event that only falls inside that time span is "
+            "coincident and never counts.",
             "There is no network sensor, so the scans and both exfiltrations are seen only through what they "
             "leave in the logs and files the agents watch.",
             "Snoopy misses the first program of each docker exec, the published sh -c itself, which is the "
@@ -1056,7 +1078,7 @@ def path_summary(manifest: dict) -> str:
         first = step.get("first_alert")
         lines.append(
             f"| {step['id']} | {step['host']}{''.join(' to ' + t for t in step['to'])} | {step['happened']} | "
-            f"{step['visibility']} ({step['events']} events) | "
+            f"{step['visibility']} ({count(step['events'], 'event')}) | "
             + _cell(", ".join(f"{k} {v}" for k, v in step["agents"].items()) or "none")
             + " | "
             + _cell(", ".join(f"{k} {v}" for k, v in step["events by tie"].items()) or "none")
@@ -1067,6 +1089,19 @@ def path_summary(manifest: dict) -> str:
             + " |"
         )
     lines.append("")
+    for step in found["steps"]:
+        shown = step.get("lines tied by address alone") or []
+        if shown:
+            lines.append(
+                f"{step['id']} is seen only through {count(step['events'], 'line')} tied by the address rule "
+                f"alone: {'the line names' if step['events'] == 1 else 'each line names'} {step['host']}'s "
+                "address or container name, or comes from its address"
+                + (f"; the first {len(shown)}" if len(shown) < step["events"] else "")
+                + ": "
+                + "; ".join(f"`{_cell(line)}`" for line in shown)
+                + "."
+            )
+            lines.append("")
     check = found["clock"]
     lag = check["manager's time against the line's"]
     lines += [
@@ -1088,7 +1123,8 @@ def path_summary(manifest: dict) -> str:
         "it, or from its line's time when the manager's is earlier.",
         "",
         "No step can be stopped: the range configures no active response. "
-        "An event that only falls inside a step's window is coincident and is not counted as the step's. "
+        f"An event that only falls inside a step's time span, from its start to {GRACE} s after its end, is "
+        "coincident and is not counted as the step's. "
         "Unattributed: "
         f"{found['events']['of each origin'].get(UNATTRIBUTED, 0)} events "
         f"({found['events']['unattributed, coincident with a step']} coincident with a step) and "

@@ -247,8 +247,10 @@ comes from.
 Every run of the lab leaves a page of its own: the lab workflow fills the same
 template with the run's `recording.json` (`bluefire-lab replay`, see
 [lab/README.md](../lab/README.md)), and that page says it was made by the lab
-workflow in the CI run it names. The same command run anywhere else writes a
-page that says only which CI run recorded the recording.
+workflow in the CI run it names. The command reads that from GitHub's own
+variables of the run it runs in. Run anywhere else, it writes a page that
+reads the file as imported: it says the CI run the file names was not checked,
+and does not link it.
 
 ## Pictures made in CI
 

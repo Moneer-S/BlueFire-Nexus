@@ -7,8 +7,10 @@ a package of its own and does not import the app, so these few lines are written
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 # The page's template holds the recording, and where it comes from, each in one element of its own.
@@ -16,23 +18,37 @@ ELEMENTS = ("bluefire-recording", "bluefire-origin")
 MADE_HERE = (
     "Made by this repository's {workflow} in the CI run at {run_url}, from the recording that run made."
 )
-RECORDED = "Recorded by this repository's {workflow} in the CI run at {run_url}."
+NOT_CHECKED = "Written by bluefire-lab replay from a file; the CI run it names was not checked."
 # The workflow that records each kind: the lab's single host runs a test list, a range an attack path.
 WORKFLOWS = {"attack path": "range one workflow"}
 
 
+def this_run(environ: Mapping[str, str] = os.environ) -> str | None:
+    """The address of the GitHub Actions run this command runs in, from GitHub's own variables; None elsewhere."""
+
+    if environ.get("GITHUB_ACTIONS") != "true":
+        return None
+    parts = [environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID")]
+    return "{}/{}/actions/runs/{}".format(*parts) if all(parts) else None
+
+
 def origin(recording: dict, made_in: str | None = None) -> dict | None:
-    """Where the recording comes from: the lab's CI run that recorded it. The page says that run
-    made it too only when the run writing the page names itself (made_in) and is that same run. A
-    recording that names no run gets no origin, and the page then says that it does not say where
-    its recording comes from."""
+    """Where the recording comes from. The page calls it the lab's own run only when it is written
+    inside the very CI run the file names (made_in, from `this_run`); any other file that names a
+    run is imported, and the page says that run was not checked. A recording that names no run gets
+    no origin, and the page then says that it does not say where its recording comes from."""
 
     run_url = recording.get("source", {}).get("run_url")
     if not run_url:
         return None
-    note = MADE_HERE if made_in == run_url else RECORDED
+    if made_in != run_url:
+        return {"kind": "imported", "note": NOT_CHECKED}
     workflow = WORKFLOWS.get(recording.get("kind"), "lab workflow")
-    return {"kind": "lab run", "run_url": run_url, "note": note.format(run_url=run_url, workflow=workflow)}
+    return {
+        "kind": "lab run",
+        "run_url": run_url,
+        "note": MADE_HERE.format(run_url=run_url, workflow=workflow),
+    }
 
 
 def fill(template: str, recording: dict, made_in: str | None = None) -> str:
@@ -56,7 +72,7 @@ def fill(template: str, recording: dict, made_in: str | None = None) -> str:
     return page
 
 
-def main(recording: Path, template: Path, out: Path, run_url: str | None = None) -> int:
+def main(recording: Path, template: Path, out: Path) -> int:
     if out.exists():
         print(f"{out} exists: the page is written to a new file only", file=sys.stderr)
         return 2
@@ -80,7 +96,7 @@ def main(recording: Path, template: Path, out: Path, run_url: str | None = None)
         print(f"{out.parent} is not a folder: the page is written into a folder that exists", file=sys.stderr)
         return 2
     try:
-        page = fill(template.read_text(encoding="utf-8"), made, run_url)
+        page = fill(template.read_text(encoding="utf-8"), made, this_run())
     except ValueError as problem:
         print(f"{template}: {problem}", file=sys.stderr)
         return 2

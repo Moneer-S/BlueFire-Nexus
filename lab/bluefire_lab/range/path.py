@@ -8,9 +8,11 @@ argument, a `user@host` argument, and in the merged command, prerequisite
 check and cleanup a URL with a scheme, an `@host` and `/dev/tcp/<host>` or
 `/dev/udp/<host>`. It refuses any word that Python's `ipaddress` reads as an
 address. It does not recognise a bare host name, nor an address in a short,
-integer or hex form. These rules are an early, plain refusal of mistakes; the
-seal is what keeps a step inside the range. They run before any container is
-created.
+integer or hex form. It refuses a step on a host that runs a pinned image, and
+a step with a `to` that reaches a host, recognised so, that its `to` does not
+name, since the score ties a step's events by `to`. These rules are an early,
+plain refusal of mistakes; the seal is what keeps a step inside the range. They
+run before any container is created.
 
 `Executor` runs the path in a sealed range and only there: in the range's own
 containers, once the seal's phases before the path have passed. For each
@@ -22,8 +24,10 @@ exec's `exec_start` and `exec_die` events, and the engine's clock, labelled,
 only where those were not matched or the end came before the start. What happened is one of `took effect`,
 `attempted without effect`, `not attempted` and `inconclusive`. Then the goal
 check, on files copied out of the range. An event on the range that the engine
-did not cause stops the path, and so does an event watch that no longer runs;
-the engine then makes the run invalid.
+did not cause stops the path, and so does an event watch that no longer runs or
+that has not reported the start and end of a step's own command within
+`EVENT_SECONDS` and `WATCH_SECONDS`, the watch's time to settle, after the
+command returned; the engine then makes the run invalid.
 
 Tags, in BLUEFIRE_TAG: `engine:prereq:<id>`, `step:<id>`, `engine:check:<id>`,
 `cleanup:<id>` and `engine:kill`.
@@ -46,6 +50,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .. import atomic
+from ..report import count
 from . import build
 from .spec import Spec, SpecError, home, read
 
@@ -76,6 +81,9 @@ CLEANUP_SECONDS = 120
 KILL_SECONDS = 60
 # How long the engine waits for the daemon's events of an exec after the command returned.
 EVENT_SECONDS = 15
+# How much longer it waits when they are late: the time the event watch is given to settle. A command
+# whose start and end the watch has not reported by then stops the path.
+WATCH_SECONDS = 15
 POLL_SECONDS = 0.2
 # The largest member of an uploaded archive that the goal check reads.
 LARGEST_MEMBER = 64 * 1024 * 1024
@@ -313,6 +321,11 @@ def _step(value: object, number: int, spec: Spec, atomics: Path, seen: set[str])
     host = value["host"]
     if host not in spec.hosts or spec.hosts[host].kind == "defense":
         raise SpecError(f"{where} runs on {host!r}: name a host of the spec other than the manager")
+    if not spec.hosts[host].built:
+        raise SpecError(
+            f"{where} runs on {host}, which runs a pinned image: the path's published files are fetched and "
+            f"carried only by hosts built from base, so build {host} from base or run the step on another host"
+        )
     to = value.get("to", [])
     to = [to] if isinstance(to, str) else to
     if not isinstance(to, list):
@@ -367,6 +380,7 @@ def _step(value: object, number: int, spec: Spec, atomics: Path, seen: set[str])
         raise SpecError(f"{where} ({technique} {guid}): {message}") from error
 
     published = test.get("input_arguments") or {}
+    reaches: list[str] = []
     for name, argument in args.items():
         kind = (
             str((published.get(name) or {}).get("type", "")).lower()
@@ -388,12 +402,23 @@ def _step(value: object, number: int, spec: Spec, atomics: Path, seen: set[str])
                     f"{where}: the input argument {name} names {name_found!r}, which is not a host of the spec: "
                     "name a host of the range"
                 )
+        reaches += named
 
     _reached(step_id, host, vectors["attack"][2], "command", spec)
+    reaches += hosts_in(vectors["attack"][2])
     for prereq in vectors["prereqs"]:
         _reached(step_id, host, prereq[2], "prerequisite check", spec)
+        reaches += hosts_in(prereq[2])
     if vectors["cleanup_published"]:
         _reached(step_id, host, vectors["cleanup"][2], "cleanup", spec)
+        reaches += hosts_in(vectors["cleanup"][2])
+    # The score ties a step's events on the hosts of its `to`: a `to` must name every other host the step reaches.
+    for name_found in dict.fromkeys(reaches) if to else ():
+        if name_found != host and name_found not in to:
+            raise SpecError(
+                f"{where} reaches {name_found}, which its to does not name: add {name_found} to the step's to, "
+                "since the score ties a step's events on the hosts in to"
+            )
 
     return Step(
         step_id,
@@ -690,7 +715,8 @@ def summary(manifest: dict) -> str:
                 f"{'' if seconds is None else seconds} | {'' if step.get('exit_code') is None else step['exit_code']} | "
                 f"{step['happened']}{timeout} | {check} |"
             )
-        lines.append("")
+        tests = {step.get("guid") for step in steps}
+        lines += ["", f"{count(len(steps), 'step')}, which ran {count(len(tests), 'published test')}.", ""]
     goal = found.get("goal")
     if goal:
         state = (
@@ -722,6 +748,8 @@ class Executor:
         self.plan = plan
         self.addresses = addresses
         self.claimed: set[str] = set()
+        # Why the watch is taken to be blind: it did not report a step's own exec in time.
+        self.blind: str | None = None
         self.record = run.manifest["path"]
         self.folder = run.out / "raw" / "steps"
 
@@ -734,7 +762,8 @@ class Executor:
         return identifier
 
     def stop_reason(self) -> str | None:
-        """Why the path must stop now: a finding of the event watch, or a watch that no longer runs."""
+        """Why the path must stop now: a finding of the event watch, a watch that no longer runs, or one
+        that did not report the start and end of a step's own command in time."""
 
         watch = self.run.watch
         with watch.lock:
@@ -742,7 +771,7 @@ class Executor:
                 return "an event on the range that the engine did not cause: see seal.json"
             if not watch.alive:
                 return "the event watch on the range stopped, so nothing watched the seal: see seal.json"
-        return None
+        return self.blind
 
     def stopped(self) -> bool:
         return self.stop_reason() is not None
@@ -754,10 +783,11 @@ class Executor:
         self.run.watch.expect("container", "exec_die", id=identifier)
 
     def events_of(self, identifier: str, argv: tuple[str, ...]) -> dict | None:
-        """The daemon's exec_start and exec_die of the command, waited for a little after it returned."""
+        """The daemon's exec_start and exec_die of the command, waited for a little after it returned,
+        and for the watch's time to settle more when they are late."""
 
         command = " ".join(argv)
-        deadline = time.monotonic() + EVENT_SECONDS
+        deadline = time.monotonic() + EVENT_SECONDS + WATCH_SECONDS
         while True:
             found = self.run.watch.exec_of(identifier, command, self.claimed)
             if found and found.get("die") is not None:
@@ -811,6 +841,14 @@ class Executor:
             "engine_ended_ns": engine_end,
         }
         events = self.events_of(identifier, argv)
+        # The watch must report the command's own start and end: that shows it still reads Docker's events.
+        if (events is None or events.get("die") is None) and self.blind is None:
+            self.blind = (
+                f"the event watch did not report the {'end' if events else 'start'} of the exec of {name} on "
+                f"{step.host} within {EVENT_SECONDS + WATCH_SECONDS} s, so nothing watched the seal during "
+                "that step"
+            )
+        found["stopped"] = stopped or self.stopped()
         found.update(daemon_times(events))
         if "started_ns" not in found:
             why = (
