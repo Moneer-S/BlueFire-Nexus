@@ -53,9 +53,9 @@ describe("what the Overview offers of the recorded runs", () => {
     expect(link).toHaveAttribute("href", "/runs/recorded/lab-run-1");
     expect(screen.queryByRole("link", { name: /^See the newest change to the defense/ })).not.toBeInTheDocument();
     // The run that leads the page is the same shipped run, never the later imported ones.
-    const real = screen.getByRole("region", { name: "Watch a real run" });
+    const real = screen.getByRole("region", { name: "A run recorded in CI" });
     expect(real).toHaveTextContent("60 published tests on one Linux host");
-    expect(screen.getByRole("link", { name: "Play it: 60 published tests on one Linux host" })).toHaveAttribute("href", "/runs/recorded/lab-run-1");
+    expect(screen.getByRole("link", { name: "Play the run: 60 published tests on one Linux host" })).toHaveAttribute("href", "/runs/recorded/lab-run-1");
   });
 
   it("offers the newer of an imported run and an imported pair when nothing is shipped", async () => {

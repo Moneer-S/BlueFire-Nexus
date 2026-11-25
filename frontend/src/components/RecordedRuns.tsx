@@ -106,7 +106,7 @@ export function RecordedRuns() {
     {inPairs > 0 ? <p className="recorded-pairs-note">{inPairs === 1 ? "1 more recorded run is listed with its" : `${inPairs} more recorded runs are listed with their`} {pairList.length === 1 ? "pair" : "pairs"} under Before against after.</p> : null}
     {pairList.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
       <h3 id="recorded-pairs-heading">Before against after</h3>
-      <p>Change one defense, run the tests again, see what moved. Each turn is one change, in the order it was made.</p>
+      <p>Each turn is one change to the defense, in the order it was made, with what it moved.</p>
       <DefenderLoop pairs={pairList} label="The changes to the defense, in order" />
     </section> : null}
     {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}

@@ -320,7 +320,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   reachable = service;
   await page.goto(address);
   await expect(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Watch a real run" }).getByRole("list", { name: "The changes to the defense, in order" }).getByRole("link")).toHaveCount(2);
+  await expect(page.getByRole("region", { name: "A run recorded in CI" }).getByRole("list", { name: "The changes to the defense, in order" }).getByRole("link")).toHaveCount(2);
   await picture(page, folder, "app-overview.png");
 
   // The Runs screen with the recorded run, and the run's page on its first alert.
@@ -332,14 +332,14 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
 
   // The pair of runs shipped with the app: its part of the Runs screen alone, and its own page.
   const pairs = page.getByRole("region", { name: "Before against after" });
-  const pair = pairs.getByRole("link", { name: "One test that nobody saw is now seen.", exact: true });
+  const pair = pairs.getByRole("link", { name: "Clear Bash history (echo) went from unseen to seen.", exact: true });
   await pairs.scrollIntoViewIfNeeded();
   await expect(pair).toBeVisible();
   await settle(page);
   await pairs.screenshot({ path: join(folder, "app-runs-pair.png") });
   await pair.click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
-  await expect(page.getByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
   // The stages are drawn from both recordings before the picture is taken.
   await expect(page.getByRole("group", { name: "Clear Bash history (echo), before and after" }).getByRole("article")).toHaveCount(2);
   await picture(page, folder, "app-pair.png");
@@ -347,8 +347,8 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expect(link).toBeVisible();
 
   // The run evaluated with two rule sets, the rule drafted from what the watch saw: its own page, with its stages drawn.
-  await pairs.getByRole("link", { name: "Four steps that were seen with no alert now raise an alert.", exact: true }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Four steps that were seen with no alert now raise an alert." })).toBeVisible();
+  await pairs.getByRole("link", { name: "4 steps went from seen to alerted.", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
   await expect(page.getByRole("group", { name: "Clear Bash history (echo), before and after" }).getByRole("article")).toHaveCount(2);
   await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toBeAttached();
   await picture(page, folder, "app-rule-pair.png");

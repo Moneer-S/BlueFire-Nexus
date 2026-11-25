@@ -84,12 +84,12 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
   // The pair's two runs and the run evaluated twice, which is one run.
   await expect(recorded.getByText("3 more recorded runs are listed with their pairs under Before against after.")).toBeVisible();
   // The pairs in the order the loop went: the watch, then the rule drafted from what it saw.
-  await expect(pairs.getByRole("listitem").getByRole("heading", { level: 4 })).toHaveText(["One test that nobody saw is now seen.", "Four steps that were seen with no alert now raise an alert."]);
+  await expect(pairs.getByRole("listitem").getByRole("heading", { level: 4 })).toHaveText(["Clear Bash history (echo) went from unseen to seen.", "4 steps went from seen to alerted."]);
 
-  await item.getByRole("link", { name: "One test that nobody saw is now seen." }).click();
+  await item.getByRole("link", { name: "Clear Bash history (echo) went from unseen to seen." }).click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
   const address = page.url();
-  await expect(page.getByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
   await expect(page.getByRole("region", { name: /^A limited verdict/ })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Compared runs" }).getByText("Turn 1: New auditd settings")).toBeVisible();
 
@@ -140,7 +140,7 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
 
 const ruleFile = join(repository, "bluefire/data/recordings/deltas/lab-rule-history-truncated.json");
 const RULE = "Shell History File Truncated In Place";
-const HEADLINE = "Four steps that were seen with no alert now raise an alert.";
+const HEADLINE = "4 steps went from seen to alerted.";
 
 test("the run evaluated with two rule sets shipped with the app reads as one run, with its rule, the steps it moved and the event each alert rests on", async ({ page }) => {
   test.setTimeout(120_000);

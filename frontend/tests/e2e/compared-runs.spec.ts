@@ -7,8 +7,8 @@ import { expect, test } from "@playwright/test";
 // evaluated with and without the rule drafted from what that watch saw. Their
 // recordings are loaded when they are asked for.
 
-const SENSOR = "One test that nobody saw is now seen.";
-const RULE = "Four steps that were seen with no alert now raise an alert.";
+const SENSOR = "Clear Bash history (echo) went from unseen to seen.";
+const RULE = "4 steps went from seen to alerted.";
 
 test("the first turn opens from Runs and answers on its first screen: what moved, its price, what else moved, and the fair line", async ({ page }) => {
   const problems: string[] = [];
@@ -35,7 +35,7 @@ test("the first turn opens from Runs and answers on its first screen: what moved
   for (const name of ["What it cost", "What else moved", "What comes next"]) await expect(page.getByRole("region", { name })).toBeInViewport();
   await expect(page.getByText("One pair of runs, made side by side in one CI run, 24 Nov 2026.", { exact: true })).toBeInViewport();
   await expect(page.getByText("Only the settings of sensor auditd differed.", { exact: true })).toBeInViewport();
-  await expect(page.getByRole("region", { name: "What else moved" })).toContainText("One of 91 steps moved. 90 are the same.");
+  await expect(page.getByRole("region", { name: "What else moved" })).toContainText("1 of 91 steps moved. 90 are the same.");
   // One main landmark: the page sits inside the app's own.
   await expect(page.getByRole("main")).toHaveCount(1);
 

@@ -164,10 +164,12 @@ sending it. The runs of experiments from Build follow under **Experiment runs**.
 
 Under **Before against after** come the changes to the defense that the lab
 compared, as the turns of one loop, in the order they were made and joined by
-arrows. Each turn is named by what it did ("One test that nobody saw is now
-seen."), with its marks before and after, a small picture of the path that
-changed, the tests it moved, how the comparison was made in small type, its
-price in plain words, and one line of the result. A comparison is of one of
+arrows. Each turn is named by what it did: the step by its title when one step
+moved ("Clear Bash history (echo) went from unseen to seen."), a count in
+figures when several moved the same way ("4 steps went from seen to
+alerted."), with their names under it. Then come its marks before and after, a
+small picture of the path that changed, how the comparison was made in small
+type, its price in plain words, and one line of the result. A comparison is of one of
 two kinds. Two runs, side by side in one CI run, before and after a change of a
 sensor's settings; or one run evaluated with two rule sets, after a change of
 the lab's own rules, which read only the telemetry a run recorded. BlueFire
@@ -202,9 +204,9 @@ why and what alone it credits, and lists the steps it does not credit apart
 
 The **Overview** leads with the first run the Runs screen lists on its own (what
 was shipped with BlueFire comes before what was imported, whatever the dates):
-"Watch a real run" (or "Watch a recorded run" for an imported file), its title,
+"A run recorded in CI" (or "An imported run" for an imported file), its title,
 its score in a line (with how many tests the lab's own rules would alert on,
-which the score does not count), and a play button, with the turns of the loop
+which the score does not count), and **Play the run**, with the turns of the loop
 under it. The
 workspace's own blocks follow. With nothing recorded or compared, the workspace
 comes first.

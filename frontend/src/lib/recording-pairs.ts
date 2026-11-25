@@ -374,41 +374,41 @@ export function creditedCount(counts: Pick<DeltaSummary["counts"], "better" | "w
   return counts.better + counts.worse + counts.changed;
 }
 
-const FROM_WORDS: Partial<Record<DeltaStep["before"]["outcome"], [string, string]>> = {
-  unseen: ["that nobody saw", "that nobody saw"],
-  seen: ["that was seen with no alert", "that were seen with no alert"],
-  alerted: ["that raised an alert", "that raised an alert"],
-  stopped: ["that was stopped", "that were stopped"],
-};
-const TO_WORDS: Partial<Record<DeltaStep["before"]["outcome"], [string, string]>> = {
-  unseen: ["is now unseen", "are now unseen"],
-  seen: ["is now seen", "are now seen"],
-  alerted: ["now raises an alert", "now raise an alert"],
-  stopped: ["is now stopped", "are now stopped"],
-};
+/** The one step's name as a headline says it: its title, and for a rerun with changed input arguments, that too. */
+function stepName(step: MovedLike): string {
+  return step.role === "variant" ? `${step.title}, with other arguments,` : step.title;
+}
 
 /**
  * What the change did, in one sentence, from the steps the delta credits to
- * it: "One test that nobody saw is now seen." The count is the delta's own; the
- * listed steps give the words, only when the list holds every credited step
- * (a list entry is cut at 20) and every one moved the same way.
+ * it: "Clear Bash history (echo) went from unseen to seen." for one step, by
+ * its title; "4 steps went from seen to alerted." for several that moved the
+ * same way ("tests" when every one is a published test as published); "5
+ * steps moved." when they moved in different ways or the list does not hold
+ * them all. The count is the delta's own, and the outcomes are told in the
+ * field the marks are drawn in.
  */
 export function pairHeadline(pair: Pick<DeltaSummary, "comparable" | "declared_change" | "counts">, moved: readonly MovedLike[]): string {
   if (!pair.comparable) return "No verdict.";
   if (pair.declared_change === null) return "Nothing was declared as changed.";
   const total = creditedCount(pair.counts);
   if (total === 0) return "No step moved.";
-  const many = total === 1 ? 0 : 1;
-  const tests = moved.length === total && moved.every((step) => step.role === "test");
+  // A list entry holds at most 20 moved steps: titles and outcomes are said only when it holds them all.
+  const complete = moved.length === total;
+  const tests = complete && moved.every((step) => step.role === "test");
   const noun = tests ? (total === 1 ? "test" : "tests") : total === 1 ? "step" : "steps";
   const [first] = moved;
   const from = first?.before[MARK_FIELD];
   const to = first?.after[MARK_FIELD];
-  const alike = first !== undefined && moved.every((step) => step.before[MARK_FIELD] === from && step.after[MARK_FIELD] === to);
-  const fromWords = from === undefined ? undefined : FROM_WORDS[from]?.[many];
-  const toWords = to === undefined ? undefined : TO_WORDS[to]?.[many];
-  if (moved.length !== total || !alike || !fromWords || !toWords) return `${numberWord(total)} ${noun} moved.`;
-  return `${numberWord(total)} ${noun} ${fromWords} ${toWords}.`;
+  const alike = first !== undefined && from !== to && moved.every((step) => step.before[MARK_FIELD] === from && step.after[MARK_FIELD] === to);
+  if (complete && total === 1 && first) return alike ? `${stepName(first)} went from ${from ?? ""} to ${to ?? ""}.` : `${stepName(first)} moved.`;
+  if (!complete || !alike) return `${count(total)} ${noun} moved.`;
+  return `${count(total)} ${noun} went from ${from ?? ""} to ${to ?? ""}.`;
+}
+
+/** True when the headline of a pair names its one moved step, so the lines around it need not name it again. */
+export function headlineNamesStep(pair: Pick<DeltaSummary, "comparable" | "declared_change" | "counts">, moved: readonly MovedLike[]): boolean {
+  return pair.comparable && pair.declared_change !== null && creditedCount(pair.counts) === 1 && moved.length === 1;
 }
 
 /**

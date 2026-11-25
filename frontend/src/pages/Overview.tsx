@@ -52,17 +52,17 @@ export function OverviewPage() {
     {heroRun || pairList.length ? <section className="overview-real" aria-labelledby="overview-real-heading">
       {heroRun ? <div className="overview-watch">
         <div className="overview-watch-text">
-          <h2 id="overview-real-heading">{heroRun.origin.kind === "shipped" ? "Watch a real run" : "Watch a recorded run"}</h2>
+          <h2 id="overview-real-heading">{heroRun.origin.kind === "shipped" ? "A run recorded in CI" : "An imported run"}</h2>
           <p className="overview-watch-title">{heroRun.title}</p>
           <p className="overview-watch-outcome">{recordedScoreWords(heroRun)}</p>
           {heroRun.score.alerted_with_lab_rules !== undefined ? <p className="overview-watch-lab">With the lab's own rules, {heroRun.score.alerted_with_lab_rules} of {heroRun.score.steps} would alert. The score counts only published rules.</p> : null}
           <p className="overview-watch-meta"><span>{recordedWhere(heroRun)}</span><span className={`recorded-run-origin is-${heroRun.origin.kind}`}>{originWords(heroRun.origin)}</span></p>
         </div>
-        <Link className="overview-watch-play" to={recordedRunPath(heroRun.id)}><span className="overview-watch-button" aria-hidden="true"><Play /></span>Play it<span className="sr-only">: {heroRun.title}</span></Link>
+        <Link className="overview-watch-play" to={recordedRunPath(heroRun.id)}><span className="overview-watch-button" aria-hidden="true"><Play /></span>Play the run<span className="sr-only">: {heroRun.title}</span></Link>
       </div> : <h2 id="overview-real-heading" className="sr-only">Real runs</h2>}
       {pairList.length ? <div className="overview-loop">
         <h3>Before against after</h3>
-        <p>Each turn is one change to the defense, in the order it was made, and what it moved.</p>
+        <p>Each turn is one change to the defense, in the order it was made, with what it moved.</p>
         <DefenderLoop pairs={pairList} compact label="The changes to the defense, in order" />
       </div> : null}
     </section> : null}
