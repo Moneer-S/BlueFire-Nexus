@@ -1,0 +1,15 @@
+{
+  "about": "Small recording files that every way into the import refuses: the command line, the import route and the Runs screen. Each is refused with the one reason given here, the same through every door.",
+  "files": {
+    "duplicate-key.json": "The file is not UTF-8 JSON: the key 'title' appears twice in one object",
+    "nan-number.json": "The file is not UTF-8 JSON: NaN is not a JSON number",
+    "byte-order-mark.json": "The file is not UTF-8 JSON: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)",
+    "not-json.json": "The file is not UTF-8 JSON: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)",
+    "trailing-member.json": "The file is not UTF-8 JSON: Extra data: line 153 column 2 (char 2972)",
+    "not-utf8.json":"The file is not UTF-8 JSON: 'utf-8' codec can't decode byte 0xff in position 90: invalid start byte",
+    "title-null.json": "recording.title is null; it must be given.",
+    "note-too-long.json": "notes[0] is longer than 2000 characters.",
+    "field-number-as-float.json": "events[0].fields must hold at most 64 plain values: text of at most 300 characters, a number no further than 9007199254740992 from zero, true, false or null.",
+    "alert-on-another-host.json": "alerts[0].host is not the host of the events the alert matched."
+  }
+}

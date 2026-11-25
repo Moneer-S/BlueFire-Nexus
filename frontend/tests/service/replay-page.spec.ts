@@ -22,7 +22,7 @@ interface ShippedRecording {
   id: string;
   title: string;
   score: Score;
-  steps: { id: string; role: string; title: string; plain?: string }[];
+  steps: { id: string; role: string; title: string; plain?: string; visibility: { basis: string } }[];
   events: { text: string }[];
   notes: string[];
   source: Record<string, unknown>;
@@ -39,6 +39,7 @@ let shippedPage = "";
 let hostilePage = "";
 let unsaidPage = "";
 let labPage = "";
+let copyPage = "";
 const ORIGIN_ELEMENT = '<script id="bluefire-origin" type="application/json">';
 
 /** Runs the app's command line on the test's own workspace. */
@@ -73,6 +74,14 @@ test.beforeAll(() => {
   bluefire("recordings", "import", recordingFile);
   hostilePage = join(workspace, "hostile.html");
   bluefire("recordings", "page", hostile.id, "--out", hostilePage);
+
+  // A copy of the shipped recording under another id, imported: it still names the shipped run's address.
+  const copy: ShippedRecording = { ...structuredClone(shipped), id: "copy-of-shipped" };
+  const copyFile = join(workspace, "copy.json");
+  writeFileSync(copyFile, JSON.stringify(copy));
+  bluefire("recordings", "import", copyFile);
+  copyPage = join(workspace, "copy.html");
+  bluefire("recordings", "page", copy.id, "--out", copyPage);
 
   // The shipped recording's page with its origin taken out, as a template filled by other means would be.
   const made = readFileSync(shippedPage, "utf-8");
@@ -116,7 +125,7 @@ function scrubber(page: Page): Locator {
 /** The step the scrubber stands on: its place among all steps, from 1. */
 async function scrubberPlace(page: Page): Promise<number> {
   const text = (await scrubber(page).getAttribute("aria-valuetext")) ?? "";
-  const place = /, (\d+) of \d+, /.exec(text)?.[1];
+  const place = /, (\d+) of \d+ steps, /.exec(text)?.[1];
   if (place === undefined) throw new Error(`The scrubber says no step: ${text}`);
   return Number(place);
 }
@@ -135,7 +144,7 @@ function expectedScore(recording: ShippedRecording): string {
   const score = recording.score;
   const hardened = recording.steps.filter((step) => step.role === "hardened").length;
   const falseAlerts = score.false_alerts === undefined ? "" : `${score.false_alerts}${score.false_alerts === 1 ? "false alert" : "false alerts"}`;
-  return `${score.alerted}/ ${score.alerted + score.seen + score.unseen}tests alerted${score.seen}seen, no alert${score.unseen}unseen${falseAlerts}${score.stopped} / ${hardened}reruns stopped`;
+  return `${score.alerted}/ ${score.alerted + score.seen + score.unseen}tests alerted${score.seen}seen, no alert${score.unseen}unseen${falseAlerts}${score.stopped} of ${hardened}repeated tests stopped`;
 }
 
 test("watch mode tells the run step by step, and plays, pauses and moves by pointer and keyboard", async ({ page }) => {
@@ -145,10 +154,16 @@ test("watch mode tells the run step by step, and plays, pauses and moves by poin
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
   await expect(caption(page)).toContainText(firstStep.plain);
-  // Under the title: the recording shipped with BlueFire, and the CI run that made it.
+  // Under the title, one line: a real run and when it was recorded. It opens to who checked it and the CI run that made it.
+  const line = page.getByRole("button", { name: /^A real run, recorded \d+ \w+ \d{4} on a GitHub-hosted runner\s*· details$/ });
+  await expect(line).toBeVisible();
+  await expect(page.getByText(/^Shipped with BlueFire\./)).toHaveCount(0);
+  await line.click();
   const origin = page.getByText(/^Shipped with BlueFire\. This repository's lab workflow recorded it in the CI run at /);
   await expect(origin).toBeVisible();
   await expect(origin).toContainText(String(shipped.source.run_url));
+  await expect(page.getByRole("link", { name: "The CI run that made this recording (github.com)" })).toHaveAttribute("href", String(shipped.source.run_url));
+  await page.getByRole("button", { name: "Close", exact: true }).click();
 
   // Playing: the clock moves. The button pauses it, and plays it again.
   const play = page.getByRole("button", { name: "Pause", exact: true });
@@ -208,16 +223,18 @@ test("watch mode tells the run step by step, and plays, pauses and moves by poin
   expect(requests).toEqual([]);
 });
 
-test("the unseen test says it took effect and that no sensor recorded it, and Fix this opens its detail", async ({ page }) => {
+test("the unseen test says it took effect and what the recording says of it, and Fix this opens its detail", async ({ page }) => {
   const step = shipped.steps.find((item) => item.title === UNSEEN);
   if (!step) throw new Error(`The shipped recording has no step ${UNSEEN}.`);
+  // The recording's own words: its launcher's start was recorded, and nothing else of it.
+  const basis = step.visibility.basis;
   const { requests, problems } = await open(page, shippedPage, `?step=${step.id}&paused=1`);
 
   await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
   await expect(caption(page)).toContainText(UNSEEN);
   await expect(caption(page).getByText("unseen", { exact: true })).toBeVisible();
-  await expect(caption(page).getByText("No sensor recorded it.", { exact: true })).toBeVisible();
-  await expect(page.getByText(/It took effect, and\s*nothing travelled\./)).toBeVisible();
+  await expect(caption(page).getByText(`${basis.charAt(0).toUpperCase()}${basis.slice(1)}.`, { exact: true })).toBeVisible();
+  await expect(page.locator(".lv-silence")).toHaveText(`It took effect.${basis.charAt(0).toUpperCase()}${basis.slice(1)}.`);
   expect(await scrubber(page).getAttribute("aria-valuetext")).toContain(UNSEEN);
   // Paused, it stays on the step.
   await page.waitForTimeout(600);
@@ -228,8 +245,8 @@ test("the unseen test says it took effect and that no sensor recorded it, and Fi
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(detail.getByRole("heading", { name: UNSEEN })).toBeVisible();
   await expect(detail).toBeFocused();
-  await expect(detail).toContainText("It took effect, and no sensor recorded it.");
-  await expect(detail.getByRole("status")).toContainText("Start with a sensor: other runs of T1070.003 were recorded");
+  await expect(detail).toContainText(`It took effect, and ${basis}.`);
+  await expect(detail.getByRole("status")).toContainText("Start with a sensor: its only record is the harness's own launch of its command, which never counts. Other runs of T1070.003 were recorded");
   // The page has no app to fix in, so the detail offers no second "Fix this".
   await expect(detail.getByRole("button", { name: "Fix this" })).toHaveCount(0);
 
@@ -262,7 +279,7 @@ test("analyse mode lists the tests, filters them, opens a step and watches from 
   await table.getByRole("button", { name: UNSEEN, exact: true }).click();
   const detail = page.getByRole("article");
   await expect(detail.getByRole("heading", { name: UNSEEN })).toBeVisible();
-  await expect(detail).toContainText("It took effect, and no sensor recorded it.");
+  await expect(detail).toContainText("It took effect, and nothing of the test was recorded besides its launcher's start.");
 
   // Watch from here goes back to watch mode on that step.
   await detail.getByRole("button", { name: "Watch from here" }).click();
@@ -308,8 +325,24 @@ test("a page that does not say where its recording comes from says so", async ({
   const { requests, problems } = await open(page, unsaidPage, "?paused=1");
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
-  await expect(page.getByText("This page does not say where its recording comes from.", { exact: true })).toBeVisible();
+  // Nothing vouches for the CI run the file names, so it is told as the file's claim, not linked.
+  await page.getByRole("button", { name: /^A run of unknown origin, recorded .+· details$/ }).click();
+  await expect(page.getByText(/^This page does not say where its recording comes from\./)).toContainText(`The file names this CI run, which BlueFire cannot confirm: ${String(shipped.source.run_url)}`);
+  await expect(page.getByRole("link")).toHaveCount(0);
   await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
+  expect(problems).toEqual([]);
+  expect(requests).toEqual([]);
+});
+
+test("the page of an imported recording never links the CI run its file names as the one that made it", async ({ page }) => {
+  const { requests, problems } = await open(page, copyPage, "?paused=1");
+
+  await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
+  await expect(page.getByRole("link")).toHaveCount(0);
+  await page.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded .+· details$/ }).click();
+  await expect(page.getByRole("heading", { name: "Where this recording comes from" })).toBeVisible();
+  await expect(page.getByText(/^Imported\. BlueFire checked/)).toContainText(`The file names this CI run, which BlueFire cannot confirm: ${String(shipped.source.run_url)}`);
+  await expect(page.getByRole("link")).toHaveCount(0);
   expect(problems).toEqual([]);
   expect(requests).toEqual([]);
 });
@@ -318,6 +351,7 @@ test("the page a lab run leaves says that the lab's CI run made it", async ({ pa
   const { requests, problems } = await open(page, labPage, "?paused=1");
 
   await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
+  await page.getByRole("button", { name: /^A real run, recorded .+· details$/ }).click();
   const origin = page.getByText(/^Made by this repository's lab workflow in the CI run at /);
   await expect(origin).toBeVisible();
   await expect(origin).toContainText(String(shipped.source.run_url));
@@ -330,14 +364,14 @@ test("a recording cannot make the page load anything: its markup and addresses a
   const { requests, problems } = await open(page, hostilePage, "?step=1&paused=1");
 
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(HOSTILE_IMAGE);
-  // An imported recording says what BlueFire checked and what it cannot confirm.
-  await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format/)).toContainText("It cannot confirm that the steps ran");
   await expect(page.getByText(/^Shipped with BlueFire/)).toHaveCount(0);
   await expect(caption(page)).toContainText(`${HOSTILE_IMAGE} </script><!--`);
   await expect(caption(page)).toContainText(`Opens ${HOSTILE_LINK} <a href="${HOSTILE_LINK}">here</a>`);
   await expect(page.locator("img")).toHaveCount(0);
   await expect(page.locator("a")).toHaveCount(0);
-  await page.getByRole("button", { name: /tool versions/ }).click();
+  await page.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded .+· details$/ }).click();
+  // An imported recording says what BlueFire checked and what it cannot confirm.
+  await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format/)).toContainText("It cannot confirm that the steps ran");
   await expect(page.getByText(HOSTILE_IMAGE, { exact: true }).last()).toBeVisible();
   await expect(page.locator("img")).toHaveCount(0);
   await expect(page.locator("a")).toHaveCount(0);

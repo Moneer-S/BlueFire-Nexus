@@ -27,6 +27,7 @@ interface Step {
   role: string;
   title: string;
   outcome: string;
+  command?: string;
 }
 
 interface Shipped {
@@ -198,9 +199,55 @@ async function expectMoment(page: Page, step: Step): Promise<string[]> {
   return cut;
 }
 
-/** Each match line on screen holds its rule's whole title. */
+/** Each match line on screen holds its rule's whole title, and a title that wraps does not reach the next engine's label. */
 async function expectWholeMoment(page: Page, step: Step): Promise<void> {
   expect(await expectMoment(page, step), "match lines cut short").toEqual([]);
+  const overlaps = await page.evaluate(() => {
+    const labels = [...document.querySelectorAll(".lv-engine-label")].map((label) => ({ top: label.getBoundingClientRect().top, bottom: label.querySelector(".lv-matches")?.getBoundingClientRect().bottom ?? label.getBoundingClientRect().bottom })).sort((one, other) => one.top - other.top);
+    return labels.slice(1).map((label, index) => (labels[index]?.bottom ?? 0) - label.top).filter((overlap) => overlap > 0);
+  });
+  expect(overlaps, "an engine's matches reach the next engine's label by these many pixels").toEqual([]);
+}
+
+/**
+ * The host's label under the node, with the step's command on two lines, ends
+ * above the bottom of the map: the band below it does not cut its last line.
+ */
+async function expectWholeHostLabel(page: Page, step: Step): Promise<void> {
+  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(step.title);
+  await settle(page);
+  const found = await page.evaluate(() => {
+    const command = document.querySelector(".lv-host-command");
+    const role = document.querySelector(".lv-host-role");
+    const stage = document.querySelector(".lv-stage");
+    if (!command || !role || !stage) return { lines: 0, below: Number.NaN };
+    const lines = Math.round(command.getBoundingClientRect().height / parseFloat(getComputedStyle(command).lineHeight));
+    return { lines, below: role.getBoundingClientRect().bottom - stage.getBoundingClientRect().bottom };
+  });
+  expect(found.lines, `the command of ${step.title} takes two lines`).toBe(2);
+  expect(found.below, "the host's label ends this far below the map").toBeLessThanOrEqual(0);
+}
+
+/** The race line above the map holds its whole sentence: nothing of it is cut short. */
+async function expectWholeRaceLine(page: Page, name: string): Promise<void> {
+  const cut = await page.evaluate(() => {
+    const line = document.querySelector(".lv-winning");
+    return line ? line.scrollWidth - line.clientWidth : 0;
+  });
+  expect(cut, `${name}: the race line is cut short by these many pixels`).toBeLessThanOrEqual(1);
+}
+
+/** The lanes' time axis has labels across the run: its last one lies past the middle of the axis. */
+async function expectLabelledAxis(page: Page): Promise<void> {
+  const where = await page.evaluate(() => {
+    const svg = document.querySelector(".lv-ln-svg");
+    const labels = [...document.querySelectorAll(".lv-ln-tick text")];
+    const last = labels[labels.length - 1];
+    if (!svg || !last) return Number.NaN;
+    const box = svg.getBoundingClientRect();
+    return (last.getBoundingClientRect().left - box.left) / box.width;
+  });
+  expect(where, "the last label of the lanes' time axis lies this far along it").toBeGreaterThan(0.5);
 }
 
 test("pictures of the live view, in the replay page and in the app", async ({ page }) => {
@@ -243,6 +290,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
       await open(`step=${step.id}&at=${LATE}&paused=1`);
       const cut = await expectMoment(page, step);
       if (cut.length === 0) {
+        await expectWholeRaceLine(page, name);
         await picture(page, folder, name);
         break;
       }
@@ -254,6 +302,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await open("mode=analyse");
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("table")).toBeVisible();
+  await expectLabelledAxis(page);
   await pictureOfLists(page, folder, "analyse.png");
 
   await open(`mode=analyse&select=${unseen.id}`);
@@ -301,11 +350,22 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
 
   const path = await link.getAttribute("href");
   if (!path?.startsWith("#/")) throw new Error(`The recorded run's link is ${path}.`);
-  // Inside the app the live view shares the width with the app's own rail: the wide size keeps every rule title whole.
+  const moment = (step: Step) =>
+    page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, `${path.slice(1)}?step=${step.id}&at=${LATE}&paused=1`);
+  // At 1440 by 900 too, where the live view shares the width with the app's own rail: every rule title
+  // of the first alert is whole, wrapped where it is long, and the host's label is not cut by the band
+  // below the map when the step's command takes two lines, as the longest command of a test does.
+  await moment(firstAlert);
+  await expectWholeMoment(page, firstAlert);
+  const [longest] = every("test with a command", (step) => step.role === "test" && (step.command ?? "") !== "").sort((one, other) => (other.command ?? "").length - (one.command ?? "").length);
+  if (!longest) throw new Error("The recording has no test with a command.");
+  await moment(longest);
+  await expectWholeHostLabel(page, longest);
+
   await page.setViewportSize({ width: 1920, height: 1080 });
-  await page.evaluate((hash) => {
-    window.location.hash = hash;
-  }, `${path.slice(1)}?step=${firstAlert.id}&at=${LATE}&paused=1`);
+  await moment(firstAlert);
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "app-recorded-run.png");
 

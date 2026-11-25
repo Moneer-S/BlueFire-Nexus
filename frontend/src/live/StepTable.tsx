@@ -2,12 +2,12 @@
 // the step nobody saw first, the events each sensor recorded, and the rules
 // that matched, published and lab apart.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
-import type { Outcome, Sensor, Step, StepRole } from "./recording";
+import type { Outcome, Recording, Sensor, Step, StepRole } from "./recording";
 import { OUTCOME_ORDER, ROLE_ORDER, roleCount, tableRows } from "./analyse";
 import type { SortKey, StepRow } from "./analyse";
-import { count, outcomeClass, outcomeWords, plural, sensorWord } from "./format";
+import { count, outcomeClass, outcomeWords, plural, sensorWord, stepLabel, stepShortName, testNumbers } from "./format";
 import type { StyleVars } from "./motion";
 
 export interface TableState {
@@ -21,6 +21,7 @@ export interface TableState {
 export const FIRST_TABLE_STATE: TableState = { role: "test", outcome: null, sort: "outcome", ascending: true };
 
 interface StepTableProps {
+  recording: Recording;
   rows: StepRow[];
   sensors: Sensor[];
   colours: Map<string, string>;
@@ -74,8 +75,9 @@ function MatchCell({ row }: { row: StepRow }) {
   return <>{parts}</>;
 }
 
-export function StepTable({ rows, sensors, colours, state, onState, selected, onSelect }: StepTableProps) {
+export function StepTable({ recording, rows, sensors, colours, state, onState, selected, onSelect }: StepTableProps) {
   const wrap = useRef<HTMLDivElement | null>(null);
+  const numbers = useMemo(() => testNumbers(recording), [recording]);
   const roles = ([...ROLE_ORDER, "all"] as const).filter((kind) => kind === "all" || rows.some((row) => row.step.role === kind));
   // A role the recording has no step of, such as the tests the table opens on, reads as All: the table never opens empty with no filter pressed.
   const role = roles.includes(state.role) ? state.role : "all";
@@ -127,8 +129,8 @@ export function StepTable({ rows, sensors, colours, state, onState, selected, on
       </button>
     </th>
   );
-  // The role column only says something when the table holds more than one role.
-  const mixed = role === "all";
+  // The first column names each row's step as the captions do: among the tests alone, by its number; otherwise by its short name, which says its role.
+  const numbered = role === "test";
   const scope = role !== "all" ? roleCount(role, inRole.length) : rows.length === 1 ? "the one step" : `all ${plural(rows.length, "step")}`;
 
   return (
@@ -166,9 +168,8 @@ export function StepTable({ rows, sensors, colours, state, onState, selected, on
       <div className="lv-table-wrap" ref={wrap}>
         <table className="lv-table">
           <colgroup>
-            <col className="is-n" />
+            <col className={numbered ? "is-n" : "is-name"} />
             <col className="is-out" />
-            {mixed ? <col className="is-role" /> : null}
             <col />
             <col className="is-tech" />
             {sensors.map((sensor) => (
@@ -178,14 +179,9 @@ export function StepTable({ rows, sensors, colours, state, onState, selected, on
           </colgroup>
           <thead>
             <tr>
-              {header("order", "#", "is-n")}
+              {header("order", numbered ? "Test" : "Step", "is-n")}
               {header("outcome", "Outcome")}
-              {mixed ? (
-                <th scope="col" className="is-plain">
-                  Role
-                </th>
-              ) : null}
-              {header("title", "Step")}
+              {header("title", "Title")}
               {header("technique", "Technique")}
               {sensors.map((sensor) => (
                 <th key={sensor.id} className="is-num" scope="col" title={`Events ${sensor.name} recorded for the step`}>
@@ -205,12 +201,13 @@ export function StepTable({ rows, sensors, colours, state, onState, selected, on
               const kept = step.visibility.kept !== undefined && row.recorded !== null && row.recorded > row.events.length;
               return (
                 <tr key={step.id} data-step={step.id} className={`${step.role === "test" ? "" : "is-quiet"}${step.id === selected ? " is-selected" : ""}`} onClick={() => onSelect(step.id)}>
-                  <td className="is-n">{row.index + 1}</td>
+                  <td className="is-n" title={stepLabel(recording, step)}>
+                    {numbered ? (numbers.get(step.id) ?? "") : stepShortName(recording, step)}
+                  </td>
                   <td title={lab ? `With the rules written in this repository: ${lab}` : undefined}>
                     <span className={`lv-ow is-${outcomeClass(step.outcome)}`}>{step.outcome}</span>
                     {notStopped(step) ? <span className="lv-ow-note"> &middot; not stopped</span> : null}
                   </td>
-                  {mixed ? <td className="is-role">{step.role}</td> : null}
                   <td className="is-title">
                     <div>
                       <button
@@ -256,7 +253,7 @@ export function StepTable({ rows, sensors, colours, state, onState, selected, on
             })}
             {shown.length === 0 ? (
               <tr>
-                <td colSpan={(mixed ? 6 : 5) + sensors.length} className="lv-table-empty">
+                <td colSpan={5 + sensors.length} className="lv-table-empty">
                   No step has this role and outcome.
                 </td>
               </tr>

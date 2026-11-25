@@ -367,7 +367,7 @@ describe("the page of two compared runs", () => {
 
   it("opens a step's detail for both runs side by side and keeps it in the address", async () => {
     const delta = sensorDelta();
-    const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "nothing recorded", events: 0 } })] }), id: "run-before" };
+    const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "nothing of the test was recorded besides its launcher's start", events: 0 } })] }), id: "run-before" };
     const after = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4, { visibility: { answer: "telemetry only", basis: "one record", events: 1 }, first_event: "2026-01-01T10:00:03.500Z" })], events: [event("2-1", "2", 3.5)] }), id: "run-after" };
     // Each side is asked for by its file, as the delta names it: one run evaluated twice has one id for both.
     const recordingFetch = vi.spyOn(api, "recordingFile").mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
@@ -379,7 +379,8 @@ describe("the page of two compared runs", () => {
     expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2`);
     const articles = await within(detail).findAllByRole("article");
     expect(articles).toHaveLength(2);
-    expect(articles[0]).toHaveTextContent("It took effect, and no sensor recorded it.");
+    // The unseen test is told in its recording's own words.
+    expect(articles[0]).toHaveTextContent("It took effect, and nothing of the test was recorded besides its launcher's start.");
     expect(articles[1]).toHaveTextContent("1 event recorded, no rule matched, none at alert level.");
     expect(recordingFetch.mock.calls.map(([id]) => id).sort()).toEqual(["run-after", "run-before"]);
     expect(recordingFetch.mock.calls.every(([, sha256]) => sha256 === "a".repeat(64))).toBe(true);

@@ -68,7 +68,7 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
     <section className="lv-analyse" aria-label="Analyse" ref={panel}>
       <RunLanes recording={recording} timeline={timeline} facts={facts} colours={colours} selected={row?.step.id} onSelect={choose} />
       <div className="lv-an-body">
-        <StepTable rows={rows} sensors={sensors} colours={colours} state={table} onState={setTable} selected={row?.step.id} onSelect={chooseInTable} />
+        <StepTable recording={recording} rows={rows} sensors={sensors} colours={colours} state={table} onState={setTable} selected={row?.step.id} onSelect={chooseInTable} />
         <div className="lv-an-detail" ref={detail}>
           {row ? (
             <StepDetail

@@ -84,7 +84,7 @@ function RecordedRun({ recordingId, file }: { recordingId: string; file?: string
   return <div className="recorded-run">
     <RecordedRunBar summary={data.summary} pollError={entry.isError && data.summary.running ? entry.error : null} />
     {reading && "recording" in reading
-      ? <RecordedRunView recording={reading.recording} />
+      ? <RecordedRunView recording={reading.recording} originKind={data.summary.origin.kind} />
       : <CannotPlay message={reading?.problem ?? "The recording could not be read."} />}
   </div>;
 }
@@ -123,7 +123,7 @@ function RecordedRunBar({ summary, pollError }: { summary?: RecordingSummary; po
   </header>;
 }
 
-function RecordedRunView({ recording }: { recording: Recording }) {
+function RecordedRunView({ recording, originKind }: { recording: Recording; originKind: RecordingSummary["origin"]["kind"] }) {
   const { pathname } = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [initial, setInitial] = useState<NonNullable<LiveViewProps["initial"]>>(() => momentFromSearch(searchParams));
@@ -194,7 +194,7 @@ function RecordedRunView({ recording }: { recording: Recording }) {
     </div> : null}
     <div className="recorded-run-view">
       <LiveViewBoundary fallback={(message) => <CannotPlay message={message} />}>
-        <LiveView key={mount} recording={recording} initial={initial} onFix={onFix} onMoment={onMoment} />
+        <LiveView key={mount} recording={recording} originKind={originKind} initial={initial} onFix={onFix} onMoment={onMoment} />
       </LiveViewBoundary>
     </div>
   </>;

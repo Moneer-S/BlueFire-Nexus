@@ -814,11 +814,15 @@ def _execute(
             except RecordingError as exc:
                 raise invalid_delta(exc) from None
             return service.import_recording_delta({"delta": delta})
-        text = _bounded_utf8_text(
-            args.path, maximum_bytes=MAX_RECORDING_BYTES, description="recording"
-        )
-        # The file is sent as it is, so the store keeps the bytes its engine wrote.
-        recording_file = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        # The file's own bytes go through the import route's door for a file, so the store
+        # keeps the bytes its engine wrote and a file is refused for the same reason at
+        # every door.
+        try:
+            with args.path.open("rb") as source:
+                payload = source.read(MAX_RECORDING_BYTES + 1)
+        except OSError as exc:
+            raise ValueError("unable to read recording") from exc
+        recording_file = base64.b64encode(payload).decode("ascii")
         return service.import_recording({"recording_file": recording_file})
     if args.command == "detections":
         if args.detection_command == "health":
@@ -1055,8 +1059,14 @@ def _write_new_file(path: Path, payload: bytes, *, description: str) -> None:
             f"the {description} was not written: the file already exists. "
             "Name a new file with --out."
         ) from None
+    except FileNotFoundError:
+        raise ValueError(
+            f"the {description} was not written: the folder --out names does not exist. "
+            "Create the folder first, or name a file in an existing folder."
+        ) from None
     except OSError as exc:
-        raise ValueError(f"unable to create the {description} file") from exc
+        reason = exc.strerror or "the system refused it"
+        raise ValueError(f"unable to create the {description} file: {reason}") from exc
     try:
         with handle:
             handle.write(payload)

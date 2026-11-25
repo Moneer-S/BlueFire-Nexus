@@ -99,7 +99,8 @@ bluefire --runs-dir .bluefire-runs recordings page RECORDING_ID --out replay.htm
 `list` prints the recordings shipped with BlueFire and those imported into this
 runs directory, in the shape of `GET /api/v1/recordings` (see [API.md](API.md)).
 `import` reads one recording file of at most 8 MiB in the format of
-[RECORDING.md](RECORDING.md), checks it as the import route does, and stores the
+[RECORDING.md](RECORDING.md), sends its own bytes as the import route's
+`recording_file`, so they are checked as the route checks them, and stores the
 file as it is under `<runs-dir>/recordings/`; a second evaluation of a kept run,
 with the same `source`, is kept beside the first (`another_evaluation`). A
 refused file exits with status 2 and prints `recording_invalid` with each
@@ -115,11 +116,12 @@ recording files first, both of them also for one run evaluated twice. A refused 
 `page` writes the single replay page of one recording, shipped or imported, to
 a new file: the packaged page `bluefire/ui/replay.html` with the recording put
 inside it, and beside it the recording's `origin` from the list, whose note the
-page shows under the title. The page plays in any browser with nothing
+page shows in the details under the title. The page plays in any browser with nothing
 installed and loads nothing from anywhere (see [LIVE_VIEW.md](LIVE_VIEW.md)).
 It prints the recording's id, the file's path and its size. It never replaces a
 file: when `--out` names one that exists, it exits with status 2 and writes
-nothing. An id that is not in the list exits with status 2 and prints
+nothing. It does not make folders either: `--out` names a file in a folder
+that exists, and a missing folder exits with status 2 and says so. An id that is not in the list exits with status 2 and prints
 `recording_not_found`. A recording that is still running, with no
 `source.finished` yet, exits with status 2, prints `recording_running` and
 writes nothing: a page is made of a finished run, and a running one is watched

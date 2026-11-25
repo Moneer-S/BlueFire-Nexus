@@ -162,7 +162,9 @@ const LATE_WORDS: Record<MatchKind, string> = {
 export function lateWords(recording: Recording, timeline: Timeline, fire: Fire): string {
   const segment = timeline.segments.find((item) => item.step.id === fire.alert.step);
   const where = segment ? `${stepLabel(recording, segment.step)}, ${segment.step.title}` : fire.alert.step;
-  return `${LATE_WORDS[matchKind(fire.alert)]} on ${where}: ${fire.alert.rule.title}, ${raisedAfterEnd(timeline, fire, "that step")}.`;
+  const kind = matchKind(fire.alert);
+  const what = kind === "review" && fire.alert.rule.level === "informational" ? "Informational match" : LATE_WORDS[kind];
+  return `${what} on ${where}: ${fire.alert.rule.title}, ${raisedAfterEnd(timeline, fire, "that step")}.`;
 }
 
 /** "raised 14.2 s after that step ended", from the step's end as every part of the view reads it. */
