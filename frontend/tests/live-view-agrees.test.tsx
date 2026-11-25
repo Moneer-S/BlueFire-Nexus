@@ -104,8 +104,6 @@ describe("one clock, one name, on an attack path", () => {
 describe("the lanes' axis on an attack path", () => {
   it("names a step as the table and the detail do, so its last label is not read as the last step's", () => {
     const value = path(11);
-    // The table looks again for the chosen row once the page's font has loaded, which this test's document has no word of.
-    Object.defineProperty(document, "fonts", { value: { ready: Promise.resolve() }, configurable: true });
     const { container, unmount } = open(value, { mode: "analyse", select: "11" });
     const labels = texts(container, ".lv-ln-tick text");
     expect(labels[0]).toMatch(/^step 1 {2}00:00$/);

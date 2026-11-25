@@ -254,7 +254,7 @@ describe("the attacker's goal", () => {
     const value: Recording = { ...base, kind: "attack path", attacker: { ...base.attacker, goal: "Read the domain admin's password." }, score: { ...base.score, goal_seconds: 30 } };
     const reached = open(value, { mode: "analyse" });
     const goal = within(reached.container).getByText("Goal").nextElementSibling?.textContent ?? "";
-    expect(goal).toBe("Read the domain admin's password.Reached 00:30.0 after the first step.");
+    expect(goal).toBe("Read the domain admin's password.Reached 00:30.0 into the run.");
     reached.unmount();
     const unknown = open({ ...value, score: base.score }, { mode: "analyse" });
     expect(within(unknown.container).getByText("Goal").nextElementSibling?.textContent).toBe("Read the domain admin's password.The recording does not say it was reached.");

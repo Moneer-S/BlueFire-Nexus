@@ -140,7 +140,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
             <dt>Goal</dt>
             <dd>
               <FreeText text={recording.attacker.goal} />
-              <small>{score.goal_seconds !== undefined ? `Reached ${elapsed(score.goal_seconds)} after the first step.` : "The recording does not say it was reached."}</small>
+              <small>{score.goal_seconds !== undefined ? `Reached ${elapsed(score.goal_seconds)} into the run.` : "The recording does not say it was reached."}</small>
             </dd>
           </>
         ) : null}
