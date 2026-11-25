@@ -17,6 +17,7 @@ import { CompositionPage } from "./pages/Composition";
 import { FileAccessPage } from "./pages/FileAccess";
 import { DetectionLabPage } from "./pages/DetectionLab";
 import { EnvironmentsPage } from "./pages/Environments";
+import { FixStepPage } from "./pages/FixStep";
 import { GettingStartedPage } from "./pages/GettingStarted";
 import { OverviewPage } from "./pages/Overview";
 import { RecordedRunPage } from "./pages/RecordedRun";
@@ -37,6 +38,8 @@ export default function App() {
         <Route path="runs/:runId" element={<RunsPage />} />
         <Route path="runs/recorded/:recordingId" element={<RecordedRunPage />} />
         <Route path="runs/recorded/:recordingId/:file" element={<RecordedRunPage />} />
+        <Route path="runs/recorded/:recordingId/fix/:stepId" element={<FixStepPage />} />
+        <Route path="runs/recorded/:recordingId/:file/fix/:stepId" element={<FixStepPage />} />
         <Route path="runs/compared/:deltaId" element={<ComparedRunsPage />} />
         <Route path="compare" element={<ComparePage />} />
         <Route path="composition" element={<CompositionPage />} />

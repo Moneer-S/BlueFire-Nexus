@@ -195,10 +195,35 @@ not hold gets one line that says so, and keeps naming that step until you move
 from where the view opened. In a small window the view behaves as the single
 replay page does: it grows with what it holds, the page scrolls, and at phone
 width its bands stack. While a recording is still running, the page asks
-the service for it again every few seconds and shows what has arrived. **Fix
-this** on a step opens its detail in analyse mode, where the hint says where
-the gap is: a sensor, or a rule. Making the change from there is not part of
-BlueFire yet.
+the service for it again every few seconds and shows what has arrived.
+
+**Fix this**, on a step that got through without an alert (in the caption while
+watching, or in the step's detail while analysing), opens the step's own page
+at `#/runs/recorded/<id>/fix/<step id>`, with **Back to the run** to the moment
+you came from. It reads the step's recording and the comparisons the service
+keeps, and nothing else. After the step and its outcome it says where to start,
+in a sentence or two: a sensor's settings for a step of which nothing that
+counts was recorded, a rule for one that was recorded with no alert. Then what
+was already tried: each comparison that moved the step, with its before and
+after, its price, and links to it and, from a before run, to the same step in
+the after run. Then the evidence: every event the recording holds of the step,
+by sensor; under **How we know**, the recording's own reason and the SHA-256 of
+each sensor's settings; for a step with no event, the other runs of the same
+technique; and the rules that matched it. Last come, for a rule, an empty draft
+kept in this browser only; the model's place, which says that nothing was sent;
+and what a rerun is (a pull request whose CI runs the list before and after).
+The change itself is a file in the repository: the app runs nothing, holds no
+token and asks no model.
+
+A comparison of other runs is listed only when both of its runs ran the same
+list as the step's run, by the list's title and kind, and it paired the step by
+stable ids. In a recording with stable step ids, it names the step by its id.
+In an older recording, such as the example shipped with the app, a step of role
+`test` that is the only one of its published test in the run is tied to the
+step a later run names `test:<first 8 characters of the GUID>`: the same test
+as the list gives it, with no input arguments. A rerun with changed arguments, a
+hardened rerun, or a test that ran with arguments is never tied that way. The
+line says it is another run of the same list, not this one.
 
 To import a recording, select **Import a recording** on **Runs** and choose its
 JSON file, or run `bluefire recordings import <file>`. Either way the service

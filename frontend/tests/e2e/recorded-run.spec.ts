@@ -65,8 +65,6 @@ test("a recorded run opens from Runs, plays in the live view and keeps its momen
   await expect(detail).toBeVisible();
   // The hint says where the gap is: nothing recorded it, so a sensor comes first.
   await expect(page.getByText(/^Start with a sensor/).first()).toBeVisible();
-  await page.getByRole("button", { name: "Fix this", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "the hint in the step's detail says where the gap is" })).toBeVisible();
   await expect(page).toHaveURL(/mode=analyse&select=/);
   const analysing = page.url();
 
@@ -77,26 +75,64 @@ test("a recorded run opens from Runs, plays in the live view and keeps its momen
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("heading", { name: "Clear Bash history (echo)", exact: true })).toBeVisible();
   expect(page.url()).toBe(analysing);
+
+  // Fix this opens the step's own page, and its Back returns to the step's detail.
+  await page.getByRole("button", { name: "Fix this", exact: true }).click();
+  await expect(page).toHaveURL(/#\/runs\/recorded\/[A-Za-z0-9_-]+\/fix\/43\?/);
+  await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo)" })).toBeFocused();
+  await page.getByRole("link", { name: "Back to the run" }).click();
+  await expect(page).toHaveURL(analysing);
+  await expect(page.getByRole("heading", { name: "Clear Bash history (echo)", exact: true })).toBeVisible();
   expect(problems).toEqual([]);
 });
 
-test("Fix this while watching opens the step's detail in analyse mode, and leads nowhere else", async ({ page }) => {
+test("Fix this while watching opens the step's page, which says what the recording holds, and Back returns to the same moment", async ({ page }) => {
+  const problems: string[] = [];
+  page.on("pageerror", (error) => problems.push(String(error)));
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("./#/runs");
   const link = page.getByRole("region", { name: "Recorded runs" }).getByRole("link", { name: "60 published tests on one Linux host" });
   const path = await link.getAttribute("href");
   // Test 40 of the shipped recording is the one nothing recorded; its step id is "43".
   await page.goto(`./${path}?step=43&at=0.95&paused=1`);
+  const watching = page.url();
   await expect(page.getByText("Overwrites the shell history file with an empty line, using echo.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Fix this", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("heading", { name: "Clear Bash history (echo)", exact: true })).toBeVisible();
-  await expect(page.getByRole("status").filter({ hasText: "BlueFire cannot make the change for you yet." })).toBeVisible();
-  await expect(page).toHaveURL(/mode=analyse&select=43$/);
+  await expect(page).toHaveURL(/\/fix\/43\?step=43&at=0\.95&paused=1$/);
+  const fixing = page.url();
 
-  // A link to another moment opens there, and the note about the step being fixed goes.
-  await page.goto(`./${path}?step=42&at=0.6&paused=1`);
-  await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "false");
-  await expect(page.getByText("BlueFire cannot make the change for you yet.")).toHaveCount(0);
+  // Where to start first, in plain words, on the first screen.
+  const start = page.getByRole("region", { name: "Where to start" });
+  await expect(start).toContainText("Nothing of this test was recorded. Start with a sensor's settings: a rule can only match what a sensor records.");
+  await expect(start).toBeInViewport();
+  await expect(page.getByRole("textbox")).toHaveCount(0);
+  // The shipped example is older than stable step ids: the two shipped comparisons are tied to its test by the published test's id, as other runs of the same list.
+  const tried = page.getByRole("region", { name: /^What was already tried/ });
+  const watchLine = tried.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  const ruleLine = tried.getByRole("listitem").filter({ hasText: "A new rule: Shell History File Truncated In Place" });
+  for (const line of [watchLine, ruleLine]) {
+    await expect(line).toContainText("Another run of the same list, not this one, with the same published test as the list runs it. Published test cbf506a5");
+    await expect(line.getByRole("link", { name: "Open the comparison at this step" })).toHaveAttribute("href", /\/runs\/compared\/[0-9a-f]+\?step=test%3Acbf506a5$/);
+  }
+  await expect(watchLine).toBeInViewport({ ratio: 1 });
+  // What the recording says of the step, in its own words, one quiet line away.
+  const basis = page.getByText("nothing of the test was recorded besides its launcher's start", { exact: true });
+  await expect(basis).toBeHidden();
+  await page.getByText("How we know", { exact: true }).click();
+  await expect(basis).toBeVisible();
+  // The demo's configuration has no model: the fixed text says so.
+  await expect(page.getByRole("complementary", { name: "The model's place" })).toContainText("No model is connected. Nothing was sent.");
+  const fixPage = await new AxeBuilder({ page }).include(".fx").analyze();
+  expect(fixPage.violations.filter((item) => ["serious", "critical"].includes(item.impact ?? ""))).toEqual([]);
+
+  // The page's address can be shared, and Back returns to the moment it was opened from.
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo)" })).toBeVisible();
+  expect(page.url()).toBe(fixing);
+  await page.getByRole("link", { name: "Back to the run" }).click();
+  await expect(page).toHaveURL(watching);
+  await expect(page.getByText("Overwrites the shell history file with an empty line, using echo.", { exact: true })).toBeVisible();
+  expect(problems).toEqual([]);
 });
 
 test("the recorded runs open from the keyboard, and the Runs screen and the recorded run page have no serious axe violations", async ({ page }) => {
@@ -135,7 +171,10 @@ test("at phone width the recorded run's page stacks the live view's bands and sc
   await fix.scrollIntoViewIfNeeded();
   expect(await inWidth(await fix.boundingBox())).toBe(true);
   await fix.click();
-  await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
+  // It opens the step's own page, which fits the window's width too.
+  await expect(page).toHaveURL(/\/fix\/43\?/);
+  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("Nothing of this test was recorded.");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 test("a recording that is not there is said plainly, with the way back", async ({ page }) => {
