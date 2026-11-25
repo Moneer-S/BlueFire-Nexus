@@ -41,8 +41,8 @@ const run = (raised: number | null) =>
 
 describe("the light of a recorded event", () => {
   it("travels plain until a live detector raises its match, and takes the match's colour from then", () => {
-    // Raised 0.3 s after the event: it fires while the event's light is still on its way.
-    const value = run(10.5);
+    // Raised 0.7 s after the event: it fires while the event's light is still on its way.
+    const value = run(10.9);
     const timeline = buildTimeline(value);
     const arrives = timeline.arrival.get("1-1") ?? Number.NaN;
     const fires = timeline.fire.get("a") ?? Number.NaN;

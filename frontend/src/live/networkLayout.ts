@@ -420,6 +420,27 @@ export function markAlertedHosts(network: Network, ids: Iterable<string>): void 
   if (added) keptLayouts.delete(network);
 }
 
+/** The hosts a step of the run runs on: only they wear a badge, and no line is drawn through its place. */
+const BADGED = new WeakSet<Host>();
+
+/**
+ * Marks the hosts of `network` that a step runs on, by id: the only hosts that
+ * wear a badge. Every line keeps out of the places their badges may stand,
+ * even a line that ends at the host, so no badge is ever drawn on a line. A
+ * running recording gains steps as it is followed: a host marked anew drops
+ * the layouts kept for its network.
+ */
+export function markBadgedHosts(network: Network, ids: Iterable<string>): void {
+  const wanted = new Set(ids);
+  let added = false;
+  for (const host of network.hosts) {
+    if (!wanted.has(host.id) || host.kind === "defense" || BADGED.has(host)) continue;
+    BADGED.add(host);
+    added = true;
+  }
+  if (added) keptLayouts.delete(network);
+}
+
 /** The host an attack path's goal is on: its badge, "goal reached" and the goal's time, is wider than any other. */
 const GOAL = new WeakSet<Host>();
 
@@ -871,8 +892,8 @@ function circleBox(node: Point & { r: number }, pad: number): Box {
   return [node.x - node.r - pad, node.y - node.r - pad, node.x + node.r + pad, node.y + node.r + pad];
 }
 
-function badgeBox(anchor: Point): Box {
-  return [anchor.x - BADGE.width / 2, anchor.y - BADGE.height, anchor.x + BADGE.width / 2, anchor.y];
+function badgeBox(anchor: Point, width: number = BADGE.width): Box {
+  return [anchor.x - width / 2, anchor.y - BADGE.height, anchor.x + width / 2, anchor.y];
 }
 
 /** The box a curve stays inside, `pad` pixels wider each way: a Bezier curve never leaves the box of its control points. */
@@ -1739,6 +1760,17 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
   const fieldList = fieldNodesOf(hosts);
   const rings = fieldList.map((node) => badgeBox({ x: node.x, y: node.y - node.r - BADGE.above }));
   const solid: Box[] = [...circles, ...names, ...heads, ...engines];
+  // Where the badge of a host a step runs on may stand, as wide as the widest it wears: above the host, or, where the
+  // map's top, a head or another host's words leave no room there, beside it on either side. Every line keeps out of
+  // them, one that ends at the host too, so no badge is ever drawn on a line.
+  const badgeRoom: Box[] = fieldList.flatMap((node): Box[] => {
+    if (!BADGED.has(node.host)) return [];
+    const wide = GOAL.has(node.host) ? GOAL_BADGE_WIDTH : BADGE.width;
+    const above = badgeBox({ x: node.x, y: node.y - node.r - BADGE.above }, wide);
+    if (above[1] >= 2 && solid.every((box) => overlap(above, box) === 0)) return [above];
+    const side = wide / 2 + node.r + BADGE.ring + 4;
+    return [1, -1].map((way) => badgeBox({ x: node.x + way * side, y: node.y - node.r * 0.4 }, wide));
+  });
   const wirePoints: Point[] = [];
   for (const curve of junctionToDetector.values()) wirePoints.push(...samples(curve));
 
@@ -1778,8 +1810,9 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
       const nearHosts = hostList.filter((node) => node !== from && node !== to && meetsBox(circleBox(node, 48), bounds));
       const nearNames = names.filter((box) => meetsBox([box[0] - 14, box[1] - 14, box[2] + 14, box[3] + 14], bounds));
       const ownNames = [names[hostList.indexOf(from)], names[hostList.indexOf(to)]];
-      // The place above another host is its badge's: a path through it would run behind the badge.
-      const nearBadges = rings.filter((box, index) => fieldList[index] !== from && fieldList[index] !== to && meetsBox(box, bounds));
+      // The place above another host is its badge's, and so is any place a step's host may wear its badge, its own ends'
+      // too: a path through it would run behind the badge.
+      const nearBadges = [...rings.filter((box, index) => fieldList[index] !== from && fieldList[index] !== to), ...badgeRoom].filter((box) => meetsBox(box, bounds));
       // Two links that cross make the way the attacker came hard to follow: a crossing costs as much as a pass by a host.
       const path = [curve[0], ...samples(curve, 16), curve[3]];
       for (const placed of placedPaths) {
@@ -2002,6 +2035,7 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
       const nearHosts = fieldNodes.filter((other) => meetsBox(circleBox(other, 14), bounds));
       const nearWords = wordBoxes.filter((box) => meetsBox(box, bounds));
       const nearRings = rings.filter((box) => meetsBox(box, bounds));
+      const nearRoom = badgeRoom.filter((box) => meetsBox(box, bounds));
       // Sampled finely enough that no sensor's dot falls between two samples.
       for (const [index, point] of samples(curve, 80).entries()) {
         // It keeps clear of the hosts, and never runs back across its own: the light would cross the host's icon.
@@ -2015,6 +2049,8 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
         for (const box of nearWords) if ((box !== ownWords || index > 5) && inBox(point, box, 2)) score += box === ownWords ? 8 : box === junctionName ? 24 : names.includes(box) ? 8 : 30;
         // Nor through the place above a host where its badge stands.
         for (const box of nearRings) if (inBox(point, box, 2)) score += 4;
+        // Where a step's host wears its badge, a line would cross the badge itself.
+        for (const box of nearRoom) if (inBox(point, box, 2)) score += 12;
         // It stays under the column heads and on the map.
         if (point.y < HEADS_MANY + 6 || point.y > H - 4) score += 4;
         // A score only grows: once it is no better than the best, this shape cannot win.

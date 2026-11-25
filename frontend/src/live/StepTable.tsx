@@ -270,7 +270,7 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
               {header("title", "Title")}
               {header("technique", "Technique")}
               {sensors.map((sensor) => (
-                <th key={sensor.id} className="is-num" scope="col" title={`Events ${sensorLabel(recording, sensor)} recorded for the step`}>
+                <th key={sensor.id} className="is-num" scope="col" title={`The step's events from ${sensorLabel(recording, sensor)} that the recording keeps`}>
                   <span style={{ "--rgb": colours.get(sensor.id) ?? "123,202,255" } as StyleVars}>
                     <i className="lv-dot" />
                     {sensorLabel(recording, sensor, "column")}
@@ -290,9 +290,10 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
                   <td className="is-n" title={stepLabel(recording, step)}>
                     {numbered ? (numbers.get(step.id) ?? "") : stepShortName(recording, step)}
                   </td>
-                  <td title={lab ? `With the lab's own rules, which the score does not count: ${outcomeWords(lab)}` : undefined}>
+                  <td className="is-outcome" title={lab ? `With the lab's own rules, which the score does not count: ${outcomeWords(lab)}` : undefined}>
                     <span className={`lv-ow is-${outcomeClass(step.outcome)}`}>{outcomeWords(step.outcome)}</span>
-                    {notStopped(step) ? <span className="lv-ow-note"> &middot; not stopped</span> : null}
+                    {/* On a line of its own under the outcome, so the cell is never cut; read as one phrase. */}
+                    {notStopped(step) ? <span className="lv-ow-note"><span className="lv-sr"> &middot; </span>not stopped</span> : null}
                   </td>
                   <td className="is-title">
                     <div>
@@ -314,8 +315,8 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
                         {step.title}
                       </button>
                       {kept ? (
-                        <span className="lv-kept-tag" title="The recording keeps the first events of the step and every event a rule matched">
-                          {count(row.recorded ?? 0)} recorded
+                        <span className="lv-kept-tag" title="The recording keeps the first events of the step and every event a rule matched. The sensors' columns count the events it keeps.">
+                          {count(row.events.length)} of {count(row.recorded ?? 0)} events kept
                         </span>
                       ) : null}
                     </div>

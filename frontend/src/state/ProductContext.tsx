@@ -160,7 +160,8 @@ interface ProductState {
   setTheme: (theme: UiTheme) => void;
   scenario: Scenario;
   scenarioIsSeededFallback: boolean;
-  setScenario: (scenario: Scenario, dirty?: boolean) => void;
+  /** `example` is true when the app, not the visitor, chose the plan: it keeps an example's labels and is not kept as the visitor's draft. */
+  setScenario: (scenario: Scenario, dirty?: boolean, example?: boolean) => void;
   dirty: boolean;
   markSaved: (savedScenario: Scenario) => boolean;
   runConfig: RunConfiguration;
@@ -195,16 +196,17 @@ export function ProductProvider({ children }: PropsWithChildren) {
   const [dirty, setDirty] = useState(scenarioState.dirty);
 
   const clearApproval = () => setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "" }));
-  const setScenario = (next: Scenario, markDirty = true) => {
+  const setScenario = (next: Scenario, markDirty = true, example = false) => {
     const previousBehaviors = new Map(currentScenario.current.steps.map((step) => [step.id, step.behavior_id]));
     const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id]));
     currentScenario.current = next;
     if (!markDirty) {
       savedScenario.current = structuredClone(next);
-      writeBrowserStorage(savedScenarioKey, JSON.stringify(next));
+      // A plan the app chose is not the visitor's: this browser keeps nothing of it, so a reload chooses it again.
+      if (!example) writeBrowserStorage(savedScenarioKey, JSON.stringify(next));
     }
     const nextDirty = !sameJson(next, savedScenario.current);
-    setScenarioState({ scenario: next, scenarioIsSeededFallback: false, dirty: nextDirty });
+    setScenarioState({ scenario: next, scenarioIsSeededFallback: example, dirty: nextDirty });
     setDirty(nextDirty);
     setRunConfigState((current) => {
       const selected = Object.entries(current.actionImplementations);

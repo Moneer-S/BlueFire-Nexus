@@ -155,7 +155,7 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     assert entry["origin"] == {
         "kind": "shipped",
         "run_url": SHIPPED_RUN,
-        "note": "Shipped with BlueFire. This repository's lab workflow recorded it in the CI "
+        "note": "Shipped with BlueFire. A workflow of this repository recorded it in the CI "
         f"run at {SHIPPED_RUN}. BlueFire checked that it follows the recording format and "
         "that its parts agree with each other.",
     }

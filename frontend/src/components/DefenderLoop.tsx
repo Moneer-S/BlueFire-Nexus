@@ -37,7 +37,7 @@ function Turn({ pair, number, compact }: { pair: DeltaSummary; number: number | 
   const total = creditedCount(pair.counts);
   const uniform = first !== undefined && moved.every((step) => step.before.outcome_with_lab_rules === first.before.outcome_with_lab_rules && step.after.outcome_with_lab_rules === first.after.outcome_with_lab_rules);
   const kind = number === null ? "is-outside" : pair.declared_change?.startsWith("sensors:") ? "is-sensor" : "is-rule";
-  const price = pair.comparable ? listedPrice(moved) : null;
+  const price = pair.comparable ? listedPrice(moved, pair) : null;
   const result = resultLine(pair);
   const which = whichWords(pair);
   const variants = moved.some((step) => step.role === "variant");

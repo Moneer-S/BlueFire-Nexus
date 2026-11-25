@@ -8,10 +8,12 @@ commit of the pull request whose run that is.
 
 They show the two recordings shipped with BlueFire:
 20261125T054314Z-037227 (bluefire/data/recordings/lab-range-one-path.json),
-the attack path, which the range-one workflow recorded in the CI run
+the attack path, which the range one workflow (.github/workflows/range-one.yml)
+recorded in the CI run
 https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964
 and 175a3a26 (bluefire/data/recordings/lab-linux-host.json), the run on one
-Linux machine, which the lab workflow recorded in the CI run
+Linux machine, which the lab workflow (.github/workflows/lab.yml) recorded in
+the CI run
 https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
 
 Each file and its name in the artifact:

@@ -462,7 +462,7 @@ engine outside the app, such as the lab, ran and what the defenses saw. The app
 keeps two kinds:
 
 - `shipped`: a recording that comes with BlueFire, under
-  `bluefire/data/recordings/`. Each is one that this repository's lab workflow
+  `bluefire/data/recordings/`. Each is one that a workflow of this repository
   recorded in CI, and its entry gives that run's address from the recording's
   own `source.run_url`. It cannot be replaced.
 - `imported`: a recording sent to `POST /api/v1/recordings` or imported with

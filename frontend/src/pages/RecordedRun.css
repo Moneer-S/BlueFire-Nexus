@@ -27,6 +27,9 @@
 .recorded-run-back svg { width: 14px; height: 14px; align-self: center; }
 .recorded-run-back:hover { color: var(--text); }
 .recorded-run-title { color: var(--text-soft); font-weight: 600; overflow-wrap: anywhere; }
+/* Which run of a comparison this is, before the title it may share with another run. */
+.recorded-run-side { color: var(--text-soft); font-weight: 600; }
+.recorded-run-side a { color: var(--blue-soft); }
 /* Inline text, so a narrow window wraps it like a sentence. */
 .recorded-run-facts { flex: 1; min-width: 0; margin: 0; line-height: 1.5; }
 .recorded-run-facts > span + span::before { content: "\00b7"; margin: 0 8px; color: var(--line-strong); }

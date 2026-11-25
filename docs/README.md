@@ -13,7 +13,7 @@ These are the documents of BlueFire Nexus: how to watch a recorded attack run, h
 ## Change a defense and see before and after
 
 - [Before against after in the app](USER_GUIDE.md#recorded-runs): the pairs of runs the app lists, and what the page of a pair shows.
-- [The defender loop](../lab/README.md#the-defender-loop-so-far): one test that no sensor recorded, followed through a sensor change and then a new rule.
+- [The defender loop](../lab/README.md#the-defender-loop-so-far): the one unseen test, followed through a sensor change and then a new rule.
 - [A pair of runs for a change to the defense](../lab/README.md#a-pair-of-runs-for-a-change-to-the-defense): how a pull request that changes a sensor's settings gets a fresh run before and after.
 - [One run evaluated with two rule sets](../lab/README.md#a-change-of-the-labs-rules-one-run-evaluated-twice): how a change to the lab's own rules is shown without running the tests again.
 

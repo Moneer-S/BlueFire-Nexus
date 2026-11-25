@@ -82,7 +82,10 @@ function engineLine(engine: StageEngine): ReactNode {
   if (!first) return <span className="pst-none">no rule matched</span>;
   const more = engine.matches.length - 1;
   return <>
-    <span className={`pst-chip is-${first.state}`}>{MARK_WORDS[first.state]} · {first.level}</span>
+    {/* As analyse mode words it: a match below alert level at informational level is not one for review. */}
+    {first.state === "review" && first.level === "informational"
+      ? <span className="pst-chip is-review" title="An informational match: nobody reviews it.">informational</span>
+      : <span className={`pst-chip is-${first.state}`}>{MARK_WORDS[first.state]} · {first.level}</span>}
     <span className="pst-rule">{first.title}</span>
     {more > 0 ? <span className="pst-none">and {more} more</span> : null}
   </>;

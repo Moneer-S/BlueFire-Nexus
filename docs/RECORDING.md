@@ -342,7 +342,7 @@ one finished recording, with the note on where it comes from
 ([LIVE_VIEW.md](LIVE_VIEW.md)). The Runs screen lists them, imports one from a
 file and plays one in the live view; the
 [user guide](USER_GUIDE.md#recorded-runs) says how. A recording shipped
-with the app is one that this repository's lab workflow recorded in CI; it is
+with the app is one that a workflow of this repository recorded in CI; it is
 kept unchanged under `bluefire/data/recordings/`. The single pages of the two
 the app ships, made in CI with that command, are in `docs/live-view/`:
 `attack-path.html` of the attack path, which the front page's loop shows, and

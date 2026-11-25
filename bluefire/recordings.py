@@ -9,7 +9,7 @@ times inside the run, and references that exist. It cannot check that the steps
 ran, where, or which sensor produced an event, and every entry says so.
 
 Two kinds of recording are listed. A recording shipped with BlueFire is a file
-under ``bluefire/data/recordings/`` that this repository's lab workflow recorded;
+under ``bluefire/data/recordings/`` that a workflow of this repository recorded;
 it is read-only. A recording a user imported is a file under
 ``<runs-dir>/recordings/``, and the import route is its only writer. A recording
 without ``source.finished`` is still running: its engine sends it again, whole,
@@ -83,7 +83,7 @@ IMPORTED_NOTE = (
     "file names."
 )
 SHIPPED_NOTE = (
-    "Shipped with BlueFire. This repository's lab workflow recorded it in the CI run "
+    "Shipped with BlueFire. A workflow of this repository recorded it in the CI run "
     "at {run_url}. BlueFire checked that it follows the recording format and that its "
     "parts agree with each other."
 )

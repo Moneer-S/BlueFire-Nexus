@@ -4,17 +4,21 @@
 // time is milliseconds since 1970, the recording's own clock.
 //
 // The rule: every step gets a segment on screen made of a short lead (the step
-// is told before anything arrives) and a body that plays the step's real
-// window. The body's length is the step's real duration passed through a
-// curve that stretches short steps and squeezes long ones into a comfortable
-// range: MIN_BODY + (MAX_BODY - MIN_BODY) * d / (d + HALF), with d in seconds.
-// A step of 0.1 s gets about 1.8 s, one of 8 s about 6.8 s, one of a minute
-// about 10.8 s, and no step gets more than 12 s. Inside the body, real time
-// runs linearly, so events keep their order and spacing. When the light of a
-// match fired in the body would reach its rule engine too late to be told, the
-// step holds after its body, its clock stopped, until a moment after it lands;
-// so does a step told by what was recorded, until the light of its last event
-// has reached the rule engines.
+// is told before anything arrives), a body that plays the step's real window,
+// and a telling after it, its clock standing at the step's end, in which the
+// step's outcome is read. The body and the telling together take the step's
+// real duration passed through a curve that stretches short steps and squeezes
+// long ones into a comfortable range: MIN_BODY + (MAX_BODY - MIN_BODY) * d /
+// (d + HALF), with d in seconds. A step of 0.1 s gets about 1.8 s, one of 8 s
+// about 6.8 s, one of a minute about 10.8 s, and no step gets more than 12 s.
+// The body takes the first `played` share of that and the telling the rest:
+// a step's outcome is told only once its clock has reached the step's end, so
+// the screen never says how a step ended before its own clock does. Inside the
+// body, real time runs linearly, so events keep their order and spacing. When
+// the light of a match fired in the body would reach its rule engine too late
+// to be told, the step holds longer, its clock stopped, until a moment after it
+// lands; so does a step told by what was recorded, until the light of its last
+// event has reached the rule engines.
 // Every silence between two steps, whatever its real length, becomes one short
 // beat.
 //
@@ -30,10 +34,12 @@ import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recordin
 export const PLAYBACK_RULE = {
   /** Seconds a step is shown before its real window starts to play. */
   lead: 0.4,
-  /** Shortest body of a step, in seconds of screen time. */
+  /** Shortest body and telling of a step together, in seconds of screen time. */
   minBody: 1.6,
-  /** The body length that very long steps approach and never reach. */
+  /** The length of body and telling that very long steps approach and never reach. */
   maxBody: 12,
+  /** The share of that length in which the step's real window plays; the telling after it, its clock at the step's end, takes the rest. */
+  played: 0.42,
   /** Real seconds at which a step gets half of the range between the two. */
   half: 8,
   /** Screen seconds of every silence between two steps. */
@@ -55,7 +61,7 @@ export function landing(fire: Fire): number {
   return fire.at + (fire.alert.events.length > 0 && !fire.late ? PLAYBACK_RULE.travel : 0);
 }
 
-/** Screen seconds of a step's body for a real duration in seconds. */
+/** Screen seconds of a step's body and its telling together, for a real duration in seconds. */
 export function bodySeconds(realSeconds: number): number {
   const { minBody, maxBody, half } = PLAYBACK_RULE;
   const d = Number.isFinite(realSeconds) && realSeconds > 0 ? realSeconds : 0;
@@ -72,7 +78,7 @@ export interface Segment {
   bodyStart: number;
   /** Screen time where the real window has played. */
   bodyEnd: number;
-  /** Screen time where the segment ends: the body's end, or later when the step holds for a match's light to land. */
+  /** Screen time where the segment ends: after the telling that follows the body, or later when the step holds for a match's light to land. */
   end: number;
   /** The real window the body plays, in ms. It holds the step's events and matches. */
   realStart: number;
@@ -290,6 +296,15 @@ export function stepEnd(segment: Segment): number {
   return segment.step.ended === undefined ? segment.realEnd : timeOf(segment.step.ended);
 }
 
+/**
+ * The screen time at which the clock reaches the step's end (`stepEnd`): until
+ * then the step is running, and from then on the screen may say how it ended.
+ * Inside the body, or its end when the step's window runs on past it.
+ */
+export function endedAt(segment: Segment): number {
+  return Math.min(segment.bodyEnd, Math.max(segment.bodyStart, placeInBody(segment, stepEnd(segment))));
+}
+
 /** How long a silence holds, and at which real time: the last late arrival fired in it. */
 interface GapHold {
   real: number;
@@ -348,8 +363,10 @@ function layOut(recording: Recording, facts: Map<string, StepFacts>, holds: Hold
       }
     }
     const bodyStart = screen + PLAYBACK_RULE.lead;
-    const bodyEnd = bodyStart + bodySeconds((realEnd - realStart) / 1000);
-    const end = bodyEnd + (holds.steps.get(step.id) ?? 0);
+    const stretch = bodySeconds((realEnd - realStart) / 1000);
+    const bodyEnd = bodyStart + stretch * PLAYBACK_RULE.played;
+    // The telling, its clock at the step's end, and any longer hold a light needs to land.
+    const end = bodyStart + stretch + (holds.steps.get(step.id) ?? 0);
     segments.push({ step, index, start: screen, bodyStart, bodyEnd, end, realStart, realEnd, timed });
     screen = end;
     previousEnd = realEnd;

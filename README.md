@@ -15,7 +15,7 @@ Each step is drawn on a map and marked alerted, seen (recorded, no alert) or uns
 
 Download [`docs/live-view/attack-path.html`](docs/live-view/attack-path.html) and open it in a browser; it holds this recording and works offline.
 
-Or run `docker compose up app`, open the address it prints, then **Runs** in the menu: the app replays the recorded runs and attacks nothing on your machine.
+Or run `docker compose up app`, open the address it prints, then **Runs** in the menu: the app replays the recorded runs and attacks nothing on your machine. With Docker Desktop, switch on "Enable host networking" in its settings first.
 
 The network is seven containers built from one spec file, on networks with no route out, and it was recorded on a GitHub-hosted runner. Each step runs a test from Atomic Red Team, a public library of attack tests. [How the network is built and run](lab/README.md#range-one-its-hosts) names each host and gives the command that runs the path in Docker.
 
@@ -23,27 +23,27 @@ The network is seven containers built from one spec file, on networks with no ro
 
 ### Read what no rule alerted on
 
-Every step after the password guessing was recorded, and no rule alerted on any of them. Pictured: step 9 of the same run, where two stock rules matched below alert level and the screen names the one to start from.
+Every step after the password guessing was recorded, and no rule alerted on any of them. Pictured: step 9 of the same run, where every stock rule that matched was below alert level and the screen names the one to start from.
 
 ![The live view late in the step that logs in to the build server with the key it found and copies files back: the hop from the web server to the build server lit, the step told seen with two rules matched for review and none at alert level, Fix this beside it, and a hint to start from the rule "Integrity checksum changed"](docs/assets/front/path-no-alert.png)
 
 ### Change a defense, see before and after
 
-On the Runs screen, **Before against after** holds two changes to the defense of a run on one Linux machine. New auditd settings took "Clear Bash history (echo)" from unseen to seen, then a rule drafted from its event took 4 steps from seen to alerted.
+On the Runs screen, **Before against after** holds two changes to a Linux machine's defense: new auditd settings took "Clear Bash history (echo)" from unseen to seen, then a rule written by hand from its event alerted on 4 steps that were seen. The score counts published rules only, so it still marks those 4 steps seen.
 
-![The two changes on the Runs screen, in the order they were made: new auditd settings, after which Clear Bash history (echo) went from unseen to seen, then a new rule, after which 4 steps went from seen to alerted](docs/assets/front/app-runs-pair.png)
+![The two changes on the Runs screen, in the order they were made: new auditd settings, after which Clear Bash history (echo) went from unseen to seen, then a new rule, after which 4 steps went from seen to alerted with the lab's rules](docs/assets/front/app-runs-pair.png)
 
 ### Find what nobody saw
 
-Open that run and press **Analyse**: the table lists first the one test no sensor recorded, "Clear Bash history (echo)". Click it: the panel beside the table says what happened and where to start.
+On the Runs screen, open the run on one Linux machine and press **Analyse**: the table lists first the one unseen test, "Clear Bash history (echo)". Click it: the panel beside the table says what happened and where to start.
 
-![Analyse mode of the run on one Linux machine: every test in a table with what recorded it and what alerted, the unseen test first and chosen, and beside the table its detail, which says it took effect with nothing recorded and to start with a sensor](docs/assets/front/analyse-unseen.png)
+![The app's Analyse screen of the run on one Linux machine: the table of all 91 steps with the unseen test, Clear Bash history (echo), first and chosen, and beside the table its detail, which says it took effect and nothing of the test was recorded besides its launcher's start, with Fix this and the advice to start with a sensor](docs/assets/front/app-analyse.png)
 
 ### See what hardening stopped
 
-Some of those tests ran a second time on a hardened machine. Each rerun is marked stopped or not, with the hardening change named, next to what the same test did without it.
+Some of those tests ran a second time on a hardened machine. In **Analyse**, the **Hardened** tab lists these reruns, each marked stopped or not; **Watch from here** on one shows it with the hardening change named, next to what the same test did without it.
 
-![The live view on a test run again on a hardened machine: marked stopped, with the hardening change named, next to what the same test did without it](docs/assets/front/watch-stopped.png)
+![The app's live view of the run on one Linux machine, opened from the Hardened tab with Watch from here and paused late in a rerun: the host's badge and the step both say stopped, the hardening change is named under the step, and under that the same test without the change took effect and was seen with no alert](docs/assets/front/app-watch-stopped.png)
 
 ---
 

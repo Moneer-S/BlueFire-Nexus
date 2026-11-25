@@ -213,6 +213,13 @@ export function day(iso: string): string {
   return DAY.format(ms);
 }
 
+/** Where a run ran, after "on": "on a GitHub-hosted runner", but "on containers on a developer machine": no article before a plural. */
+export function onEnvironment(environment: string): string {
+  const first = environment.trim().split(/\s+/)[0] ?? "";
+  if (/^(a|an|the)$/i.test(first) || /[^s]s$/i.test(first)) return `on ${environment}`;
+  return `on ${/^[aeiou]/i.test(first) ? "an" : "a"} ${environment}`;
+}
+
 /** A sensor's name without its version: "Sysmon for Linux 1.6.0" becomes "Sysmon for Linux". */
 export function sensorShortName(name: string): string {
   return name.replace(/(\s+\d\S*)+$/, "").trim() || name;

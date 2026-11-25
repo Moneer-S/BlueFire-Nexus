@@ -174,7 +174,8 @@ describe("the Runs screen's recorded runs", () => {
     const later: DeltaSummary = {
       id: "0000000000000005", claim: "one run evaluated with two rule sets", declared_change: "detectors:lab", runners: null, one_run: true, comparable: true, refused_because: [], counts,
       lab_rules: [{ rule: "r1", title: "Shell History File Truncated In Place", change: "new", before: null, after: { accepted: true, reason: "it alerted on every run" } }],
-      moved: [movedStep("test", "Clear Bash history (echo)"), movedStep("variant", "Clear Bash history (echo)"), movedStep("test", "Clear Bash history (cat dev/null)"), movedStep("variant", "Clear Bash history (cat dev/null)")],
+      moved: [movedStep("test", "Clear Bash history (echo)"), movedStep("variant", "Clear Bash history (echo)"), movedStep("test", "Clear Bash history (cat dev/null)"), movedStep("variant", "Clear Bash history (cat dev/null)")]
+        .map((step) => ({ ...step, price: "price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written" })),
       before: side("b", "2026-11-24T12:42:13Z"), after: side("c", "2026-11-24T12:42:13Z"),
       recordings: { before: { ...shipped, id: "rule-run", source: { ...shipped.source, started: "2026-11-24T12:42:13Z" } }, after: { ...shipped, id: "rule-run", source: { ...shipped.source, started: "2026-11-24T12:42:13Z" } } },
       origin: { kind: "imported", note: "Imported." },
@@ -203,6 +204,8 @@ describe("the Runs screen's recorded runs", () => {
     expect(within(rule).getByText("Shell History File Truncated In Place")).toBeVisible();
     expect(within(rule).getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
     expect(within(rule).getByText("Clear Bash history (echo) and (cat dev/null), each also with other arguments")).toBeVisible();
+    // The price its page gives: the run after kept the one new rule, which it does only for a rule that alerted on no ordinary activity.
+    expect(within(rule).getByText("Price").parentElement).toHaveTextContent("PriceNone in this run: the new rule alerted on no ordinary activity, which the lab requires before it keeps a rule");
     // Alerted by the lab's rules alone, and said so.
     expect(within(rule).getByText("alerted")).toBeVisible();
     expect(within(rule).getByText("with the lab's rules")).toBeVisible();
