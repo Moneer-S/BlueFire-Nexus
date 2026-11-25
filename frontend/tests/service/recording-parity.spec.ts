@@ -203,7 +203,7 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
     },
   },
   {
-    name: "a network with every kind of host, a sensor on the defense host, a link of a host to itself and a detector of its own name",
+    name: "a network with every kind of host, a sensor on the defense host and a detector of its own name",
     answer: "kept and plays",
     make: (value) => {
       const network = part(value, "network");
@@ -217,7 +217,6 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
         { from: "internet", to: "attacker", label: "https" },
         { from: "attacker", to: "web", label: "http" },
         { from: "web", to: "target", label: "ssh" },
-        { from: "target", to: "target", label: "loopback" },
       ];
       (network.sensors as Value[]).push({ id: "agent", name: "Wazuh agent", host: "web", records: "log lines" }, { id: "manager-log", name: "Manager log", host: "siem", records: "the manager's own log" });
       (network.detectors as Value[]).push({ id: "wazuh", name: "Wazuh rules", rules: 0, when: "live" });
@@ -489,6 +488,20 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
     make: (value) => {
       part(value, "steps", 1).role = "baseline";
       Object.assign(part(value, "score"), { steps: 1, took_effect: 1, seen: 0 });
+    },
+  },
+  {
+    name: "a link of a host to itself, which the map cannot draw as a line",
+    answer: "refused",
+    make: (value) => {
+      part(value, "network").links = [{ from: "target", to: "target", label: "loopback" }];
+    },
+  },
+  {
+    name: "more rule engines than the map draws",
+    answer: "refused",
+    make: (value) => {
+      (part(value, "network").detectors as Value[]).push(...["a", "b", "c", "d"].map((id) => ({ id, name: `${id} rules`, rules: 1, when: "after the run" })));
     },
   },
 ];

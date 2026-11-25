@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { buildTimeline, frameAt } from "../src/live/playback";
 import type { Timeline } from "../src/live/playback";
 import { firstAlertClock, revealTime, runFacts } from "../src/live/moment";
-import { RaceLine, whoIsWinning } from "../src/live/RaceLine";
+import { placeFlags, RaceLine, whoIsWinning } from "../src/live/RaceLine";
 import { runLink, stepLabel } from "../src/live/format";
 import type { Alert, Recording } from "../src/live/recording";
 import { timeOf } from "../src/live/recording";
@@ -38,22 +38,27 @@ describe("the race sentence on an attack path", () => {
   });
 
   it("says the attacker reached the goal with no alert", () => {
-    expect(end(path([], 12))).toBe("The attacker reached the goal with no alert.");
+    expect(end(path([], 12))).toBe("The attacker reached the goal with no alert and no step stopped.");
   });
 
-  it("says the defense alerted first, and by how much, when the alert came before the goal", () => {
+  it("tells the goal at the end of the run when goal_seconds rounds the last step's end up by less than a millisecond", () => {
+    // The last step ends 21 s after the first step's start; the score says 21.0004 s.
+    expect(end(path([], 21.0004))).toBe("The attacker reached the goal with no alert and no step stopped.");
+  });
+
+  it("says the attacker still reached the goal, with no step stopped, and how long after the first alert, when the alert came before the goal", () => {
     // The alert at 10.8 s, the goal 12 s after the first step's start at 10 s.
-    expect(end(path([alert("a", "1", 10.8, ["1-1"])], 12))).toBe("The defense alerted 11 s before the attacker reached the goal.");
+    expect(end(path([alert("a", "1", 10.8, ["1-1"])], 12))).toBe("The attacker reached the goal 11 s after the first alert, with no step stopped.");
   });
 
   it("says the attacker reached the goal first, and by how much, when the alert came after it", () => {
     expect(end(path([alert("a", "3", 30.5, ["3-1"])], 12))).toBe("The attacker reached the goal 8.5 s before the first alert.");
   });
 
-  it("names the first alert's time from the first test step before the goal is reached", () => {
+  it("names the first alert's time from the first step before the goal is reached", () => {
     const value = path([alert("a", "1", 10.8, ["1-1"])], 12);
     const timeline = buildTimeline(value);
-    expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The defense raised its first alert on test 1, 00:00.8 after the first test step.");
+    expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The defense raised its first alert on step 1, 00:00.8 into the run.");
   });
 
   it("times a live alert from when it was raised, in the sentence, the flag's clock and the goal comparison", () => {
@@ -63,7 +68,7 @@ describe("the race sentence on an attack path", () => {
     value.score = { ...value.score, first_alert_seconds: 0.8 };
     const timeline = buildTimeline(value);
     const first = timeline.firstAlert;
-    expect(first ? firstAlertClock(value, runFacts(value, timeline), first) : null).toEqual({ seconds: 15, words: "after the first test step" });
+    expect(first ? firstAlertClock(value, runFacts(value, timeline), first) : null).toEqual({ seconds: 15, words: "into the run" });
     expect(sentenceAt(value, timeline, timeline.fire.get("a") ?? Infinity)).toBe("The attacker reached the goal 3.0 s before the first alert.");
   });
 
@@ -87,8 +92,9 @@ describe("the race sentence on an attack path", () => {
       const frame = frameAt(timeline, screen);
       const revealed = frame.ended || (frame.segment !== null && screen >= revealTime(timeline, frame.segment));
       const { container, unmount } = render(createElement(RaceLine, { recording: value, timeline, frame, facts: runFacts(value, timeline), score: frame.score, revealed }));
+      // The flags as a user and a screen reader get them: not the hidden copies the race line measures.
       const left = (selector: string) => {
-        const flag = container.querySelector<HTMLElement>(selector);
+        const flag = [...container.querySelectorAll<HTMLElement>(selector)].find((node) => !node.closest("[aria-hidden='true']"));
         return flag ? Number.parseFloat(flag.style.left) : null;
       };
       const parts = { sentence: container.querySelector(".lv-winning")?.textContent ?? "", first: left(".lv-flag:not(.is-goal)"), goal: left(".lv-flag.is-goal") };
@@ -99,7 +105,7 @@ describe("the race sentence on an attack path", () => {
     it.each([false, true])("puts the goal at its recorded time, after the alert (canary first: %s)", (canary) => {
       const value = early(canary);
       const timeline = buildTimeline(value);
-      expect(line(value, timeline.duration)).toMatchObject({ sentence: "The defense alerted 50 ms before the attacker reached the goal." });
+      expect(line(value, timeline.duration)).toMatchObject({ sentence: "The attacker reached the goal 50 ms after the first alert, with no step stopped." });
       const { first, goal } = line(value, timeline.duration);
       expect(first).not.toBeNull();
       expect(goal ?? -1).toBeGreaterThan(first ?? Infinity);
@@ -110,7 +116,7 @@ describe("the race sentence on an attack path", () => {
       expect(frameAt(timeline, segment.bodyEnd).real).toBe(timeOf(at(20)));
       expect(line(value, segment.bodyEnd)).toEqual({ sentence: "No alert yet.", first: null, goal: null });
       const told = line(value, revealTime(timeline, segment));
-      expect(told.sentence).toBe("The defense alerted 50 ms before the attacker reached the goal.");
+      expect(told.sentence).toBe("The attacker reached the goal 50 ms after the first alert, with no step stopped.");
       expect(told.goal ?? -1).toBeGreaterThan(told.first ?? Infinity);
     });
 
@@ -123,20 +129,20 @@ describe("the race sentence on an attack path", () => {
       let shown = false;
       for (let screen = 0; screen <= timeline.duration; screen += 0.1) {
         const now = line(value, screen);
-        expect(now.sentence).not.toBe("The attacker reached the goal with no alert.");
+        expect(now.sentence).not.toBe("The attacker reached the goal with no alert and no step stopped.");
         // The goal is told only after the alert, and once told it is not taken back.
         if (now.goal !== null) expect(now.first).not.toBeNull();
         if (shown) expect(now.goal).not.toBeNull();
         shown = shown || now.goal !== null;
       }
       expect(shown).toBe(true);
-      expect(line(value, timeline.duration).sentence).toBe("The defense alerted 50 ms before the attacker reached the goal.");
+      expect(line(value, timeline.duration).sentence).toBe("The attacker reached the goal 50 ms after the first alert, with no step stopped.");
     });
   });
 
   it("names the attacker's goal where the race says it was reached", () => {
     const value = { ...path([alert("a", "1", 10.8, ["1-1"])], 12), attacker: { kind: "scripted" as const, description: "A script", goal: "Read the domain admin's password." } };
-    expect(end(value)).toBe("The defense alerted 11 s before the attacker reached the goal: Read the domain admin's password.");
+    expect(end(value)).toBe("The attacker reached its goal, “Read the domain admin's password”, 11 s after the first alert, with no step stopped.");
   });
 
   it("counts the first alert's number, its place on the track and the goal from one moment, the first step's recorded start", () => {
@@ -157,7 +163,7 @@ describe("the race sentence on an attack path", () => {
     // Where the flag sits on the track, as seconds from its 00:00 start, is the number it gives.
     expect((first.real - facts.start) / 1000).toBeCloseTo(3, 6);
     expect(((facts.goal ?? 0) - facts.start) / 1000).toBeCloseTo(40, 6);
-    expect(sentenceAt(attack, timeline, timeline.duration)).toBe("The defense alerted 37 s before the attacker reached the goal: Read the file.");
+    expect(sentenceAt(attack, timeline, timeline.duration)).toBe("The attacker reached its goal, “Read the file”, 37 s after the first alert, with no step stopped.");
   });
 });
 
@@ -191,14 +197,73 @@ describe("naming a step", () => {
     kind: "attack path",
   };
 
-  it("names a test by its count among the tests and any other step by its role, never by its order or its place", () => {
+  it("names a step of a path's tests by its count among them and any other step by its role, never by its order or its place", () => {
     const [canary, first, second] = value.steps;
     if (!canary || !first || !second) throw new Error("fixture");
     expect(stepLabel(value, canary)).toBe("the canary");
-    expect(stepLabel(value, first)).toBe("test 1");
-    expect(stepLabel(value, second)).toBe("test 2");
+    expect(stepLabel(value, first)).toBe("step 1");
+    expect(stepLabel(value, second)).toBe("step 2");
     const timeline = buildTimeline(value);
-    expect(sentenceAt(value, timeline, timeline.duration)).toBe("The defense raised its first alert on test 2, 00:10.5 after the first test step.");
+    expect(sentenceAt(value, timeline, timeline.duration)).toBe("The defense raised its first alert on step 2, 00:10.5 into the run.");
+  });
+});
+
+describe("the labels of the race line's flags", () => {
+  // A track of 1000 px; the first alert's label is 260 px wide, the goal's 140, "no alert" 60 and "00:00" 40.
+  const alert = (x: number) => ({ x, width: 260 });
+  const goal = (x: number) => ({ x, width: 140 });
+
+  it("opens a label to the right of its flag, as on the shipped recording", () => {
+    expect(placeFlags(1000, alert(400), null, 130, 40)).toMatchObject({ alert: 400, raised: false, waitEnd: 1000, startClearOfAlert: true });
+  });
+
+  it("opens a label near the right end to the left of its flag, inside the track", () => {
+    expect(placeFlags(1000, alert(940), null, 130, 40).alert).toBe(690);
+    expect(placeFlags(1000, null, goal(1000), 130, 40).goal).toBe(860);
+  });
+
+  it("keeps a first alert at 00:00 at the start, and says it covers the start's 00:00", () => {
+    expect(placeFlags(1000, alert(0), null, 130, 40)).toMatchObject({ alert: 0, startClearOfAlert: false });
+  });
+
+  it("leaves two labels far apart on one row, also when the goal comes first", () => {
+    expect(placeFlags(1000, alert(940), goal(300), 130, 40)).toMatchObject({ alert: 690, goal: 300, raised: false });
+  });
+
+  it("puts two labels within a second of each other one to each side when there is room", () => {
+    // The alert's label ends 10 px past its flag at 510; the goal's starts at its flag at 530.
+    expect(placeFlags(1000, alert(500), goal(530), 130, 40)).toMatchObject({ alert: 250, goal: 530, raised: false });
+  });
+
+  it("raises the goal's label a row when the two flags stand together at the end", () => {
+    expect(placeFlags(1000, alert(950), goal(1000), 130, 40)).toMatchObject({ alert: 700, goal: 860, raised: true });
+    expect(placeFlags(1000, alert(500), goal(500), 130, 40)).toMatchObject({ raised: true });
+  });
+
+  it("moves the words that wait for the first alert to the left of the goal's label", () => {
+    expect(placeFlags(1000, null, goal(1000), 60, 40).waitEnd).toBe(848);
+    expect(placeFlags(1000, null, null, 60, 40).waitEnd).toBe(1000);
+  });
+
+  it("opens every label to the right of its flag until the track is measured", () => {
+    expect(placeFlags(0, alert(0), goal(0), 0, 0)).toMatchObject({ alert: 0, goal: 0, raised: false });
+  });
+
+  it("never lets two labels on one row touch, or a label leave the track, at any width the view supports", () => {
+    const wrong: string[] = [];
+    for (let track = 300; track <= 2400; track += 150) {
+      for (let a = 0; a <= 20; a += 1) {
+        for (let g = 0; g <= 20; g += 1) {
+          const places = placeFlags(track, alert((a / 20) * track), goal((g / 20) * track), 60, 40);
+          const alertLeft = places.alert ?? Number.NaN;
+          const goalLeft = places.goal ?? Number.NaN;
+          const inside = alertLeft >= 0 && alertLeft + 260 <= track && goalLeft >= 0 && goalLeft + 140 <= track && places.waitEnd <= track;
+          const apart = places.raised || alertLeft + 260 + 12 <= goalLeft || goalLeft + 140 + 12 <= alertLeft;
+          if (!inside || !apart) wrong.push(`${track} px, alert at ${a / 20}, goal at ${g / 20}`);
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 });
 

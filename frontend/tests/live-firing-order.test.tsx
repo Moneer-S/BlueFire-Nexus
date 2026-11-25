@@ -50,7 +50,8 @@ function watch(value: Recording, id: string, screen: number) {
     engine: texts(container, ".lv-engine-label .lv-match:not(.lv-match--late) .lv-match-title"),
     engineLate: texts(container, ".lv-engine-label .lv-match--late .lv-match-title"),
     log: texts(container, ".lv-log-line .lv-log-mark").filter(Boolean),
-    flag: container.querySelector(".lv-flag:not(.is-goal)")?.getAttribute("title") ?? null,
+    // The first alert's flag as a user and a screen reader get it: not the hidden copies the race line measures.
+    flag: [...container.querySelectorAll(".lv-flag:not(.is-goal)")].find((node) => !node.closest("[aria-hidden='true']"))?.getAttribute("title") ?? null,
     scrubber: container.querySelector("[role='slider']")?.getAttribute("aria-valuetext") ?? "",
     hint: caption?.querySelector(".lv-after:not(.is-hidden) .lv-fix-hint")?.textContent ?? null,
     fixButton: caption?.querySelector(".lv-verdict:not(.is-hidden) .lv-fix") !== null,
@@ -128,7 +129,7 @@ describe("a step with two live alerts raised out of the order of their events", 
       return text;
     };
     expect(note(first.end - 0.05)).toBeNull();
-    expect(note(fire + 0.05)).toBe("A rule written in this repository would alert: Lab rule. It is not in the score.");
+    expect(note(fire + 0.05)).toBe("One of the lab's own rules alerted, which the score does not count: Lab rule.");
   });
 
   it("names rule B in analyse mode too, and times the first alert from it", () => {
@@ -164,10 +165,10 @@ describe("a match that fires after its step ended", () => {
     // It fires in the silence after test 1, while test 1 is still on screen.
     expect(fire).toBeGreaterThan(first.end + 0.1);
     expect(fire).toBeLessThan(next.start);
-    const quiet = "1 event recorded, no rule matched, none at alert level.";
+    const quiet = "1 event recorded, no rule matched.";
     const review = origin === "pinned" ? "1 event recorded, 1 rule matched for review, none at alert level." : quiet;
     // Both engines, the published rules and the lab's, say they matched nothing.
-    const nothingYet = { sentence: quiet, spoken: `Seen, no alert: ${quiet}`, hint: "Recorded, no rule at alert level: start with a rule.", fixButton: true, none: 2, engine: [], engineLate: [], late: "", log: [] };
+    const nothingYet = { sentence: quiet, spoken: `Seen, no alert: ${quiet}`, hint: "No rule matched this step: start by writing one.", fixButton: true, none: 2, engine: [], engineLate: [], late: "", log: [] };
 
     // Just before test 1 ends, and in the silence after it before the match fires: no part speaks of the match.
     expect(watch(value, "1", first.end - 0.05)).toMatchObject(nothingYet);
@@ -177,6 +178,6 @@ describe("a match that fires after its step ended", () => {
     const after = watch(value, "1", fire + 0.05);
     expect(after).toMatchObject({ sentence: review, spoken: `Seen, no alert: ${review}`, fixButton: true, none: 1, engine: [], engineLate: ["Rule r"] });
     expect(after.late).toBe("Match for review on test 1, Test 1: Rule r, raised 4.0 s after that step ended.");
-    expect(after.hint).toBe(origin === "pinned" ? "Start with a rule: Rule r (medium) matched it below alert level." : "Recorded, no rule at alert level: start with a rule.");
+    expect(after.hint).toBe(origin === "pinned" ? 'To alert here, start from the rule "Rule r": it matched this step at medium level.' : "No rule matched this step: start by writing one.");
   });
 });

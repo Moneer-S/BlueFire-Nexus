@@ -37,11 +37,11 @@ describe("several late arrivals fired at once", () => {
     const { container, unmount } = open(value, { step: "4", at: (fire + 0.2 - four.start) / (four.end - four.start), paused: true });
     const late = container.querySelector(".lv-late")?.textContent ?? "";
     for (const rule of ["Rule a1", "Rule a2", "Rule a3"]) expect(late).toContain(rule);
-    expect(late).toMatch(/^3 alerts raised late/);
+    expect(late).toMatch(/^3 alerts raised after their steps ended/);
     const log = container.querySelector(".lv-log")?.textContent ?? "";
     for (const rule of ["Rule a1", "Rule a2", "Rule a3"]) expect(log).toContain(rule);
     const engine = container.querySelector(".lv-match--late");
-    expect(engine?.textContent).toContain("2 more late");
+    expect(engine?.textContent).toContain("2 more after their steps");
     for (const rule of ["Rule a1", "Rule a2", "Rule a3"]) expect(engine?.getAttribute("title")).toContain(rule);
     expect(container.querySelector(".lv-score-lead b")?.textContent).toBe("3");
     unmount();
@@ -63,8 +63,8 @@ describe("several late arrivals fired at once", () => {
     const { container, unmount } = open(many, { step: "2", at: (fire + 0.2 - two.start) / (two.end - two.start), paused: true });
     const took = performance.now() - started;
     const engine = container.querySelector(".lv-match--late");
-    // Nothing is counted short: the engine says how many more arrived late.
-    expect(engine?.textContent).toContain("19999 more late");
+    // Nothing is counted short: the engine says how many more were raised after their steps.
+    expect(engine?.textContent).toContain("19999 more after their steps");
     // The tooltip names the newest and counts the rest: it does not grow with every arrival.
     const title = engine?.getAttribute("title") ?? "";
     expect(title).toContain("earlier ones, then");
@@ -99,6 +99,38 @@ describe("the page's address", () => {
   it("says nothing when every step it names is there", () => {
     const { container, unmount } = open(value, { step: "b", paused: true });
     expect(notice(container)).toBeNull();
+    unmount();
+  });
+});
+
+describe("analyse mode of a network with the same sensor on several hosts", () => {
+  it("names each sensor's host in its lane and its column, so their counts can be told apart", () => {
+    const base = recording({
+      steps: [step("1", 1, 2, { host: "web", outcome: "seen", visibility: { answer: "telemetry only", basis: "recorded", events: 2 } })],
+      events: [{ ...event("1-1", "1", 1.1), host: "web", sensor: "agent-web" }, { ...event("1-2", "1", 1.2), host: "db", sensor: "agent-db" }],
+    });
+    const value: Recording = {
+      ...base,
+      network: {
+        ...base.network,
+        hosts: [{ id: "web", name: "web", role: "web application", kind: "host" }, { id: "db", name: "db", role: "database", kind: "host" }],
+        sensors: [
+          { id: "agent-web", name: "Wazuh agent 4.14.10", host: "web", records: "log lines" },
+          { id: "agent-db", name: "Wazuh agent 4.14.10", host: "db", records: "log lines" },
+        ],
+      },
+    };
+    // The table looks again for the chosen row once the page's font has loaded, which this test's document has no word of.
+    Object.defineProperty(document, "fonts", { value: { ready: Promise.resolve() }, configurable: true });
+    const { container, unmount } = open(value, { mode: "analyse", select: "1" });
+    expect(texts(container, ".lv-ln-label.is-sensor")).toEqual(["Wazuh agent on web", "Wazuh agent on db"]);
+    // The step ran on web; db's agent recorded one of its events too, and the detail counts both.
+    expect(texts(container, ".lv-dt-sensors li")).toEqual(["Wazuh agent on web1 event", "Wazuh agent on db1 event"]);
+    const columns = [...container.querySelectorAll("thead th.is-num")].map((cell) => ({ text: cell.textContent?.trim(), title: cell.getAttribute("title") }));
+    expect(columns).toEqual(expect.arrayContaining([
+      { text: "web", title: "Events Wazuh agent on web recorded for the step" },
+      { text: "db", title: "Events Wazuh agent on db recorded for the step" },
+    ]));
     unmount();
   });
 });
@@ -191,10 +223,10 @@ describe("one name for a step, and the recording's own words, on every part of t
     rerun.unmount();
   });
 
-  it("marks an informational match as info, never for review, on the map and in the log", () => {
+  it("marks an informational match as informational, never for review, on the map and in the log", () => {
     const { container, unmount } = open(value, { step: "test:cc", at: 1.5, paused: true });
-    expect(texts(container, ".lv-chip--review")).toEqual(["info"]);
-    expect(texts(container, ".lv-log-mark").filter(Boolean)).toEqual(["info"]);
+    expect(texts(container, ".lv-chip--review")).toEqual(["informational"]);
+    expect(texts(container, ".lv-log-mark").filter(Boolean)).toEqual(["informational"]);
     unmount();
   });
 });
@@ -222,7 +254,7 @@ describe("the attacker's goal", () => {
     const value: Recording = { ...base, kind: "attack path", attacker: { ...base.attacker, goal: "Read the domain admin's password." }, score: { ...base.score, goal_seconds: 30 } };
     const reached = open(value, { mode: "analyse" });
     const goal = within(reached.container).getByText("Goal").nextElementSibling?.textContent ?? "";
-    expect(goal).toBe("Read the domain admin's password.Reached 00:30.0 after the first step.");
+    expect(goal).toBe("Read the domain admin's password.Reached 00:30.0 into the run.");
     reached.unmount();
     const unknown = open({ ...value, score: base.score }, { mode: "analyse" });
     expect(within(unknown.container).getByText("Goal").nextElementSibling?.textContent).toBe("Read the domain admin's password.The recording does not say it was reached.");
@@ -312,7 +344,7 @@ describe("the head of the live view, in plain words", () => {
   it("says once, where the first alert's time is shown, that the rules ran after the run", () => {
     const view = show("shipped");
     const race = view.getByRole("region", { name: "The race" });
-    expect(race).toHaveTextContent("first alert on a test · test 1 (the time of the event it matched)");
+    expect(race).toHaveTextContent("first alert · test 1 (the time of the event it matched)");
     expect(view.container.textContent).not.toContain("ran after the run, so an alert");
     view.unmount();
   });

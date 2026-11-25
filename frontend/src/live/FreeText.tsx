@@ -4,9 +4,9 @@
 
 import { markCode, markParts } from "./format";
 
-export function FreeText({ text }: { text: string }) {
+export function FreeText({ text, keepHyphened = false }: { text: string; keepHyphened?: boolean }) {
   const parts = markParts(text);
-  if (parts.length === 1 && parts[0]?.mark === false) return <>{text}</>;
+  if (parts.length === 1 && parts[0]?.mark === false) return keepHyphened ? <Hyphened text={text} /> : <>{text}</>;
   return (
     <>
       {parts.map((part, index) =>
@@ -15,7 +15,26 @@ export function FreeText({ text }: { text: string }) {
             {markCode(part.text)}
           </span>
         ) : (
-          <span key={index}>{part.text}</span>
+          <span key={index}>{keepHyphened ? <Hyphened text={part.text} /> : part.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+/** Text whose hyphened words, such as "stand-in", never break at their hyphen: a sentence wraps between words. */
+function Hyphened({ text }: { text: string }) {
+  const pieces = text.split(/(\S+-\S+)/);
+  if (pieces.length === 1) return <>{text}</>;
+  return (
+    <>
+      {pieces.map((piece, index) =>
+        index % 2 === 1 ? (
+          <span key={index} className="lv-nobreak">
+            {piece}
+          </span>
+        ) : (
+          piece
         ),
       )}
     </>

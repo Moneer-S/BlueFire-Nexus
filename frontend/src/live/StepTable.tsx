@@ -7,8 +7,9 @@ import type { KeyboardEvent } from "react";
 import type { Outcome, Recording, Sensor, Step, StepRole } from "./recording";
 import { OUTCOME_ORDER, ROLE_ORDER, roleCount, tableRows } from "./analyse";
 import type { SortKey, StepRow } from "./analyse";
-import { count, outcomeClass, outcomeWords, plural, sensorWord, stepLabel, stepShortName, testNumbers } from "./format";
+import { capital, count, outcomeClass, outcomeWords, plural, sensorLabel, stepLabel, stepShortName, testNumbers, unitWord } from "./format";
 import type { StyleVars } from "./motion";
+import { useSize } from "./useSize";
 
 export interface TableState {
   role: StepRole | "all";
@@ -31,6 +32,26 @@ interface StepTableProps {
   onSelect: (stepId: string) => void;
 }
 
+/** The room a step's title is given before the counts of rules take more than their least: two lines of a long title. */
+const TITLE_ROOM = 330;
+/** The counts of rules matched on one line, the longest a step has ("1 alert · 1 lab alert · 1 review · 1 launcher"). */
+const RULES_MOST = 272;
+
+/**
+ * The widths of the columns of a table `width` pixels wide, each as its contents need it: the step's number or short
+ * name ("rerun of test 12"), the outcome in the words the filter and the score use ("seen, no alert"), a technique's
+ * id, a sensor's short name and count in its head ("Sysmon"), and the counts of rules matched, which take a sixth of
+ * the table and wrap between counts where they need more, and more room once the title has its own. The title takes
+ * the rest, so a long title wraps onto as few lines as the table allows. Null for the counts of rules before the
+ * table is measured.
+ */
+export function tableColumns(width: number, sensors: number, numbered: boolean): { first: number; outcome: number; technique: number; sensor: number; rules: number | null } {
+  const columns = { first: numbered ? 40 : 132, outcome: 124, technique: 92, sensor: 64 };
+  const fixed = columns.first + columns.outcome + columns.technique + sensors * columns.sensor;
+  const rules = width > 0 ? Math.round(Math.max(width * 0.17, Math.min(width - fixed - TITLE_ROOM, RULES_MOST))) : null;
+  return { ...columns, rules };
+}
+
 const ROLE_LABEL: Record<StepRole | "all", string> = { all: "All", test: "Tests", canary: "Canary", control: "Control", hardened: "Hardened", variant: "Variants" };
 
 /** A hardened rerun whose change did not block it: the question a rerun asks is answered "no". */
@@ -51,17 +72,18 @@ function MatchCell({ row }: { row: StepRow }) {
       </span>
     ) : null,
     m.labAlert.length > 0 ? (
-      <span key="l" className="is-lab" title="Rules written in this repository at alert level, not in the score">
-        {m.labAlert.length} would alert
+      <span key="l" className="is-lab" title="The lab's own rules at alert level, which the score does not count">
+        {m.labAlert.length} lab alert{m.labAlert.length === 1 ? "" : "s"}
       </span>
     ) : null,
     review > 0 ? (
       <span key="r" className="is-review" title="Published rules at low or medium level">
-        {review} review
+        {count(review)} review
       </span>
     ) : null,
     info > 0 ? (
-      <span key="i" className="is-info" title="Rules at informational level">
+      // The one word a table shortens, so the counts stay on one line: its whole word is its title.
+      <span key="i" className="is-info" title={`${info} informational: rules at informational level`}>
         {info} info
       </span>
     ) : null,
@@ -72,15 +94,21 @@ function MatchCell({ row }: { row: StepRow }) {
     ) : null,
   ].filter((part) => part !== null);
   if (parts.length === 0) return <span className="is-none">none</span>;
-  return <>{parts}</>;
+  // A space between the counts lets the cell wrap between them: a count is never cut.
+  return <>{parts.flatMap((part, index) => (index === 0 ? [part] : [" ", part]))}</>;
 }
 
 export function StepTable({ recording, rows, sensors, colours, state, onState, selected, onSelect }: StepTableProps) {
-  const wrap = useRef<HTMLDivElement | null>(null);
+  // The box the rows scroll in: its width sets the columns' widths.
+  const [wrap, wrapSize] = useSize<HTMLDivElement>();
   const numbers = useMemo(() => testNumbers(recording), [recording]);
-  const roles = ([...ROLE_ORDER, "all"] as const).filter((kind) => kind === "all" || rows.some((row) => row.step.role === kind));
+  const unit = unitWord(recording);
+  // On an attack path whose every step runs a published test, a tab of tests would hold the same rows as a tab of all:
+  // one tab of steps holds them.
+  const oneKind = unit === "step" && rows.every((row) => row.step.role === "test");
+  const roles = oneKind ? (["all"] as const) : ([...ROLE_ORDER, "all"] as const).filter((kind) => kind === "all" || rows.some((row) => row.step.role === kind));
   // A role the recording has no step of, such as the tests the table opens on, reads as All: the table never opens empty with no filter pressed.
-  const role = roles.includes(state.role) ? state.role : "all";
+  const role = (roles as readonly (StepRole | "all")[]).includes(state.role) ? state.role : "all";
   const inRole = rows.filter((row) => role === "all" || row.step.role === role);
   const outcomes = OUTCOME_ORDER.filter((outcome) => inRole.some((row) => row.step.outcome === outcome));
   const outcome = state.outcome !== null && outcomes.includes(state.outcome) ? state.outcome : null;
@@ -97,28 +125,85 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
     buttons.current[Math.min(shown.length - 1, Math.max(0, wanted))]?.focus();
   };
 
-  // Keep the selected row in view when it is chosen elsewhere, without moving the page.
+  // Keep the selected row in view when it is chosen elsewhere, without moving the page. The table stands at a row's
+  // edge, so no row shows cut under the head: the first row in view is whole, and the selected one with it. The rows'
+  // heights change after that (the columns' widths measured, the font loaded, the window resized): each time the
+  // table or its box changes size, it stands again at the nearest row's edge, the selected row whole if it was in view.
+  const end = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const box = wrap.current;
-    if (!box || selected === undefined) return undefined;
-    const reveal = () => {
+    const table = box?.querySelector("table");
+    if (!box || !table) return undefined;
+    // Whether the selected row was in view, at least in part, when the table last stood still: it is then kept whole
+    // when the rows move. Out of view, where one has scrolled away from it, it is left there.
+    let seen = false;
+    // Where the table last placed its scroll, and the sizes it was placed at. The scroll event of its own move comes
+    // later, after the rows may have moved again, and a scroll that comes with a change of size is the browser keeping
+    // the scroll inside a shorter list: neither says where one wants to look, and the change of size places it anew.
+    let placed = 0;
+    const sizes = () => [table.offsetWidth, table.offsetHeight, box.clientWidth, box.clientHeight].join(" ");
+    let placedSizes = "";
+    const inView = () => {
       const line = [...box.querySelectorAll<HTMLTableRowElement>("tr[data-step]")].find((item) => item.dataset.step === selected);
-      if (!line) return;
-      const head = box.querySelector("thead")?.offsetHeight ?? 0;
-      const top = line.offsetTop - head;
-      const room = line.offsetHeight * 1.5;
-      if (top < box.scrollTop || line.offsetTop + line.offsetHeight + room > box.scrollTop + box.clientHeight) box.scrollTop = Math.max(0, top - box.clientHeight / 3);
+      if (!line) return false;
+      const head = box.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+      const top = box.getBoundingClientRect().top + box.clientTop;
+      const rect = line.getBoundingClientRect();
+      return rect.bottom > top + head + 0.5 && rect.top < top + box.clientHeight - 0.5;
     };
-    reveal();
-    // Rows can grow once the page's font has loaded: look again then.
-    let live = true;
-    void document.fonts.ready.then(() => {
-      if (live) reveal();
-    });
+    const place = (revealing: boolean) => {
+      const head = box.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+      const top = box.getBoundingClientRect().top + box.clientTop;
+      // Each row's edge: where the box's scroll stands when the row's top meets the head's foot.
+      const lines = [...box.querySelectorAll<HTMLTableRowElement>("tr[data-step]")].map((item) => {
+        const rect = item.getBoundingClientRect();
+        return { id: item.dataset.step, edge: rect.top - top + box.scrollTop - head, height: rect.height };
+      });
+      const last = lines[lines.length - 1];
+      if (!last) return;
+      // The box's room after the list, where its last rows fade out (live.css).
+      const fade = parseFloat(getComputedStyle(box).paddingBottom) || 0;
+      // The list ends where the table stands at a row's edge with the last row whole above the fade: the room after the
+      // last row grows by what that takes, so the end of the list is a row's edge too.
+      const foot = last.edge + head + last.height;
+      const lastEdge = lines.find((item) => item.edge >= foot + fade - box.clientHeight - 0.5)?.edge ?? 0;
+      if (end.current) {
+        const more = lastEdge > 0 ? `${Math.max(0, lastEdge + box.clientHeight - foot - fade)}px` : "0px";
+        if (end.current.style.height !== more) end.current.style.height = more;
+      }
+      const now = box.scrollTop;
+      const most = Math.max(0, box.scrollHeight - box.clientHeight);
+      const line = lines.find((item) => item.id === selected);
+      // The selected row is whole when the table stands at `edge`, with room under it for the next rows, or, the last
+      // row, above the fade.
+      const under = line === last ? fade : Math.max(fade, (line?.height ?? 0) * 1.5);
+      const whole = (edge: number) => !line || (line.edge >= edge - 0.5 && line.edge + head + line.height + under <= edge + box.clientHeight + 0.5);
+      const keep = line !== undefined && (revealing || seen);
+      const reachable = lines.map((item) => item.edge).filter((edge) => edge <= most + 0.5);
+      const fitting = keep ? reachable.filter(whole) : reachable;
+      const edges = fitting.length > 0 ? fitting : keep && line && line.edge <= most + 0.5 ? [line.edge] : reachable;
+      // Where it was, or, for a row just chosen that is not whole in view, a third of the way down.
+      const wanted = keep && line && !whole(now) ? line.edge - box.clientHeight / 3 : now;
+      const nearest = edges.reduce((best, edge) => (Math.abs(edge - wanted) < Math.abs(best - wanted) ? edge : best), edges[0] ?? 0);
+      if (Math.abs(nearest - now) > 0.5) box.scrollTop = Math.max(0, nearest);
+      seen = inView();
+      placed = box.scrollTop;
+      placedSizes = sizes();
+    };
+    place(true);
+    const observer = new ResizeObserver(() => place(false));
+    observer.observe(box);
+    observer.observe(table);
+    const scrolled = () => {
+      if (Math.abs(box.scrollTop - placed) < 1 || sizes() !== placedSizes) return;
+      seen = inView();
+    };
+    box.addEventListener("scroll", scrolled, { passive: true });
     return () => {
-      live = false;
+      observer.disconnect();
+      box.removeEventListener("scroll", scrolled);
     };
-  }, [selected, state]);
+  }, [selected, state, wrap]);
 
   const sortBy = (key: SortKey) => onState({ ...state, sort: key, ascending: state.sort === key ? !state.ascending : key !== "events" && key !== "matches" });
   const header = (key: SortKey, label: string, className = "") => (
@@ -130,8 +215,9 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
     </th>
   );
   // The first column names each row's step as the captions do: among the tests alone, by its number; otherwise by its short name, which says its role.
-  const numbered = role === "test";
-  const scope = role !== "all" ? roleCount(role, inRole.length) : rows.length === 1 ? "the one step" : `all ${plural(rows.length, "step")}`;
+  const numbered = role === "test" || oneKind;
+  const columns = tableColumns(wrapSize.width, sensors.length, numbered);
+  const scope = role !== "all" ? roleCount(role, inRole.length, unit) : rows.length === 1 ? "the one step" : oneKind ? plural(rows.length, "step") : `all ${plural(rows.length, "step")}`;
 
   return (
     <div className="lv-table-side">
@@ -147,7 +233,7 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
                 onState({ ...state, role: choice, outcome: keep ? outcome : null });
               }}
             >
-              {ROLE_LABEL[choice]}
+              {oneKind ? "Steps" : ROLE_LABEL[choice]}
               <b>{choice === "all" ? rows.length : rows.filter((row) => row.step.role === choice).length}</b>
             </button>
           ))}
@@ -168,26 +254,26 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
       <div className="lv-table-wrap" ref={wrap}>
         <table className="lv-table">
           <colgroup>
-            <col className={numbered ? "is-n" : "is-name"} />
-            <col className="is-out" />
+            <col style={{ width: columns.first }} />
+            <col style={{ width: columns.outcome }} />
             <col />
-            <col className="is-tech" />
+            <col style={{ width: columns.technique }} />
             {sensors.map((sensor) => (
-              <col key={sensor.id} className="is-num" />
+              <col key={sensor.id} style={{ width: columns.sensor }} />
             ))}
-            <col className="is-rules" />
+            <col style={columns.rules === null ? undefined : { width: columns.rules }} />
           </colgroup>
           <thead>
             <tr>
-              {header("order", numbered ? "Test" : "Step", "is-n")}
+              {header("order", numbered ? capital(unit) : "Step", "is-n")}
               {header("outcome", "Outcome")}
               {header("title", "Title")}
               {header("technique", "Technique")}
               {sensors.map((sensor) => (
-                <th key={sensor.id} className="is-num" scope="col" title={`Events ${sensor.name} recorded for the step`}>
+                <th key={sensor.id} className="is-num" scope="col" title={`Events ${sensorLabel(recording, sensor)} recorded for the step`}>
                   <span style={{ "--rgb": colours.get(sensor.id) ?? "123,202,255" } as StyleVars}>
                     <i className="lv-dot" />
-                    {sensorWord(sensor.name)}
+                    {sensorLabel(recording, sensor, "column")}
                   </span>
                 </th>
               ))}
@@ -204,8 +290,8 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
                   <td className="is-n" title={stepLabel(recording, step)}>
                     {numbered ? (numbers.get(step.id) ?? "") : stepShortName(recording, step)}
                   </td>
-                  <td title={lab ? `With the rules written in this repository: ${lab}` : undefined}>
-                    <span className={`lv-ow is-${outcomeClass(step.outcome)}`}>{step.outcome}</span>
+                  <td title={lab ? `With the lab's own rules, which the score does not count: ${outcomeWords(lab)}` : undefined}>
+                    <span className={`lv-ow is-${outcomeClass(step.outcome)}`}>{outcomeWords(step.outcome)}</span>
                     {notStopped(step) ? <span className="lv-ow-note"> &middot; not stopped</span> : null}
                   </td>
                   <td className="is-title">
@@ -238,10 +324,10 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
                     {step.technique.id}
                   </td>
                   {sensors.map((sensor) => {
-                    const count = row.bySensor.get(sensor.id) ?? 0;
+                    const recorded = row.bySensor.get(sensor.id) ?? 0;
                     return (
-                      <td key={sensor.id} className={`is-num${count === 0 ? (step.outcome === "unseen" ? " is-gap" : " is-zero") : ""}`}>
-                        {count}
+                      <td key={sensor.id} className={`is-num${recorded === 0 ? (step.outcome === "unseen" ? " is-gap" : " is-zero") : ""}`}>
+                        {count(recorded)}
                       </td>
                     );
                   })}
@@ -260,6 +346,8 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
             ) : null}
           </tbody>
         </table>
+        {/* The room after the list that brings its end to a row's edge, set as the rows are measured. */}
+        <div ref={end} aria-hidden="true" />
       </div>
     </div>
   );

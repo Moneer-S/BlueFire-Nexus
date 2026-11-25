@@ -3,7 +3,7 @@
 
 import { memo, useLayoutEffect, useRef } from "react";
 import type { Alert, Outcome, Recording, Step } from "./recording";
-import { belowAlertWords, capital, comparedStep, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plainMarks, plural, sensorShortName, sentence, stepLabel, unseenWords } from "./format";
+import { capital, comparedStep, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plainMarks, plural, raisedAfterStep, seenWords, sensorShortName, sentence, stepLabel, titleInSentence, unseenWords } from "./format";
 import { FreeText } from "./FreeText";
 import type { StepMoment } from "./moment";
 import { refusalOf } from "./EventLog";
@@ -22,6 +22,11 @@ interface StepCaptionProps {
   onLoseFocus: () => void;
   /** The latest late arrival on screen, in one sentence: a match of an earlier step raised after that step ended. */
   late: string | null;
+}
+
+/** A host's name by its id. */
+function hostName(recording: Recording, id: string): string {
+  return recording.network.hosts.find((host) => host.id === id)?.name ?? id;
 }
 
 /**
@@ -53,6 +58,8 @@ function Kicker({ recording, step }: { recording: Recording; step: Step }) {
           {stepLabel(recording, step)}
         </span>
       ) : null}
+      {/* A step that crossed from one host to another says its hop in words, as the map draws it. */}
+      {step.from && step.from !== step.host ? <span className="lv-step-chip lv-hop-chip">{`from ${hostName(recording, step.from)} to ${hostName(recording, step.host)}`}</span> : null}
     </div>
   );
 }
@@ -72,26 +79,27 @@ function noAlertYet(step: Step, stood: Outcome, total: number): string | null {
  * the alert it is told by: the step's first counting alert in playback's
  * firing order, once it has fired.
  */
-function why(step: Step, stood: Outcome, first: Alert | null, heard: readonly Alert[], total: number) {
+function why(step: Step, stood: Outcome, first: Alert | null, heard: readonly Alert[], total: number, now: Outcome = stood) {
+  // Once the alert raised after the step has fired, the sentence names it, as the engine, the log and the score do.
+  if (now === "alerted" && stood !== "alerted" && first) {
+    return (
+      <>
+        <b>{titleInSentence(first.rule.title)}</b> ({first.rule.level}) matched an event of this step, {raisedAfterStep(first, step) ?? "raised after the step ended"}.
+      </>
+    );
+  }
   const yet = noAlertYet(step, stood, total);
   if (yet !== null) return <>{yet}</>;
   if (step.outcome === "alerted") {
     return first ? (
       <>
-        <b>{first.rule.title}</b> ({first.rule.level}) matched an event of this step.
+        <b>{titleInSentence(first.rule.title)}</b> ({first.rule.level}) matched an event of this step.
       </>
     ) : (
       <>{sentence(step.visibility.basis)}.</>
     );
   }
-  if (step.outcome === "seen") {
-    const events = step.visibility.events ?? total;
-    return (
-      <>
-        {plural(events, "event")} recorded, {belowAlertWords(heard)}, none at alert level.
-      </>
-    );
-  }
+  if (step.outcome === "seen") return <>{seenWords(step.visibility.events ?? total, heard)}</>;
   if (step.outcome === "unseen") return <>{capital(unseenWords(step))}.</>;
   if (step.outcome === "stopped" && step.defense) {
     return (
@@ -104,13 +112,14 @@ function why(step: Step, stood: Outcome, first: Alert | null, heard: readonly Al
 }
 
 /** The same reason as `why`, as plain text for a screen reader. */
-function whyText(step: Step, stood: Outcome, first: Alert | null, heard: readonly Alert[], total: number): string {
+function whyText(step: Step, stood: Outcome, first: Alert | null, heard: readonly Alert[], total: number, now: Outcome = stood): string {
+  if (now === "alerted" && stood !== "alerted" && first) return `${titleInSentence(first.rule.title)} (${first.rule.level}) matched an event of this step, ${raisedAfterStep(first, step) ?? "raised after the step ended"}.`;
   const yet = noAlertYet(step, stood, total);
   if (yet !== null) return yet;
   if (step.outcome === "alerted") {
-    return first ? `${first.rule.title} (${first.rule.level}) matched an event of this step.` : `${sentence(step.visibility.basis)}.`;
+    return first ? `${titleInSentence(first.rule.title)} (${first.rule.level}) matched an event of this step.` : `${sentence(step.visibility.basis)}.`;
   }
-  if (step.outcome === "seen") return `${plural(step.visibility.events ?? total, "event")} recorded, ${belowAlertWords(heard)}, none at alert level.`;
+  if (step.outcome === "seen") return seenWords(step.visibility.events ?? total, heard);
   if (step.outcome === "unseen") return `${capital(unseenWords(step))}.`;
   if (step.outcome === "stopped" && step.defense) return `Hardening change: ${step.defense.title}.`;
   return `${sentence(step.happened.basis)}.`;
@@ -170,7 +179,7 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
   const step = moment?.step;
   const outcome = moment?.outcome;
   // One live region for the whole life of the caption: a region that is added already filled is often not read.
-  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, moment.named, moment.heard, total)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${plainMarks(step.plain ?? step.title)}`;
+  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, moment.named, moment.heard, total, outcome)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${plainMarks(step.plain ?? step.title)}`;
   const live = (
     <div className="lv-sr" aria-live="polite" aria-atomic="true">
       {announcement}
@@ -216,19 +225,20 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
       <div className="lv-caption-in" key={step.id}>
         <Kicker recording={recording} step={step} />
         <div className={`lv-plain${long ? " is-long" : ""}`}>
-          <FreeText text={step.plain ?? step.title} />
+          <FreeText text={step.plain ?? step.title} keepHyphened />
         </div>
       </div>
       <div className="lv-caption-out">
         <div className={`lv-verdict${moment.revealed ? "" : " is-hidden"}`}>
           <span className={`lv-word is-${outcomeClass(outcome)}`}>{outcome}</span>
-          <span className="lv-why">{why(step, moment.stood, moment.named, moment.heard, total)}</span>
+          <span className="lv-why">{why(step, moment.stood, moment.named, moment.heard, total, outcome)}</span>
           {fixable ? (
             <button
               type="button"
               className="lv-fix"
               onClick={() => onFix(step.id)}
               aria-describedby={`lv-fix-hint-${step.id}`}
+              title={hint}
               tabIndex={moment.revealed ? 0 : -1}
             >
               <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -246,7 +256,7 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
           ) : null}
           {labAlert ? (
             <div className="lv-labnote">
-              A rule written in this repository would alert: <b>{labAlert.rule.title}</b>. It is not in the score.
+              One of the lab&apos;s own rules alerted, which the score does not count: <b>{titleInSentence(labAlert.rule.title)}</b>.
             </div>
           ) : null}
           <Compare recording={recording} step={step} moment={moment} />

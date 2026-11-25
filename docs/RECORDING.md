@@ -102,6 +102,16 @@ runs must share.
 | `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_watches`, an object that maps each audit key of its rules (the word after `-k`, or after `key=` in `-F`) to what the rules under that key watch, read from the rules as the run loaded them (after `-D`, `-d` and `-W`; `""` for the rules without a key). Each rule is a string in one fixed form, its keys taken out: `-a <list>,<action>` sorted, then `-S` with the system calls sorted and joined by commas, then each `-F` sorted, then each `-C`. A watch `-w <path> -p <perms>` is written as the rule it stands for, `-a always,exit -F path=<path> -F perm=<perms>` (`perm=arwx` without `-p`), `dir=` as `path=`, the letters of `perm` sorted, `arch=` left out, so that a rule for `b32` and the same one for `b64` are one, and an unset login uid (`-1`, `4294967295`) written `unset`. The forms of a key are sorted and each is there once. An older recording does not have it, and may have `audit_keys` instead: the audit keys of its rules, sorted, without what they watch. Nothing reads `audit_keys` now, and on two runners that differed a comparison of `sensors:auditd` refuses a recording that has only that (see Two runners that differed). |
 | `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
 
+A network holds at most 12 hosts, at most 3 of them of kind `defense`, at most
+16 links, at most 16 sensors with at most 4 on one host, and at most 4
+detectors: the most the live view's map draws readably (see
+[LIVE_VIEW.md](LIVE_VIEW.md)). A link joins two different hosts, and no link is
+given twice with the same `from`, `to` and `label`. The service and the replay
+page both refuse a network beyond these, with a sentence that names the limit;
+the limits are `MAX_HOSTS`, `MAX_DEFENSE_HOSTS`, `MAX_LINKS`, `MAX_SENSORS`,
+`MAX_SENSORS_ON_A_HOST` and `MAX_DETECTORS` in `bluefire/recordings.py` and
+`frontend/src/live/recording.ts`.
+
 A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
 sorted by their path inside the rule set's folder, so it can be checked from a
 run's artifact: `cd rules/linux && find . -type f -printf '%P\n' | LC_ALL=C sort

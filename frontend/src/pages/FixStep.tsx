@@ -171,7 +171,7 @@ function Recorded({ recording, row, sensors, colours, start, runPath }: { record
       <summary>How we know</summary>
       <dl>
         <div><dt>What the recording says</dt><dd><q>{step.visibility.basis}</q></dd></div>
-        {start.kind === "sensor" && start.launcher ? <div><dt>The launcher</dt><dd>The shell the lab starts each test from. An attacker would not leave it behind, so it never counts, and a rule on it would alert on the lab, not on the attack.</dd></div> : null}
+        {start.kind === "sensor" && start.launcher ? <div><dt>The launcher</dt><dd>The shell the lab starts each test from. An attacker would not leave it behind, so it never counts, and a rule on it would catch the lab, not the attack.</dd></div> : null}
         {sensors.map((sensor) => <div key={sensor.id}>
           <dt>Settings of {sensor.name}</dt>
           <dd>{sensor.settings

@@ -7,7 +7,7 @@ import type { Recording } from "./recording";
 import type { Timeline } from "./playback";
 import type { RunFacts } from "./moment";
 import { firstAlertClock } from "./moment";
-import { capital, day, elapsed, ordinaryAlertEvents, plural, runLink, sharedUnseenWords, stepLabel, stepShortName } from "./format";
+import { capital, day, elapsed, ordinaryAlertEvents, plural, runLink, sharedUnseenWords, stepLabel, stepShortName, unitWord } from "./format";
 import { FreeText } from "./FreeText";
 import { seenBreakdown } from "./analyse";
 
@@ -36,6 +36,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
   const seen = useMemo(() => seenBreakdown(recording), [recording]);
   const unseenBasis = useMemo(() => sharedUnseenWords(recording), [recording]);
   const unseen = useMemo(() => recording.steps.filter((step) => step.role === "test" && step.outcome === "unseen"), [recording]);
+  const unit = unitWord(recording);
   const hardened = useMemo(() => {
     const steps = recording.steps.filter((step) => step.role === "hardened");
     return { total: steps.length, stopped: steps.filter((step) => step.outcome === "stopped").length, notStopped: steps.filter((step) => step.outcome !== "stopped") };
@@ -48,7 +49,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
         <span>{recording.kind}</span>
       </div>
       <h3 className="lv-sum-head">
-        <em>{score.alerted}</em> of {plural(score.steps, "test")} alerted
+        <em>{score.alerted}</em> of {plural(score.steps, unit)} alerted
       </h3>
       <p className="lv-sum-lead">
         {[`${score.seen} ${score.seen === 1 ? "was" : "were"} recorded with no alert`, score.unseen > 0 ? `${score.unseen} ${score.unseen === 1 ? "was" : "were"} unseen` : "", score.took_effect < score.steps ? `${score.steps - score.took_effect} did not take effect` : ""].filter(Boolean).join(", ")}
@@ -56,7 +57,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
       </p>
       {unseen.length > 0 ? (
         <p className="lv-sum-gap">
-          {unseen.length === 1 ? "The test nobody saw:" : `${unseen.length} tests nobody saw:`}{" "}
+          {unseen.length === 1 ? `The ${unit} nobody saw:` : `${unseen.length} ${unit}s nobody saw:`}{" "}
           {unseen.map((step, index) => (
             <span key={step.id}>
               {index > 0 ? ", " : ""}
@@ -74,7 +75,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
 
       {/* The score itself is in the header and the headline; this panel says what lies behind it. */}
       <dl className="lv-dt-facts">
-        <dt>Tests</dt>
+        <dt>{capital(unit)}s</dt>
         <dd>
           {score.steps}, of which {score.took_effect} took effect
         </dd>
@@ -90,7 +91,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
           <>
             <dt>Lab rules</dt>
             <dd className="lv-sum-lab" title="Rules written in this repository. They are shown apart and never counted in the score.">
-              with them, {lab} of {score.steps} tests would alert <small>not scored</small>
+              lab alerts on {lab} of {score.steps} {unit}s <small>not scored</small>
             </dd>
           </>
         ) : null}
@@ -125,13 +126,13 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
               </button>
               {firstRule ? <>, by {firstRule}</> : null}
               <small>
-                {capital(plural(first.testsBefore, "other test"))} had started when it fired.
+                {first.testsBefore === 0 ? `It fired before any other ${unit} had started.` : `${capital(plural(first.testsBefore, `other ${unit}`))} had started when it fired.`}
                 {firstFalse > 0 ? ` The same rule also alerted on ${plural(firstFalse, "event")} of ordinary activity.` : ""}
                 {other ? ` ${capital(stepLabel(recording, other.step))} alerted at ${elapsed((other.real - facts.start) / 1000)} into the run${other.step.role === "canary" ? ", as expected: it is built to be caught" : ""}.` : ""}
               </small>
             </>
           ) : (
-            "no test raised an alert"
+            `no ${unit} raised an alert`
           )}
         </dd>
         {recording.kind === "attack path" && recording.attacker.goal !== null ? (
@@ -139,7 +140,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
             <dt>Goal</dt>
             <dd>
               <FreeText text={recording.attacker.goal} />
-              <small>{score.goal_seconds !== undefined ? `Reached ${elapsed(score.goal_seconds)} after the first step.` : "The recording does not say it was reached."}</small>
+              <small>{score.goal_seconds !== undefined ? `Reached ${elapsed(score.goal_seconds)} into the run.` : "The recording does not say it was reached."}</small>
             </dd>
           </>
         ) : null}
@@ -155,8 +156,9 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
             What to know when reading the score <span>{plural(recording.notes.length, "note")}</span>
           </summary>
           <ul className="lv-sum-notes">
-            {recording.notes.map((note) => (
-              <li key={note}>
+            {/* Keyed by place: a recording may hold one note twice, and every entry is shown. */}
+            {recording.notes.map((note, index) => (
+              <li key={index}>
                 <FreeText text={note} />
               </li>
             ))}
@@ -176,10 +178,10 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
           <p className="lv-sum-quiet">What the published rules said about the run&apos;s own administration and the host&apos;s background work, outside every step.</p>
           {matches.length > 0 ? (
             <div className="lv-sum-ord">
-              {matches.map((match) => {
+              {matches.map((match, index) => {
                 const alerting = ALERT_LEVELS.has(match.level);
                 return (
-                  <div key={`${match.rule}:${match.level}`} className={alerting ? "is-false" : ""}>
+                  <div key={index} className={alerting ? "is-false" : ""}>
                     <span className="lv-sum-level">{match.level}</span>
                     <span className="lv-sum-rule" title={match.rule}>
                       {match.rule}
@@ -218,8 +220,8 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
         </p>
         {source.tools.length > 0 ? (
           <dl className="lv-sum-tools">
-            {source.tools.map((tool) => (
-              <div key={`${tool.name}:${tool.role}`}>
+            {source.tools.map((tool, index) => (
+              <div key={index}>
                 <dt>
                   {tool.name} <span>{tool.role}</span>
                 </dt>

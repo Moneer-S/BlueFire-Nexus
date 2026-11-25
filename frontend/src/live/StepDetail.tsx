@@ -7,7 +7,7 @@ import type { Alert, Recording, RecordingEvent, Step } from "./recording";
 import { alertMoment, timeOf } from "./recording";
 import type { StepRow } from "./analyse";
 import { fixHint, ordinaryMatches, otherRuns } from "./analyse";
-import { belowAlertWords, capital, clockTime, comparedStep, count, elapsed, eventMarks, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plural, sensorShortName, sensorWord, sentence, span, stepLabel, stepShortName, unseenWords } from "./format";
+import { capital, clockTime, comparedStep, count, elapsed, eventMarks, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plural, seenWords, sensorLabel, sensorShortName, sensorWord, sentence, span, stepLabel, stepShortName, titleInSentence, unitWord, unseenWords } from "./format";
 import type { MatchKind } from "./format";
 import { FreeText } from "./FreeText";
 import { refusalOf } from "./EventLog";
@@ -48,10 +48,10 @@ function afterStart(what: string, ms: number): string {
 
 function chip(alert: Alert): { words: string; className: string; title?: string } {
   if (alert.launcher_only === true) return { words: "launcher line", className: "is-launcher" };
-  if (alert.counts && alert.rule.origin === "lab") return { words: `would alert · ${alert.rule.level}`, className: "is-lab", title: "A rule written in this repository at alert level. It is not in the score." };
+  if (alert.counts && alert.rule.origin === "lab") return { words: `lab alert · ${alert.rule.level}`, className: "is-lab", title: "One of the lab's own rules alerted. The score does not count it." };
   if (alert.counts) return { words: `alert · ${alert.rule.level}`, className: "is-alert" };
   if (alert.rule.origin === "lab") return { words: `lab · ${alert.rule.level}`, className: "is-lab" };
-  if (alert.rule.level === "informational") return { words: "info", className: "is-review", title: "Informational: nobody reviews it." };
+  if (alert.rule.level === "informational") return { words: "informational", className: "is-review", title: "An informational match: nobody reviews it." };
   return { words: `review · ${alert.rule.level}`, className: "is-review" };
 }
 
@@ -114,9 +114,9 @@ function rawFields(event: RecordingEvent): string {
   return parts.join(" ");
 }
 
-/** What each sensor of the step's host recorded of it; for a step nobody saw, also what each one watches. */
+/** What each sensor of the step's host, and any other that recorded the step, recorded of it; for a step nobody saw, also what each one watches. */
 function SensorCounts({ recording, row, colours }: { recording: Recording; row: StepRow; colours: Map<string, string> }) {
-  const sensors = recording.network.sensors.filter((sensor) => sensor.host === row.step.host);
+  const sensors = recording.network.sensors.filter((sensor) => sensor.host === row.step.host || (row.bySensor.get(sensor.id) ?? 0) > 0);
   if (sensors.length === 0) return null;
   const silent = row.step.outcome === "unseen";
   return (
@@ -126,7 +126,7 @@ function SensorCounts({ recording, row, colours }: { recording: Recording; row: 
         return (
           <li key={sensor.id} style={{ "--rgb": colours.get(sensor.id) ?? "123,202,255" } as StyleVars}>
             <i className="lv-dot" />
-            <span>{sensorShortName(sensor.name)}</span>
+            <span>{sensorLabel(recording, sensor)}</span>
             <b className={count === 0 && silent ? "is-gap" : ""}>{plural(count, "event")}</b>
             {silent ? <small>records {sensor.records}</small> : null}
           </li>
@@ -142,17 +142,11 @@ function Verdict({ step, row }: { step: Step; row: StepRow }) {
   if (step.outcome === "alerted" && first) {
     return (
       <>
-        <b>{first.rule.title}</b> ({first.rule.level}) matched an event of this step.
+        <b>{titleInSentence(first.rule.title)}</b> ({first.rule.level}) matched an event of this step.
       </>
     );
   }
-  if (step.outcome === "seen") {
-    return (
-      <>
-        {plural(row.recorded ?? row.events.length, "event")} recorded, {belowAlertWords(m.review)}, none at alert level.
-      </>
-    );
-  }
+  if (step.outcome === "seen") return <>{seenWords(row.recorded ?? row.events.length, [...m.review, ...m.labAlert])}</>;
   if (step.outcome === "unseen") {
     return (
       <>
@@ -230,7 +224,10 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
   const host = recording.network.hosts.find((item) => item.id === step.host);
   const from = step.from === undefined ? undefined : recording.network.hosts.find((item) => item.id === step.from);
   const labWord = step.outcome_with_lab_rules !== undefined && step.outcome_with_lab_rules !== step.outcome ? step.outcome_with_lab_rules : null;
-  const role = step.role === "test" && testNumber !== undefined ? `Test ${testNumber} of ${testsTotal}` : capital(stepLabel(recording, step));
+  const unit = unitWord(recording);
+  const role = step.role === "test" && testNumber !== undefined ? `${capital(unit)} ${testNumber} of ${testsTotal}` : capital(stepLabel(recording, step));
+  // On an attack path the head already says the step's place among the steps: a second line would repeat it.
+  const place = unit === "step" && step.role === "test" && testsTotal === recording.steps.length ? null : `${row.index + 1} of ${plural(recording.steps.length, "step")}`;
   const anyMatch = m.alert.length + m.labAlert.length + m.review.length + m.labReview.length + m.launcher.length > 0;
   const recorded = row.recorded;
 
@@ -247,6 +244,12 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
               <span className="lv-dt-on">{stepShortName(recording, other)}</span>
               <span className="lv-dt-ot">{other.title}</span>
               <span className={`lv-ow is-${outcomeClass(other.outcome)}`}>{outcomeWords(other.outcome)}</span>
+              {/* The outcome counts the published rules; where the lab's own rules alerted, the list says that too, as the step's own line does. */}
+              {other.outcome_with_lab_rules === "alerted" && other.outcome !== "alerted" ? (
+                <span className="lv-ow is-lab" title="One of the lab's own rules alerted on it, which the score does not count">
+                  lab alert
+                </span>
+              ) : null}
             </button>
           ))}
         </div>
@@ -260,9 +263,7 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
       <div className="lv-dt-top">
         <div className="lv-dt-kicker">
           <span className={`lv-dt-role${step.role === "test" ? "" : " is-quiet"}`}>{role}</span>
-          <span>
-            {row.index + 1} of {plural(recording.steps.length, "step")}
-          </span>
+          {place === null ? null : <span>{place}</span>}
           <span className="lv-dt-id" title={`The step's id in the recording. A link to it ends ?step=${encodeURIComponent(step.id)}`}>
             id <span className="lv-mono">{step.id}</span>
           </span>
@@ -304,8 +305,15 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
           {labWord ? (
             <span className="lv-dt-labnote">
               {" "}
-              With the rules written in this repository: <b>{labWord}</b>
-              {m.labAlert[0] ? <>, by {m.labAlert[0].rule.title}</> : null}. Not in the score.
+              {m.labAlert[0] ? (
+                <>
+                  One of the lab&apos;s own rules alerted, which the score does not count: <b>{titleInSentence(m.labAlert[0].rule.title)}</b>.
+                </>
+              ) : (
+                <>
+                  With the lab&apos;s own rules, which the score does not count: <b>{outcomeWords(labWord)}</b>.
+                </>
+              )}
             </span>
           ) : null}
         </span>
@@ -373,7 +381,8 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         <div>
           <dt>Seen</dt>
           <dd>
-            {step.visibility.answer}
+            {/* The outcome in the words the chip and the score use; the recording's own account of it under them. */}
+            {step.outcome === "stopped" ? step.visibility.answer : outcomeWords(step.outcome)}
             <small>{step.visibility.basis}</small>
           </dd>
         </div>
@@ -429,10 +438,10 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         {anyMatch ? (
           <>
             <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={row.end} />
-            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} ended={row.end} />
+            <MatchGroup recording={recording} title="Lab alerts: the lab's own rules at alert level, not in the score" alerts={m.labAlert} ended={row.end} />
             <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
             <MatchGroup recording={recording} title="Published rules at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
-            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} ended={row.end} />
+            <MatchGroup recording={recording} title="The lab's own rules below alert level" alerts={m.labReview} ended={row.end} />
             <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
           </>
         ) : (
