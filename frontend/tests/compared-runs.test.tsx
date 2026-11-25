@@ -398,6 +398,27 @@ describe("the page of a change to the defense", () => {
     expect(screen.getByRole("link", { name: /^Your next change\s*Two tests still raise no alert, with the lab's own rules too/ })).toBeVisible();
   }, 20_000);
 
+  it("with no test left without an alert, speaks only of the tests the run can judge, and says how many had no effect", async () => {
+    const delta = sensorDelta();
+    const alerted = { happened: "took effect", recorded: "recorded", outcome: "alerted", outcome_with_lab_rules: "alerted" } as const;
+    delta.steps = [same("1", "List OS Information"), { ...better, after: alerted }];
+    const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4), step("3", 5, 6)] }), id: "run-before" };
+    const noEffect = { happened: { answer: "not attempted", basis: "the test did not start" }, visibility: { answer: "no telemetry", basis: "no events", events: 0 }, outcome: "no effect" } as const;
+    const after = { ...recording({ steps: [step("1", 1, 2, { outcome: "alerted" }), step("2", 3, 4, noEffect), step("3", 5, 6, noEffect)] }), id: "run-after" };
+    after.score = { ...after.score, seen: 0, unseen: 0 };
+    const { fetched } = mount(delta);
+    fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
+
+    const next = await screen.findByRole("region", { name: "What comes next" });
+    expect(await within(next).findByText("Every test the run can judge raises an alert or was stopped.")).toBeVisible();
+    expect(next).toHaveTextContent("In the run after, with the lab's own rules too. Two tests had no effect, so the run says nothing about them.");
+    expect(next).not.toHaveTextContent("Every test raises an alert or was stopped.");
+    const card = screen.getByRole("link", { name: /^Your next change/ });
+    expect(card).toHaveTextContent("Every test the run can judge raises an alert or was stopped");
+    expect(card).toHaveTextContent("See the run after. Two tests had no effect, so the run says nothing about them");
+    expect(card).not.toHaveTextContent("The tests with no alert");
+  }, 20_000);
+
   it("shows the alert a changed rule no longer raises, with the rule and the event it matched, from the before recording alone", async () => {
     // One run read with two rule sets: the lab's rule was changed, not removed, and stopped alerting on step 2.
     const RULE = "Shell History File Truncated In Place";

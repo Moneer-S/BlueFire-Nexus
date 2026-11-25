@@ -116,14 +116,26 @@ function playAt(delta: Delta, side: Side, stepId: string): string {
 }
 
 /** The tests of a run that raise no alert, counting the lab's own rules too, and how many of them went unseen; with what the run's score, which counts only published rules, gives. */
-function noAlert(recording: Recording): { left: number; unseen: number; scored: number } {
+function noAlert(recording: Recording): { left: number; unseen: number; scored: number; noEffect: number; inconclusive: number } {
   const tests = recording.steps.filter((step) => step.role === "test");
   const mark = (step: (typeof tests)[number]) => step.outcome_with_lab_rules ?? step.outcome;
   return {
     left: tests.filter((step) => mark(step) === "seen" || mark(step) === "unseen").length,
     unseen: tests.filter((step) => mark(step) === "unseen").length,
     scored: recording.score.seen + recording.score.unseen,
+    noEffect: tests.filter((step) => mark(step) === "no effect").length,
+    inconclusive: tests.filter((step) => mark(step) === "inconclusive").length,
   };
+}
+
+/** With no test left without an alert: what that says, and of which tests. */
+function noneLeftWords({ noEffect, inconclusive }: { noEffect: number; inconclusive: number }): { lead: string; rest: string } {
+  if (noEffect + inconclusive === 0) return { lead: "Every test raises an alert or was stopped", rest: "" };
+  const parts = [
+    ...(noEffect ? [`${capital(numberWord(noEffect).toLowerCase())} ${noEffect === 1 ? "test" : "tests"} had no effect`] : []),
+    ...(inconclusive ? [`${noEffect ? numberWord(inconclusive).toLowerCase() : capital(numberWord(inconclusive).toLowerCase())} ${inconclusive === 1 ? "test is" : "tests are"} inconclusive`] : []),
+  ];
+  return { lead: "Every test the run can judge raises an alert or was stopped", rest: `${parts.join(" and ")}, so the run says nothing about ${noEffect + inconclusive === 1 ? "it" : "them"}` };
 }
 
 /** "41 tests still raise no alert", counted with the lab's own rules. */
@@ -485,9 +497,10 @@ function Next({ delta, moved, next, after }: { delta: Delta; moved: readonly Del
     </>;
   } else {
     const counts = after ? noAlert(after) : null;
-    body = counts === null ? <p>Loading the run after.</p> : <>
-      <p className="cmp-next-lead">{counts.left === 0 ? "Every test raises an alert or was stopped." : `${leftWords(counts.left)}.`}</p>
-      <p>In the run after, with the lab's own rules too{counts.left === 0 ? "." : counts.unseen ? `; ${numberWord(counts.unseen).toLowerCase()} of them went unseen.` : "; none went unseen."}</p>
+    const none = counts ? noneLeftWords(counts) : null;
+    body = counts === null || none === null ? <p>Loading the run after.</p> : <>
+      <p className="cmp-next-lead">{counts.left === 0 ? `${none.lead}.` : `${leftWords(counts.left)}.`}</p>
+      <p>In the run after, with the lab's own rules too{counts.left === 0 ? `.${none.rest ? ` ${none.rest}.` : ""}` : counts.unseen ? `; ${numberWord(counts.unseen).toLowerCase()} of them went unseen.` : "; none went unseen."}</p>
       {next ? <Link className="cmp-go" to={pairPath(next.id)}>Next turn: {turnName(next)}<ArrowRight aria-hidden="true" /></Link> : null}
       {counts.left ? <Link className="cmp-go" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>See them in the run after<ArrowRight aria-hidden="true" /></Link> : null}
       <p className="cmp-small">{counts.scored !== counts.left ? `Its score counts only published rules: ${count(counts.scored)} with no alert. ` : ""}Each test counted once, as published, each with Fix this.</p>
@@ -642,6 +655,7 @@ function Ways({ delta, staged, moved, after }: { delta: Delta; staged: DeltaStep
 function GoFrom({ delta, previous, next, place, after }: { delta: Delta; previous: DeltaSummary | null; next: DeltaSummary | null; place: number; after: Recording | null }) {
   const oneRun = isOneRun(delta);
   const counts = after ? noAlert(after) : null;
+  const none = counts && counts.left === 0 ? noneLeftWords(counts) : null;
   return <section className="cmp-sec" aria-labelledby="cmp-go-heading">
     <h2 id="cmp-go-heading">Where to go from here</h2>
     <div className="cmp-go-row">
@@ -658,7 +672,9 @@ function GoFrom({ delta, previous, next, place, after }: { delta: Delta; previou
         {next ? <Link className={`cmp-turn-card${next.declared_change?.startsWith("sensors:") ? "" : " is-rule"}`} to={pairPath(next.id)}>
           <small>Next turn, turn {place + 2}</small><b>{turnName(next)}<ArrowRight aria-hidden="true" /></b><span>{pairHeadline(next, next.moved ?? [])}</span>
         </Link> : <Link className="cmp-turn-card is-todo" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>
-          <small>Your next change</small><b>{counts === null || counts.left === 0 ? "The tests with no alert" : `${leftWords(counts.left)}, with the lab's own rules too`}</b><span>See them in the run after, each with Fix this{counts && counts.scored !== counts.left ? `. Its score counts only published rules: ${count(counts.scored)} with no alert` : ""}</span>
+          <small>Your next change</small>{none
+            ? <><b>{none.lead}</b><span>See the run after{none.rest ? `. ${none.rest}` : ""}</span></>
+            : <><b>{counts === null ? "The tests with no alert" : `${leftWords(counts.left)}, with the lab's own rules too`}</b><span>See them in the run after, each with Fix this{counts && counts.scored !== counts.left ? `. Its score counts only published rules: ${count(counts.scored)} with no alert` : ""}</span></>}
         </Link>}
       </div>
     </div>
