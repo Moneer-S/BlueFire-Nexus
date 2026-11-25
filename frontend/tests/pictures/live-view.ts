@@ -25,10 +25,10 @@ import type { LoopPlan, Place } from "./loop";
 // kind gives the same pictures of its own run. The script fails if a page
 // prints an error, if a replay page asks for anything beyond its own file or
 // the app for anything beyond the service, if a moment does not show what the
-// picture is meant to show, or if a recording no longer bears out what the
-// README says of it. Each picture is taken once the page is at rest: two
-// pictures taken one after the other are the same, and the app's top bar says
-// the service is connected.
+// picture is meant to show, or if a recording or a shipped comparison no longer
+// bears out what the README says of it. Each picture is taken once the page is
+// at rest: two pictures taken one after the other are the same, and the app's
+// top bar says the service is connected.
 
 interface Step {
   id: string;
@@ -69,10 +69,25 @@ const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
 const PATH_RECORDING = "bluefire/data/recordings/lab-range-one-path.json";
 const path: ShippedPath = JSON.parse(readFileSync(join(repository, PATH_RECORDING), "utf-8"));
+/** A step's marks on one side of a comparison: by the published rules, and with the lab's own rules too. */
+interface Marks {
+  outcome: string;
+  outcome_with_lab_rules: string;
+}
+
+/** A comparison of two runs, or of one run evaluated with two rule sets, as far as this script reads it. */
+interface Comparison {
+  after: { run_url?: string };
+  lab_rules: { title: string; change: string }[];
+  steps: { id: string; title: string; result: string; before: Marks; after: Marks }[];
+}
+
 const PAIR = "bluefire/data/recordings/deltas/lab-pair-history-watch.json";
-const pairRun: string = (JSON.parse(readFileSync(join(repository, PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
+const pairShipped: Comparison = JSON.parse(readFileSync(join(repository, PAIR), "utf-8"));
+const pairRun: string = pairShipped.after.run_url ?? "not named in the comparison";
 const RULE_PAIR = "bluefire/data/recordings/deltas/lab-rule-history-truncated.json";
-const rulePairRun: string = (JSON.parse(readFileSync(join(repository, RULE_PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
+const rulePairShipped: Comparison = JSON.parse(readFileSync(join(repository, RULE_PAIR), "utf-8"));
+const rulePairRun: string = rulePairShipped.after.run_url ?? "not named in the comparison";
 const FILES = [
   "SOURCE.txt",
   "analyse-unseen.png",
@@ -84,6 +99,7 @@ const FILES = [
   "app-rule-pair.png",
   "app-runs-pair.png",
   "app-runs.png",
+  "app-watch-stopped.png",
   "attack-path.html",
   "live-view-loop.gif",
   "path-goal-wide.png",
@@ -139,9 +155,17 @@ const CAPTION =
   "About eleven minutes later the build server's signing secret was copied to inet, the stand-in internet, with no alert.\")";
 const NO_ALERT_SECTION =
   'The section "Read what no rule alerted on" of README.md ("Every step after the password guessing was recorded, and no rule alerted on any of them. ' +
-  'Pictured: step 9 of the same run, where two stock rules matched below alert level and the screen names the one to start from.")';
-function untrue(sentence: string, reason: string): never {
-  throw new Error(`${sentence} is untrue of ${PATH_RECORDING}: ${reason}. Change it with the recording, and the loop's plan or the picture if they no longer show it.`);
+  'Pictured: step 9 of the same run, where every stock rule that matched was below alert level and the screen names the one to start from.")';
+const NO_ALERT_PICTURE = 'The words of the picture under "Read what no rule alerted on" in README.md ("the step told seen with two rules matched for review and none at alert level")';
+const CHANGE_SECTION =
+  'The section "Change a defense, see before and after" of README.md ("new auditd settings took "Clear Bash history (echo)" from unseen to seen, ' +
+  'then a rule written by hand from its event alerted on 4 steps that were seen. The score counts published rules only, so it still marks those 4 steps seen.")';
+const UNSEEN_SECTION = 'The section "Find what nobody saw" of README.md ("On the Runs screen, open the run on one Linux machine and press Analyse: the table lists first the one unseen test, "Clear Bash history (echo)".")';
+const HARDENING_SECTION =
+  'The section "See what hardening stopped" of README.md ("In Analyse, the Hardened tab lists these reruns, each marked stopped or not; ' +
+  'Watch from here on one shows it with the hardening change named, next to what the same test did without it.")';
+function untrue(sentence: string, reason: string, recording: string = PATH_RECORDING): never {
+  throw new Error(`${sentence} is untrue of ${recording}: ${reason}. Change it with the recording, and the loop's plan or the picture if they no longer show it.`);
 }
 const pathSteps = inOrder(path);
 const pathFirst = first("step", () => true, path);
@@ -179,9 +203,28 @@ const copies = pathSteps.filter((step) => step.from === webServer.id && step.hos
 const copy = copies[copies.length - 1];
 if (!copy) untrue(NO_ALERT_SECTION, `no step from ${webServer.id} to ${buildServer.id} was matched by a published rule below alert level`);
 if (pathSteps.indexOf(copy) !== 8) untrue(NO_ALERT_SECTION, `the login to ${buildServer.id} that copies files back is step ${pathSteps.indexOf(copy) + 1}, not step 9`);
-// "Below alert level" is a match at low or medium level, which the app marks for review; informational matches are not counted.
-const copyReview = new Set(path.alerts.filter((alert) => alert.step === copy.id && stock(alert) && BELOW_ALERT.has(alert.rule.level ?? "")).map((alert) => alert.rule.title));
-if (copyReview.size !== 2) untrue(NO_ALERT_SECTION, `step 9 was matched below alert level by ${copyReview.size} published rules, not two`);
+// Every published rule that matched step 9, at any level, was below alert level (high or critical).
+const copyAtAlert = path.alerts.filter((alert) => alert.step === copy.id && stock(alert) && (alert.rule.level === "high" || alert.rule.level === "critical"));
+if (copyAtAlert.length > 0) untrue(NO_ALERT_SECTION, `published rules matched step 9 at alert level: ${copyAtAlert.map((alert) => `"${alert.rule.title}" (${alert.rule.level ?? "no level"})`).join(", ")}`);
+
+// The run on one Linux machine: its one unseen test, which "Find what nobody saw" names.
+const unseenTests = every("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
+if (unseenTests.length !== 1) untrue(UNSEEN_SECTION, `it has ${unseenTests.length} unseen tests, not one`, RECORDING);
+if (unseen.title !== "Clear Bash history (echo)") untrue(UNSEEN_SECTION, `its unseen test is "${unseen.title}"`, RECORDING);
+
+// The two changes to the defense: what each comparison says moved.
+const pairMoved = pairShipped.steps.filter((step) => step.result !== "same");
+const pairEcho = pairMoved.find((step) => step.title === "Clear Bash history (echo)");
+if (!pairEcho || pairEcho.before.outcome !== "unseen" || pairEcho.after.outcome !== "seen") untrue(CHANGE_SECTION, `"Clear Bash history (echo)" did not go from unseen to seen; the steps that moved: ${pairMoved.map((step) => `"${step.title}" ${step.before.outcome} to ${step.after.outcome}`).join(", ") || "none"}`, PAIR);
+const ruleMoved = rulePairShipped.steps.filter((step) => step.result !== "same");
+if (rulePairShipped.lab_rules.length !== 1 || rulePairShipped.lab_rules[0]?.change !== "new") untrue(CHANGE_SECTION, `the change to the lab's rules is not one new rule: ${rulePairShipped.lab_rules.map((rule) => `"${rule.title}" (${rule.change})`).join(", ") || "none"}`, RULE_PAIR);
+const notAsSaid = ruleMoved.filter((step) => !(step.before.outcome_with_lab_rules === "seen" && step.after.outcome_with_lab_rules === "alerted" && step.before.outcome === "seen" && step.after.outcome === "seen"));
+if (ruleMoved.length !== 4 || notAsSaid.length > 0)
+  untrue(
+    CHANGE_SECTION,
+    `${ruleMoved.length} steps moved, and these did not go from seen to alerted with the lab's rules while staying seen in the score: ${notAsSaid.map((step) => `"${step.title}" (${step.id}) ${step.before.outcome}/${step.before.outcome_with_lab_rules} to ${step.after.outcome}/${step.after.outcome_with_lab_rules}`).join(", ") || "none"}`,
+    RULE_PAIR,
+  );
 
 /** Every error the page prints, and every request it makes beyond what it may reach. */
 function watch(page: Page, allowed: (url: string) => boolean) {
@@ -270,17 +313,24 @@ async function picture(page: Page, folder: string, name: string, part?: Locator)
 }
 
 /**
- * In analyse mode, every step's title in the table takes two lines at the most (three in a window narrower than 1440
- * px), and the first row in view stands whole under the table's head: no row shows cut under it. With a row chosen,
- * that row is whole in the table's box, above the fade at its foot.
+ * In analyse mode, every step's title in the table takes two lines at the most (three where the live view is narrower
+ * than 1440 px, as inside the app beside its rail), no cell of the table is cut short, and the first row in view stands
+ * whole under the table's head: no row shows cut under it. With a row chosen, that row is whole in the table's box,
+ * above the fade at its foot.
  */
 async function expectWholeRows(page: Page, name: string, chosen?: string): Promise<{ scrolled: number }> {
   await settle(page);
   const found = await page.evaluate((selected) => {
     const titles = [...document.querySelectorAll<HTMLElement>(".lv-table .lv-row-button")].filter((title) => title.getBoundingClientRect().height > 0);
-    // Two lines at the most in a window 1440 px wide or wider, three in a narrower one.
-    const most = window.innerWidth >= 1440 ? 2 : 3;
+    // Two lines at the most where the live view is 1440 px wide or wider, three where it is narrower: the room the
+    // table has is the view's, not the window's.
+    const view = document.querySelector(".lv")?.getBoundingClientRect().width ?? 0;
+    const most = view >= 1440 ? 2 : 3;
     const tall = titles.filter((title) => title.getBoundingClientRect().height / parseFloat(getComputedStyle(title).lineHeight) > most + 0.5).map((title) => title.textContent ?? "");
+    // A cell, or a part of one, whose words are wider than its box (text for screen readers only aside).
+    const short = [...document.querySelectorAll<HTMLElement>(".lv-table tbody td")]
+      .filter((cell) => [cell, ...cell.querySelectorAll<HTMLElement>("*")].some((part) => !part.closest(".lv-sr") && getComputedStyle(part).overflow !== "visible" && part.scrollWidth > part.clientWidth + 1))
+      .map((cell) => `${cell.closest("tr")?.dataset.step ?? ""}: ${cell.textContent ?? ""}`);
     // The head's cells stick to the top of the box as the rows scroll; the head itself scrolls away with them.
     const head = document.querySelector(".lv-table thead th")?.getBoundingClientRect().bottom ?? 0;
     const rows = [...document.querySelectorAll<HTMLElement>(".lv-table tbody tr")];
@@ -294,15 +344,16 @@ async function expectWholeRows(page: Page, name: string, chosen?: string): Promi
     const row = rows.find((item) => item.dataset.step === selected);
     let whole = true;
     if (selected !== null) {
-      if (!wrap || !row) return { tall, cut, titles: titles.length, whole: false, scrolled: 0 };
+      if (!wrap || !row) return { tall, short, cut, titles: titles.length, whole: false, scrolled: 0 };
       const box = row.getBoundingClientRect();
       const foot = wrap.getBoundingClientRect().top + wrap.clientTop + wrap.clientHeight - parseFloat(getComputedStyle(wrap).paddingBottom);
       whole = box.top >= head - 0.5 && box.bottom <= foot + 0.5;
     }
-    return { tall, cut, titles: titles.length, whole, scrolled: wrap?.scrollTop ?? 0 };
+    return { tall, short, cut, titles: titles.length, whole, scrolled: wrap?.scrollTop ?? 0 };
   }, chosen ?? null);
   expect(found.titles, `${name}: the table shows no title`).toBeGreaterThan(0);
-  expect(found.tall, `${name}: titles over two lines, or three in a narrower window`).toEqual([]);
+  expect(found.tall, `${name}: titles over two lines, or three in a narrower live view`).toEqual([]);
+  expect(found.short, `${name}: cells of the table cut short`).toEqual([]);
   expect(found.cut, `${name}: rows cut under the table's head`).toEqual([]);
   expect(found.whole, `${name}: the chosen row is not whole in the table's box`).toBe(true);
   return { scrolled: found.scrolled };
@@ -504,7 +555,7 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await expectWholeMoment(page, copy, path);
   const told = page.getByRole("region", { name: "The step", exact: true });
   await expect(told.getByRole("button", { name: "Fix this", exact: true }), `${NO_ALERT_SECTION}: the step it shows has no Fix this`).toBeVisible();
-  await expect(told, `${NO_ALERT_SECTION}: the step it shows is not told as seen with two rules matched for review`).toContainText(/2 rules matched for review, none at alert level/);
+  await expect(told, `${NO_ALERT_PICTURE}: the step it shows is not told as seen with two rules matched for review`).toContainText(/2 rules matched for review, none at alert level/);
   await expect(told, `${NO_ALERT_SECTION}: the step's hint does not start from a rule that matched it`).toContainText(/start from the rule/);
   await expectWholeRaceLine(page, "path-no-alert.png");
   await picture(page, folder, "path-no-alert.png");
@@ -556,25 +607,51 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   await expect(link).toBeVisible();
 
+  const runPath = await link.getAttribute("href");
+  if (!runPath?.startsWith("#/")) throw new Error(`The recorded run's link is ${runPath}.`);
+
   // "Find what nobody saw" in the README: open the run on one Linux machine, press Analyse, and click the first row of
-  // the table, which is the test no sensor recorded: its detail opens beside the table. At 1920 by 1080, where the
-  // table beside the app's rail has the room of the replay page's at 1440 by 900.
-  await page.setViewportSize({ width: 1920, height: 1080 });
+  // the table, which is the unseen test: its detail opens beside the table, with "Fix this". At 1440 by 900, the size
+  // of the README's other pictures, where the live view beside the app's rail is 1440 px less the rail.
   await link.click();
   await page.getByRole("button", { name: "Analyse", exact: true }).click();
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
   const rows = page.locator(".lv-table tbody tr[data-step]");
-  await expect(rows.first(), `The section "Find what nobody saw" of README.md says that pressing Analyse lists first the test no sensor recorded, "${unseen.title}"`).toHaveAttribute("data-step", unseen.id);
+  await expect(rows.first(), `${UNSEEN_SECTION}: pressing Analyse does not list "${unseen.title}" first`).toHaveAttribute("data-step", unseen.id);
   await rows.first().locator(".lv-row-button").click();
-  await expect(page.getByRole("article").getByRole("heading", { name: unseen.title, exact: true })).toBeVisible();
+  const detail = page.getByRole("article");
+  await expect(detail.getByRole("heading", { name: unseen.title, exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Fix this", exact: true }), `${UNSEEN_SECTION}: the panel beside the table has no Fix this`).toBeVisible();
   await expectWholeRows(page, "app-analyse.png");
   await picture(page, folder, "app-analyse.png");
-  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // "See what hardening stopped" in the README: in Analyse, the Hardened tab, then Watch from here on a rerun that was
+  // stopped. Every cell of that tab is whole. The view then plays the rerun from its start; the picture is taken
+  // paused late in it, as its address names that moment, the rerun told stopped with its hardening change named and
+  // what the same test did without it.
+  await page.getByRole("group", { name: "Role" }).getByRole("button", { name: /^Hardened/ }).click();
+  const reruns = await rows.evaluateAll((items) => items.map((row) => (row instanceof HTMLElement ? (row.dataset.step ?? "") : "")));
+  const hardened = new Set(every("hardened rerun", (step) => step.role === "hardened").map((step) => step.id));
+  expect(reruns.filter((id) => !hardened.has(id)), `${HARDENING_SECTION}: the Hardened tab lists steps that are not hardened reruns`).toEqual([]);
+  expect(reruns, `${HARDENING_SECTION}: the Hardened tab does not list the rerun "${stopped.title}"`).toContain(stopped.id);
+  await expectWholeRows(page, "the Hardened tab");
+  await page.locator(`.lv-table tbody tr[data-step="${stopped.id}"] .lv-row-button`).click();
+  await expect(detail.getByRole("heading", { name: stopped.title, exact: true })).toBeVisible();
+  await detail.getByRole("button", { name: "Watch from here", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const watching = page.getByRole("region", { name: "The step", exact: true });
+  await expect(watching).toContainText(stopped.title);
+  await page.evaluate((hash) => {
+    window.location.hash = hash;
+  }, `${runPath.slice(1)}?step=${stopped.id}&at=${LATE}&paused=1`);
+  await expectMoment(page, stopped);
+  await expect(watching.locator(".lv-word"), `${HARDENING_SECTION}: the rerun is not told stopped`).toHaveText("stopped");
+  await expect(watching, `${HARDENING_SECTION}: the hardening change is not named`).toContainText("Hardening change:");
+  await expect(watching, `${HARDENING_SECTION}: what the same test did without it is not shown`).toContainText(/Without it/i);
+  await expectWholeRaceLine(page, "app-watch-stopped.png");
+  await picture(page, folder, "app-watch-stopped.png");
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   await expect(link).toBeVisible();
-
-  const runPath = await link.getAttribute("href");
-  if (!runPath?.startsWith("#/")) throw new Error(`The recorded run's link is ${runPath}.`);
   const moment = (step: Step) =>
     page.evaluate((hash) => {
       window.location.hash = hash;

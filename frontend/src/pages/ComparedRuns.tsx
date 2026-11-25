@@ -14,7 +14,7 @@ import { api, type Delta, type DeltaLabRule, type DeltaStep, type DeltaSummary }
 import { fixPath, stepMoment } from "../lib/fix-step";
 import { loopTurns, originWords, recordedRunPath } from "../lib/recorded-runs";
 import { stageSide, type StageSide } from "../lib/pair-stage";
-import { alertedByLabOnly, basisWords, creditedCount, headlineNamesStep, isCredited, isOneRun, judgedWords, LAB_RULES, MARK_FIELD, pairHeadline, pairPath, ruleAlerts, ruleChangeWords, ruleText, sideWhere, titlesWords, turnName } from "../lib/recording-pairs";
+import { alertedByLabOnly, basisWords, creditedCount, headlineNamesStep, isCredited, isOneRun, judgedWords, keptNewRule, LAB_RULES, MARK_FIELD, pairHeadline, pairPath, priceWord, ruleAlerts, ruleChangeWords, ruleText, sideWhere, titlesWords, turnName } from "../lib/recording-pairs";
 import { stepRows } from "../live/analyse";
 import { capital, count, MARK_WORDS, plural, sensorColours, sensorShortName, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
@@ -393,15 +393,27 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
   const price = moved.find((step) => step.price)?.price ?? "";
   const before = recordingOf(recordings.before);
   const after = recordingOf(recordings.after);
+  const kept = keptNewRule(delta);
   let body;
   if (!delta.comparable) {
     body = <><p className="cmp-cost-big is-word">Not judged</p><p>With no verdict there is no price either.</p></>;
   } else if (!price) {
     body = moved.length ? <><p className="cmp-cost-big is-word">Not stated</p><p>The comparison gives no price for these steps.</p></> : <><p className="cmp-cost-big is-word">Nothing to pay</p><p>No step moved, so the comparison gives no price.</p></>;
+  } else if (price.startsWith("price not counted") && kept) {
+    // The run after kept the one new rule, which it does only for a rule that alerted on no ordinary activity in it.
+    const reason = kept.after?.reason;
+    body = <>
+      <p className="cmp-cost-big is-word">{priceWord(price, delta)}</p>
+      <p>The new rule alerted on no ordinary activity in this run, which the lab requires before it keeps a rule. One run is a test the rule passed, not a price measured over time.</p>
+      <details className="cmp-more"><summary>The price in the lab's words</summary>
+        {reason ? <p>Why the run kept the rule: <LabText text={reason} />.</p> : null}
+        <p className="cmp-small">In the lab's words: <LabText text={price} /></p>
+      </details>
+    </>;
   } else if (price.startsWith("price not counted")) {
     const rule = singleRule(delta);
     body = <>
-      <p className="cmp-cost-big is-word">Not counted</p>
+      <p className="cmp-cost-big is-word">{priceWord(price, delta)}</p>
       <p>The lab leaves any rule of its own that alerts on ordinary activity out of the recording, so the files hold no price for it.</p>
       <details className="cmp-more"><summary>{rule?.after?.accepted ? "Why the run used the rule" : "The price in the lab's words"}</summary>
         {rule?.after?.accepted && rule.after.reason ? <p>Because {rule.after.reason}: a test it passed in this run, not a price measured over time.</p> : null}
@@ -410,7 +422,7 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
     </>;
   } else if (price.startsWith("price not known")) {
     body = <>
-      <p className="cmp-cost-big is-word">Not known</p>
+      <p className="cmp-cost-big is-word">{priceWord(price, delta)}</p>
       <p>Each run counted its ordinary activity on a runner of its own, and the two runners differed.</p>
       <details className="cmp-more"><summary>The price in the lab's words</summary><p><LabText text={price} /></p></details>
     </>;

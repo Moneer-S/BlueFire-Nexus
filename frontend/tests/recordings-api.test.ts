@@ -120,7 +120,7 @@ describe("the recordings in the demo build", () => {
     const runUrl = shipped?.origin.kind === "shipped" ? shipped.origin.run_url : "";
     expect(runUrl).toMatch(/^https:\/\/github\.com\/.+\/actions\/runs\/\d+$/);
     expect(runUrl).toBe(shipped?.source.run_url);
-    expect(shipped?.origin.note).toBe(`Shipped with BlueFire. This repository's lab workflow recorded it in the CI run at ${runUrl}. BlueFire checked that it follows the recording format and that its parts agree with each other.`);
+    expect(shipped?.origin.note).toBe(`Shipped with BlueFire. A workflow of this repository recorded it in the CI run at ${runUrl}. BlueFire checked that it follows the recording format and that its parts agree with each other.`);
 
     // Each list entry, which the build worked out of its file, says what the recording itself holds.
     for (const item of list.recordings) {

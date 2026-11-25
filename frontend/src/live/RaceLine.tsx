@@ -85,12 +85,16 @@ export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoF
   return `${through} of ${plural(decided, "test")}${soFar} got through without an alert${unseen}.`;
 }
 
-/** While hardened reruns play: how many of those told so far their change stopped. Null at any other step. */
-export function rerunsSoFar(timeline: Timeline, frame: Frame, revealed: boolean): { stopped: number; told: number } | null {
+/**
+ * While hardened reruns play: how many of those told so far their change stopped, of all the hardened reruns of the
+ * recording, the count the score box gives. Null at any other step.
+ */
+export function rerunsSoFar(timeline: Timeline, frame: Frame, revealed: boolean): { stopped: number; total: number } | null {
   const current = frame.segment;
   if (!current || current.step.role !== "hardened") return null;
-  const told = timeline.segments.filter((segment) => segment.step.role === "hardened" && (segment.end <= frame.time || (segment === current && revealed)));
-  return { stopped: told.filter((segment) => segment.step.outcome === "stopped").length, told: told.length };
+  const hardened = timeline.segments.filter((segment) => segment.step.role === "hardened");
+  const told = hardened.filter((segment) => segment.end <= frame.time || (segment === current && revealed));
+  return { stopped: told.filter((segment) => segment.step.outcome === "stopped").length, total: hardened.length };
 }
 
 /** Pixels kept free between two labels on the track. */
@@ -321,13 +325,13 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
           ) : null}
         </div>
         <div className="lv-race-notes">
-          <span className="lv-winning" title={reruns ? `${winning} Hardened reruns: ${reruns.stopped} of ${reruns.told} stopped so far.` : winning}>
+          <span className="lv-winning" title={reruns ? `${winning} Hardened reruns: ${reruns.stopped} of ${reruns.total} stopped so far.` : winning}>
             {lead ? <em>{lead}</em> : null}
             {winning.slice(lead.length)}
             {reruns ? (
               <span className="lv-phase">
                 {" "}
-                Hardened reruns: <b>{reruns.stopped}</b> of {reruns.told} stopped so far.
+                Hardened reruns: <b>{reruns.stopped}</b> of {reruns.total} stopped so far.
               </span>
             ) : null}
           </span>

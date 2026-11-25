@@ -128,8 +128,8 @@ describe("analyse mode of a network with the same sensor on several hosts", () =
     expect(texts(container, ".lv-dt-sensors li")).toEqual(["Wazuh agent on web1 event", "Wazuh agent on db1 event"]);
     const columns = [...container.querySelectorAll("thead th.is-num")].map((cell) => ({ text: cell.textContent?.trim(), title: cell.getAttribute("title") }));
     expect(columns).toEqual(expect.arrayContaining([
-      { text: "web", title: "Events Wazuh agent on web recorded for the step" },
-      { text: "db", title: "Events Wazuh agent on db recorded for the step" },
+      { text: "web", title: "The step's events from Wazuh agent on web that the recording keeps" },
+      { text: "db", title: "The step's events from Wazuh agent on db that the recording keeps" },
     ]));
     unmount();
   });
@@ -237,7 +237,7 @@ describe("a finished run with no steps", () => {
     const value: Recording = { ...base, score: { ...base.score, steps: 0, took_effect: 0, alerted: 0, seen: 0, unseen: 0, stopped: 0 } };
     const { container, unmount } = open(value, {});
     expect(container.textContent).not.toContain("A plan");
-    expect(container.querySelector(".lv-prov-button")?.textContent).toMatch(/^A run, recorded \d+ \w+ \d{4} on a /);
+    expect(container.querySelector(".lv-prov-button")?.textContent).toMatch(/^A run, recorded \d+ \w+ \d{4} on tests /);
     expect(container.querySelector(".lv-plan-note")?.textContent).toMatch(/^This run finished with no steps/);
     unmount();
     const source = { ...value.source };
@@ -267,7 +267,7 @@ describe("keys on the timeline", () => {
 
   function press(timeline: Timeline, time: number, key: string): number[] {
     const seeks: number[] = [];
-    const { container, unmount } = render(<Scrubber recording={value} timeline={timeline} time={time} real={0} revealed={false} onSeek={(to) => seeks.push(to)} />);
+    const { container, unmount } = render(<Scrubber recording={value} timeline={timeline} time={time} real={0} revealed={false} ended={false} onSeek={(to) => seeks.push(to)} />);
     const slider = container.querySelector("[role='slider']");
     if (!slider) throw new Error("no slider");
     fireEvent.keyDown(slider, { key });
@@ -297,7 +297,7 @@ describe("the head of the live view, in plain words", () => {
     alerts: [alert("a1", "1", 1.1, ["1-1"])],
   });
   const value: Recording = { ...base, source: { ...base.source, run_url: runUrl } };
-  const note = `Shipped with BlueFire. This repository's lab workflow recorded it in the CI run at ${runUrl}.`;
+  const note = `Shipped with BlueFire. A workflow of this repository recorded it in the CI run at ${runUrl}.`;
 
   function show(kind: LiveViewProps["originKind"], initial: LiveViewProps["initial"] = { step: "1", at: 1.5, paused: true }) {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1440);
@@ -307,7 +307,7 @@ describe("the head of the live view, in plain words", () => {
 
   it("says in one line what the run is and when it was recorded, and opens to who checked it and the CI run", () => {
     const view = show("shipped");
-    const line = view.getByRole("button", { name: /^A real run, recorded \d+ \w+ \d{4} on a tests\s*· details$/ });
+    const line = view.getByRole("button", { name: /^A real run, recorded \d+ \w+ \d{4} on tests\s*· details$/ });
     // Until it is opened, neither the note nor the CI run's address is on screen.
     expect(view.queryByText(note)).toBeNull();
     expect(view.queryByRole("link")).toBeNull();
@@ -330,8 +330,8 @@ describe("the head of the live view, in plain words", () => {
     const view = show("shipped");
     const score = view.getByLabelText("The score so far");
     expect(score).toHaveTextContent("tests alerted so far");
-    expect(score).toHaveTextContent("repeated tests stopped");
-    expect(score).not.toHaveTextContent("reruns stopped");
+    expect(score).toHaveTextContent("hardened reruns stopped");
+    expect(score).not.toHaveTextContent("repeated tests");
     expect(view.container.textContent).toContain("short: repeats");
     expect(view.container.textContent).not.toContain("short: reruns");
     view.unmount();
@@ -347,5 +347,70 @@ describe("the head of the live view, in plain words", () => {
     expect(race).toHaveTextContent("first alert · test 1 (the time of the event it matched)");
     expect(view.container.textContent).not.toContain("ran after the run, so an alert");
     view.unmount();
+  });
+});
+
+describe("the hardened reruns while they play", () => {
+  // One test, then three hardened reruns: the first two stopped by their change, the third not.
+  const rerun = (id: string, from: number, stopped: boolean) =>
+    step(id, from, from + 1, stopped ? { role: "hardened", outcome: "stopped", happened: { answer: "blocked", basis: "refused" }, visibility: { answer: "telemetry only", basis: "recorded", events: 1 } } : { role: "hardened", visibility: { answer: "telemetry only", basis: "recorded", events: 1 } });
+  const value = recording({
+    steps: [step("1", 1, 2, { visibility: { answer: "telemetry only", basis: "recorded", events: 1 } }), rerun("2", 10, true), rerun("3", 20, true), rerun("4", 30, false)],
+    events: ["1", "2", "3", "4"].map((id, n) => event(`${id}-1`, id, [1.5, 10.5, 20.5, 30.5][n] ?? 0)),
+  });
+
+  it("are named and counted alike in the score and the race's sentence: how many of all of them were stopped so far", () => {
+    for (const [id, stopped] of [
+      ["2", 1],
+      ["3", 2],
+    ] as const) {
+      const { container, unmount } = open(value, { step: id, at: 1, paused: true });
+      expect(container.querySelector(".lv-score-reruns b")?.textContent?.replace(/\s+/g, " ").trim(), `rerun ${id}`).toBe(`${stopped} of 3`);
+      expect(container.querySelector(".lv-score-reruns span")?.textContent, `rerun ${id}`).toBe("hardened reruns stopped");
+      expect(container.querySelector(".lv-phase")?.textContent?.trim(), `rerun ${id}`).toBe(`Hardened reruns: ${stopped} of 3 stopped so far.`);
+      unmount();
+    }
+  });
+});
+
+describe("where a run ran, in words", () => {
+  const base = recording({ steps: [step("1", 1, 2)], events: [event("1-1", "1", 1.5)] });
+
+  it.each([
+    ["containers on a developer machine", "on containers on a developer machine"],
+    ["GitHub-hosted runner", "on a GitHub-hosted runner"],
+    ["Ubuntu host", "on an Ubuntu host"],
+  ])("says %s as a sentence does, in the head, its details and the whole run's summary", (environment, words) => {
+    const value: Recording = { ...base, source: { ...base.source, environment } };
+    const watch = open(value, { step: "1", at: 1, paused: true });
+    const head = watch.container.querySelector(".lv-prov-button");
+    expect(head?.textContent).toContain(`2026 ${words}`);
+    if (!head) throw new Error("the head should say where the run ran");
+    fireEvent.click(head);
+    expect(watch.container.querySelector(".lv-prov-pop")?.textContent).toContain(`fixture ${words}, `);
+    watch.unmount();
+    const analyse = open(value, { mode: "analyse" });
+    expect(analyse.container.querySelector(".lv-sum-source")?.textContent).toContain(`fixture ${words}, `);
+    analyse.unmount();
+  });
+});
+
+describe("a step whose recording keeps fewer events than were recorded", () => {
+  // Test 1 recorded 1,857 events; the recording keeps 2 of them, both by Sysmon.
+  const value = recording({
+    steps: [step("1", 10, 11, { visibility: { answer: "telemetry only", basis: "events", events: 1857, kept: 2 } }), step("2", 20, 21)],
+    events: [event("1-1", "1", 10.2), event("1-2", "1", 10.4)],
+  });
+
+  it("says in its row how many of the recorded events it keeps, which the sensors' columns add up to", () => {
+    const { container, unmount } = open(value, { mode: "analyse" });
+    const row = container.querySelector("tr[data-step='1']");
+    if (!row) throw new Error("the table should have test 1");
+    expect(row.querySelector(".lv-kept-tag")?.textContent).toBe("2 of 1,857 events kept");
+    const columns = [...row.querySelectorAll("td.is-num")].map((cell) => Number(cell.textContent?.replace(/,/g, "")));
+    expect(columns.reduce((sum, value) => sum + value, 0)).toBe(2);
+    // The column's hover text says it counts what the recording keeps.
+    expect(container.querySelector("thead th.is-num")?.getAttribute("title")).toContain("the recording keeps");
+    unmount();
   });
 });

@@ -10,7 +10,7 @@ import type { Recording } from "./recording";
 import { alertMoment, eventsByStep, timeOf } from "./recording";
 import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
-import { capital, clockTime, day, elapsed, isLabDetector, matchKind, plural, runLink, sensorColours, sharedUnseenWords, stepLabel, unitWord } from "./format";
+import { capital, clockTime, day, elapsed, isLabDetector, matchKind, onEnvironment, plural, runLink, sensorColours, sharedUnseenWords, stepLabel, unitWord } from "./format";
 import { firstAlertClock, firstAlertOnScreen, lateLine, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
 import { FreeText } from "./FreeText";
 import { NetworkMap } from "./NetworkMap";
@@ -109,7 +109,7 @@ const Provenance = memo(function Provenance({ recording, origin, originKind }: {
       {ran ? (
         <button type="button" className="lv-prov-button" ref={trigger} aria-expanded={open} aria-controls={popId} onClick={() => setOpen((value) => !value)}>
           <span className="lv-prov-what">
-            {runWords(originKind)}, {source.finished ? `recorded ${day(source.started)}` : `recording since ${day(source.started)}`} on a {source.environment}
+            {runWords(originKind)}, {source.finished ? `recorded ${day(source.started)}` : `recording since ${day(source.started)}`} {onEnvironment(source.environment)}
           </span>
           {/* Where the line is cut short, its end, which opens the rest, stays on screen. */}
           <span className="lv-prov-more">
@@ -143,7 +143,7 @@ const Provenance = memo(function Provenance({ recording, origin, originKind }: {
             ))}
           </dl>
           <p>
-            {source.engine} on a {source.environment}, {source.finished ? `${source.started} to ${source.finished}` : `from ${source.started}, still running`}.
+            {source.engine} {onEnvironment(source.environment)}, {source.finished ? `${source.started} to ${source.finished}` : `from ${source.started}, still running`}.
           </p>
           {recording.notes.length > 0 ? (
             <ul>
@@ -572,7 +572,7 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
                     {score.stopped}
                     {onlyHardenedStop && hardened > 0 ? <small> of {hardened}</small> : null}
                   </b>
-                  <span>{onlyHardenedStop && hardened > 0 ? "repeated tests stopped" : "steps stopped"}</span>
+                  <span>{onlyHardenedStop && hardened > 0 ? "hardened reruns stopped" : "steps stopped"}</span>
                 </div>
               ) : null}
             </div>
@@ -649,7 +649,7 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
               </b>
               <span title={`Counted from ${facts.startWords}, ${clockTime(facts.start)} UTC`}>{elapsed((frame.real - facts.start) / 1000)} into the run</span>
             </div>
-            <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} onSeek={jump} />
+            <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} ended={moment?.ended ?? false} onSeek={jump} />
             <div className="lv-stepno">
               {/* On an attack path a step's name is its place on the path: one line says both, "Step 9 of 11". */}
               <b>{segment ? (unit === "step" ? `${capital(stepLabel(recording, segment.step))} of ${recording.steps.length}` : capital(stepLabel(recording, segment.step))) : ""}</b>

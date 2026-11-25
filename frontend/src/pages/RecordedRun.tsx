@@ -8,7 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingList, type RecordingSummary } from "../lib/api";
 import { fixPath } from "../lib/fix-step";
-import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, recordingKindWords, RUNNING_POLL_MS, withSummary } from "../lib/recorded-runs";
+import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, pairsInOrder, recordingKindWords, RUNNING_POLL_MS, withSummary } from "../lib/recorded-runs";
+import { pairPath, sidesOf, sideWords, turnName, type PairSide } from "../lib/recording-pairs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
 import { RecordingError, readRecording, type Recording } from "../live/recording";
@@ -56,6 +57,8 @@ function RecordedRun({ recordingId, file }: { recordingId: string; file?: string
     refetchInterval: (query) => (query.state.data?.summary.running ? RUNNING_POLL_MS : false),
   });
   const data = entry.data;
+  // The comparisons the service keeps, to say in the line above the view which run of a comparison this is.
+  const pairs = useQuery({ queryKey: ["recording-deltas"], queryFn: api.recordingDeltas });
   const reading = useMemo(() => (data ? read(data.recording, data.summary) : null), [data]);
   const queryClient = useQueryClient();
   // The list shows the first file of each id, so only that file's answer is put in it.
@@ -80,8 +83,10 @@ function RecordedRun({ recordingId, file }: { recordingId: string; file?: string
       <div className="recorded-run-message"><ErrorState title="This recording could not be loaded" error={entry.error} retry={() => { void entry.refetch(); }} /></div>
     </div>;
   }
+  // The file this page plays: the one in the address, or the first file of the id, which the service names once it is finished.
+  const sha256 = file ?? ("sha256" in data && typeof data.sha256 === "string" ? data.sha256 : undefined);
   return <div className="recorded-run">
-    <RecordedRunBar summary={data.summary} pollError={entry.isError && data.summary.running ? entry.error : null} />
+    <RecordedRunBar summary={data.summary} sides={sidesOf(pairsInOrder(pairs.data?.deltas ?? []), recordingId, sha256)} pollError={entry.isError && data.summary.running ? entry.error : null} />
     {reading && "recording" in reading
       ? <RecordedRunView recording={reading.recording} recordingId={recordingId} file={file} originKind={data.summary.origin.kind} />
       : <CannotPlay message={reading?.problem ?? "The recording could not be read."} />}
@@ -101,13 +106,18 @@ function CannotPlay({ message }: { message: string }) {
 /**
  * The quiet line above the live view: back to Runs, what the recording is, and
  * where it comes from. The live view's own header says when and where it was
- * recorded and links the CI run, so this line does not repeat them.
+ * recorded and links the CI run, so this line does not repeat them. A run that
+ * is a side of a comparison says which: the comparison's name and the side,
+ * since the runs of a comparison often carry the same title as another run.
  */
-function RecordedRunBar({ summary, pollError }: { summary?: RecordingSummary; pollError?: unknown }) {
+function RecordedRunBar({ summary, sides = [], pollError }: { summary?: RecordingSummary; sides?: readonly PairSide[]; pollError?: unknown }) {
   return <header className="recorded-run-bar">
     <nav className="recorded-run-line" aria-label="Recorded run">
       <Link className="recorded-run-back" to="/runs"><ArrowLeft aria-hidden="true" />Runs</Link>
       {summary ? <p className="recorded-run-facts">
+        {sides.map((item) => <span key={`${item.pair.id}:${item.side}`} className="recorded-run-side">
+          <Link to={pairPath(item.pair.id)}>Before against after: {turnName(item.pair)}</Link> · {sideWords(item)}
+        </span>)}
         <span className="recorded-run-title">{summary.title}</span>
         <span>{recordingKindWords(summary.kind)}</span>
         <span className={`recorded-run-origin is-${summary.origin.kind}`}>{originWords(summary.origin)}</span>

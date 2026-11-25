@@ -198,8 +198,8 @@ two kinds. Two runs, side by side in one CI run, before and after a change of a
 sensor's settings; or one run evaluated with two rule sets, after a change of
 the lab's own rules, which read only the telemetry a run recorded. BlueFire
 ships one of each, made in CI, and together they tell the loop: an audit watch
-on the test account's shell history files makes the one test that no sensor
-recorded seen; then a rule drafted from that event, "Shell History File
+on the test account's shell history files makes the one unseen test seen;
+then a rule written by hand from that event, "Shell History File
 Truncated In Place", makes that test and one more alert with the lab's rules,
 with a run of each with changed input arguments. Each turn opens its runs too,
 and they are not listed again among the recorded runs.
@@ -213,7 +213,10 @@ engines and what each recorded or matched, with what read the same on both
 drawn dim; the after stage offers **Fix this** when the step still raised no
 alert. When several steps moved, each has a row, and a row puts its step on
 the stages (the address keeps it, `?step=<id>`). Under them come what it cost
-(false alerts on ordinary activity before and after, or "Not counted" and why),
+(false alerts on ordinary activity before and after; "None in this run" for a
+new rule of the lab's own that the run after kept, which it does only for a
+rule that alerted on no ordinary activity in that run; or "Not counted" and
+why),
 what else moved (every step of the run before and after, the moved ones
 marked), what comes next (the next turn, or the tests that still raised no
 alert), and one line on why
@@ -258,9 +261,12 @@ at `#/runs/recorded/<id>/fix/<step id>`, with **Back to the run** to the moment
 you came from. It reads the step's recording and the comparisons the service
 keeps, and nothing else. After the step and its outcome it says where to start,
 in a sentence or two: a sensor's settings for a step of which nothing that
-counts was recorded, a rule for one that was recorded with no alert. Then what
+counts was recorded, a rule for one that was recorded with no alert, starting
+from the published rule the step's caption names where one matched it below
+alert level, with the level it matched at and how much ordinary activity it
+matched too. Then what
 was already tried: each comparison that moved the step, with its before and
-after, its price, and links to it and, from a before run, to the same step in
+after, its price in the words the comparison's own page gives it, and links to it and, from a before run, to the same step in
 the after run. Then the evidence: every event the recording holds of the step,
 by sensor; under **How we know**, the recording's own reason and the SHA-256 of
 each sensor's settings; for a step with no event, the other runs of the same

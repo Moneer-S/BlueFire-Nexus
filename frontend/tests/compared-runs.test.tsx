@@ -525,7 +525,7 @@ describe("the two comparisons shipped with the app", () => {
     expect(within(ways).getAllByRole("listitem")).toHaveLength(5);
   }, 30_000);
 
-  it("reads the new rule as one run evaluated twice: four rows, a row chooses the stages, the rule's text and the price not counted", async () => {
+  it("reads the new rule as one run evaluated twice: four rows, a row chooses the stages, the rule's text and its price in this run", async () => {
     const { delta, files } = shippedRule();
     const { user, fetched } = mount(delta, { files });
     expect(await screen.findByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
@@ -544,7 +544,16 @@ describe("the two comparisons shipped with the app", () => {
     // The same match is a lab alert on the stage's chip as in the step's own sentence.
     expect(within(stages).getByRole("article", { name: /^After with the new rule/ })).toHaveTextContent("lab alert · high");
 
-    expect(screen.getByRole("region", { name: "What it cost" })).toHaveTextContent("Not counted");
+    // The run after kept the new rule, which it does only for a rule that alerted on no ordinary activity in it: that is its price in this run.
+    const cost = screen.getByRole("region", { name: "What it cost" });
+    expect(within(cost).getByText("None in this run")).toBeVisible();
+    expect(cost).toHaveTextContent("The new rule alerted on no ordinary activity in this run, which the lab requires before it keeps a rule. One run is a test the rule passed, not a price measured over time.");
+    expect(cost).not.toHaveTextContent("Not counted");
+    expect(cost).not.toHaveTextContent("the files hold no price");
+    // The run's reason and the lab's own sentence, one click away.
+    await user.click(within(cost).getByText("The price in the lab's words"));
+    expect(within(cost).getByText(/^Why the run kept the rule:/)).toHaveTextContent("Why the run kept the rule: it alerted on every run with changed input arguments and on no ordinary activity.");
+    expect(within(cost).getByText(/^In the lab's words:/)).toHaveTextContent("In the lab's words: price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written");
     const rule = screen.getByRole("article", { name: "Shell History File Truncated In Place" });
     expect(within(rule).getByLabelText("How each evaluation judged it")).toHaveTextContent("Beforenot there");
     const text = within(rule).getByLabelText("The text of the rule Shell History File Truncated In Place");
@@ -558,6 +567,17 @@ describe("the two comparisons shipped with the app", () => {
     expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("Its score counts only published rules: 57 with no alert.");
     // Each evaluation is read by its own file.
     expect(new Set(fetched.mock.calls.map(([, sha256]) => sha256))).toEqual(new Set([delta.before.sha256, delta.after.sha256]));
+  }, 30_000);
+
+  it("keeps the price not counted when no rule the run after accepted stands behind the comparison", async () => {
+    const { delta, files } = shippedRule();
+    const [only] = delta.lab_rules ?? [];
+    if (!only?.after) throw new Error("The shipped comparison names one new rule.");
+    mount({ ...delta, lab_rules: [{ ...only, after: { ...only.after, accepted: false, reason: "not every procedure it alerts on ran again" } }] }, { files });
+    const cost = await screen.findByRole("region", { name: "What it cost" });
+    expect(within(cost).getByText("Not counted")).toBeVisible();
+    expect(cost).toHaveTextContent("The lab leaves any rule of its own that alerts on ordinary activity out of the recording, so the files hold no price for it.");
+    expect(cost).not.toHaveTextContent("None in this run");
   }, 30_000);
 });
 
@@ -574,6 +594,12 @@ describe("the words of a pair", () => {
     expect(titlesWords(moved(rule))).toBe("Clear Bash history (echo) and (cat dev/null)");
     // A summary lists at most 20 moved steps: words for how they moved only when the list holds them all.
     expect(pairHeadline({ ...rule, counts: { ...rule.counts, better: 21, worse: 1 } }, moved(rule))).toBe("22 steps moved.");
+    // A card of the comparison says the price its page says: none in this run, for the one new rule the run after kept.
+    expect(listedPrice(moved(rule), rule)?.words).toBe("None in this run: the new rule alerted on no ordinary activity, which the lab requires before it keeps a rule");
+    const [only] = rule.lab_rules ?? [];
+    if (!only?.after) throw new Error("The shipped comparison names one new rule.");
+    const refused = { ...rule, lab_rules: [{ ...only, after: { ...only.after, accepted: false } }] };
+    expect(listedPrice(moved(rule), refused)?.words).toBe("Not counted: the lab keeps its own rules' matches on ordinary activity out of the recording");
     expect(listedPrice(moved(rule))?.words).toBe("Not counted: the lab keeps its own rules' matches on ordinary activity out of the recording");
     expect(listedPrice(moved(sensor))?.words).toBe("2 published rules alert on ordinary activity, before and after");
     expect(listedPrice([{ price: "price: published rules that alerted on ordinary activity: 1 before, 3 after; ordinary events: 8902 before, 8841 after" }])?.words).toBe("Published rules alerting on ordinary activity: 1 before, 3 after");

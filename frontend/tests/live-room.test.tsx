@@ -9,9 +9,10 @@ import { planRoom } from "../src/live/room";
 import type { RoomParts } from "../src/live/room";
 import { count, stepLabel, unitWord } from "../src/live/format";
 import { EventLog } from "../src/live/EventLog";
-import { momentOf, stepMatches } from "../src/live/moment";
+import { momentOf, runFacts, stepMatches } from "../src/live/moment";
+import { fitScale, hopsOf } from "../src/live/NetworkMap";
 import { buildTimeline, frameAt, stepMatchesInFiringOrder } from "../src/live/playback";
-import { readRecording } from "../src/live/recording";
+import { readRecording, timeOf } from "../src/live/recording";
 import type { Alert, Host, HostKind, Network, Recording, RecordingEvent } from "../src/live/recording";
 import { tableColumns } from "../src/live/StepTable";
 import { alert, at, event, recording, step } from "./live-fixture";
@@ -364,6 +365,90 @@ describe("the line about the defense's sensors on range one's map", () => {
   });
 });
 
+// ---------- the shipped recordings' maps ----------
+
+/** A shipped recording, and the host its goal is on, as the watch view finds it. */
+function shippedMap(name: string): { value: Recording; goalAt: string | null } {
+  const value = readRecording(JSON.parse(readFileSync(resolve(process.cwd(), `../bluefire/data/recordings/${name}.json`), "utf-8")));
+  const facts = runFacts(value, buildTimeline(value));
+  const goalAt = facts.goal === null ? null : (value.steps.find((item) => item.ended !== undefined && Math.abs(timeOf(item.ended) - (facts.goal ?? 0)) <= 1)?.host ?? null);
+  return { value, goalAt };
+}
+
+/** The map of a shipped recording at stage sizes from a small laptop's to a large screen's, squeezed as the watch view may squeeze it and not. */
+function shippedLayouts(name: string): { room: string; layout: NetworkLayout; value: Recording }[] {
+  const { value, goalAt } = shippedMap(name);
+  const out: { room: string; layout: NetworkLayout; value: Recording }[] = [];
+  for (const width of [1240, 1280, 1320, 1360, 1400, 1440, 1520, 1600, 1680, 1760, 1840, 1880]) {
+    for (const height of [220, 260, 300, 340, 380, 420, 460, 500, 540]) {
+      for (const squeeze of [true, false]) out.push({ room: `${width} by ${height}${squeeze ? ", squeezed" : ""}`, layout: fitScale(value, width, height, goalAt, squeeze).layout, value });
+    }
+  }
+  return out;
+}
+
+describe("the badges on the shipped recordings' maps", () => {
+  it.each(["lab-range-one-path", "lab-linux-host"])(
+    "%s: no drawn line runs through the place of a badge, the widest the host can wear, on any host a step runs on",
+    (name) => {
+      const found: string[] = [];
+      for (const { room, layout, value } of shippedLayouts(name)) {
+        const wearers = new Set(value.steps.map((item) => item.host));
+        const lines = [
+          ...[...layout.links, ...layout.pathLinks].map((line) => [`the line from ${line.from.host.id} to ${line.to.host.id}`, line.curve] as const),
+          ...[...layout.sensorToJunction].map(([id, curve]) => [`the line of ${id}`, curve] as const),
+          ...[...layout.junctionToDetector].map(([id, curve]) => [`the line to ${id}`, curve] as const),
+          ...[...layout.hostToSensor].map(([id, curve]) => [`the tie of ${id}`, curve] as const),
+        ];
+        for (const node of layout.hosts.filter((item) => wearers.has(item.host.id))) {
+          const badge = badgeBoxOf(node);
+          for (const [what, curve] of lines) {
+            for (let u = 0; u <= 1; u += 0.005) {
+              const point = pointOn(curve, u);
+              if (point.x > badge[0] && point.x < badge[2] && point.y > badge[1] && point.y < badge[3]) {
+                found.push(`${room}: ${what} through the badge of ${node.host.id}`);
+                break;
+              }
+            }
+          }
+        }
+      }
+      expect(found).toEqual([]);
+    },
+    LAYOUTS_TIMEOUT,
+  );
+});
+
+describe("a hop's numbers on the shipped path's map", () => {
+  /** The numbers' box as the browser draws them at 11 px: a figure 7 px wide, the dot 4, a space 3, and 12 px tall. */
+  function numbersBox(numbers: string, at: { x: number; y: number }): Box {
+    const wide = [...numbers].reduce((sum, char) => sum + (/\d/.test(char) ? 7 : char === " " ? 3 : 4), 0);
+    return [at.x - wide / 2, at.y - 6, at.x + wide / 2, at.y + 6];
+  }
+  const away = (point: { x: number; y: number }, box: Box) => Math.hypot(Math.max(box[0] - point.x, 0, point.x - box[2]), Math.max(box[1] - point.y, 0, point.y - box[3]));
+
+  it(
+    "stand clear of their own line, lit or not, at every step and size: half the lit line's width and 3 px more",
+    () => {
+      const found: string[] = [];
+      for (const { room, layout, value } of shippedLayouts("lab-range-one-path")) {
+        if (layout.single) continue;
+        for (let index = 0; index < value.steps.length; index += 1) {
+          for (const hop of hopsOf(value, layout, index)) {
+            const box = numbersBox(hop.numbers, hop.label);
+            let nearest = Number.POSITIVE_INFINITY;
+            for (let u = 0; u <= 1; u += 0.005) nearest = Math.min(nearest, away(pointOn(hop.curve, u), box));
+            // The lit line is 3.2 px wide.
+            if (nearest < 1.6 + 3) found.push(`${room}, step ${index + 1}: "${hop.numbers}" ${nearest.toFixed(1)} px from its line`);
+          }
+        }
+      }
+      expect([...new Set(found)]).toEqual([]);
+    },
+    LAYOUTS_TIMEOUT * 4,
+  );
+});
+
 // ---------- the analyse table's titles ----------
 
 describe("the titles in the analyse table", () => {
@@ -382,12 +467,12 @@ describe("the titles in the analyse table", () => {
     "Data Compressed - nix - tar Folder or File",
     "Exfiltrate data in a file over HTTPS using wget",
   ];
-  // The path's first step, whose recording keeps 1,439 of the 1,857 events recorded, carries the note of how many were recorded.
-  const PATH_NOTES = new Map([["SSH Credential Stuffing From Linux", "1,857 recorded"]]);
+  // The path's first step, whose recording keeps 1,439 of the 1,857 events recorded, carries the note of how many it keeps.
+  const PATH_NOTES = new Map([["SSH Credential Stuffing From Linux", "1,439 of 1,857 events kept"]]);
   const shipped = readRecording(JSON.parse(readFileSync(resolve(process.cwd(), "../bluefire/data/recordings/lab-linux-host.json"), "utf-8")));
   const ONE_HOST = shipped.steps.filter((item) => item.role === "test").map((item) => item.title);
   const ONE_HOST_NOTES = new Map(
-    shipped.steps.flatMap((item) => (item.role === "test" && item.visibility.kept !== undefined && item.visibility.events !== undefined && item.visibility.kept < item.visibility.events ? [[item.title, `${count(item.visibility.events)} recorded`] as const] : [])),
+    shipped.steps.flatMap((item) => (item.role === "test" && item.visibility.kept !== undefined && item.visibility.events !== undefined && item.visibility.kept < item.visibility.events ? [[item.title, `${count(item.visibility.kept)} of ${count(item.visibility.events)} events kept`] as const] : [])),
   );
 
   /**

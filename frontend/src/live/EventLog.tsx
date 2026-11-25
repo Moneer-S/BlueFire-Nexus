@@ -44,6 +44,7 @@ export const EventLog = memo(
     a.lines === b.lines &&
     a.moment?.step.id === b.moment?.step.id &&
     a.moment?.revealed === b.moment?.revealed &&
+    a.moment?.ended === b.moment?.ended &&
     a.moment?.events.length === b.moment?.events.length &&
     a.moment?.landed.length === b.moment?.landed.length &&
     a.moment?.late.length === b.moment?.late.length,
@@ -80,7 +81,8 @@ function EventLogView({ recording, moment, total, colours, onOpen, lines: most =
   // Marks come from the matches whose light has reached its rule engine, so a
   // line is marked at the moment the engine on the map shows the same match.
   const marks = eventMarks((moment?.landed ?? []).map(({ alert }) => alert));
-  const refusal = moment?.step.outcome === "stopped" ? refusalOf(events) : undefined;
+  // The line where the host refused is marked "stopped" once the step's clock has reached its end: until then nothing says how the step ended.
+  const refusal = moment?.step.outcome === "stopped" && moment.ended ? refusalOf(events) : undefined;
   // A late arrival, a match of an earlier step raised after that step ended,
   // takes a line at the foot of the log. Past the room for them, the first
   // line counts and names the earlier ones, so the log never says fewer than the score counts.

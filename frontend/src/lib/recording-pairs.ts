@@ -38,6 +38,41 @@ export function pairChangeWords(pair: Pick<Delta, "declared_change" | "lab_rules
   return changeWords(pair.declared_change);
 }
 
+/**
+ * The one new rule of the lab's own that a comparison names, when the run after
+ * accepted it; null for any other comparison. The lab accepts a rule of its own
+ * only when it alerted on no ordinary activity in that run, so this rule's price
+ * in that run is none: one test it passed, not a price measured over time.
+ */
+export function keptNewRule(pair: Pick<Delta, "declared_change" | "lab_rules">): DeltaLabRule | null {
+  const rules = pair.declared_change === LAB_RULES ? pair.lab_rules ?? [] : [];
+  const [only] = rules;
+  return rules.length === 1 && only && only.change === "new" && only.after?.accepted === true ? only : null;
+}
+
+/** One side of a comparison that a recorded file is. */
+export interface PairSide {
+  pair: DeltaSummary;
+  side: "before" | "after";
+}
+
+/**
+ * The comparisons that name this file, the recording `id` with the SHA-256
+ * `sha256`, as their before or after, in the order `pairs` gives them. None
+ * when the file is not known yet: a comparison names a finished file.
+ */
+export function sidesOf(pairs: readonly DeltaSummary[], id: string, sha256: string | undefined): PairSide[] {
+  if (sha256 === undefined) return [];
+  return pairs.flatMap((pair) => (["before", "after"] as const)
+    .filter((side) => pair[side].id === id && pair[side].sha256 === sha256)
+    .map((side) => ({ pair, side })));
+}
+
+/** Which run of its comparison a file is, in a few words: "the run before", or of one run evaluated twice, "with the rules after". */
+export function sideWords({ pair, side }: PairSide): string {
+  return isOneRun(pair) ? `with the rules ${side}` : `the run ${side}`;
+}
+
 /** True when the delta is one run whose telemetry was evaluated with two sets of the lab's rules. */
 export function isOneRun(pair: Pick<Delta, "one_run">): boolean {
   return pair.one_run === true;
@@ -451,27 +486,37 @@ const COUNTED_PRICE = /^price: published rules that alerted on ordinary activity
  * A price in the page's plain words, short enough for a card: what the
  * delta's price says of the published rules that alerted on ordinary activity,
  * or that it is not counted or not known and why. A price the lab words in
- * any other way is shown as its lead, as it is.
+ * any other way is shown as its lead, as it is. A price not counted for the one
+ * new rule the run after accepted is that run's: none (`keptNewRule`).
  */
-export function priceWords(price: string): string {
+export function priceWords(price: string, pair?: Pick<Delta, "declared_change" | "lab_rules">): string {
   const counted = COUNTED_PRICE.exec(price);
   if (counted) {
     const before = Number(counted[1]), after = Number(counted[2]);
     if (before === after) return `${count(before)} published ${before === 1 ? "rule alerts" : "rules alert"} on ordinary activity, before and after`;
     return `Published rules alerting on ordinary activity: ${count(before)} before, ${count(after)} after`;
   }
+  if (price.startsWith("price not counted") && pair && keptNewRule(pair)) return "None in this run: the new rule alerted on no ordinary activity, which the lab requires before it keeps a rule";
   if (price.startsWith("price not counted")) return "Not counted: the lab keeps its own rules' matches on ordinary activity out of the recording";
   if (price.startsWith("price not known")) return "Not known: each run counted its ordinary activity on a runner of its own, and the runners differed";
   return capitalFirst(priceLead(price).lead);
 }
 
+/** The first words of `priceWords`, before its colon: the big word a comparison's page gives its price ("None in this run"). */
+export function priceWord(price: string, pair?: Pick<Delta, "declared_change" | "lab_rules">): string {
+  const words = priceWords(price, pair);
+  const at = words.indexOf(": ");
+  return at < 0 ? words : words.slice(0, at);
+}
+
 /**
  * A price for a list, in plain words, when every listed step has the same
- * price; null when there is none to say.
+ * price; null when there is none to say. `pair` is the comparison the steps
+ * are of, which can name the one rule behind the price.
  */
-export function listedPrice(moved: readonly Pick<DeltaMoved, "price">[]): { words: string; shared: boolean } | null {
+export function listedPrice(moved: readonly Pick<DeltaMoved, "price">[], pair?: Pick<Delta, "declared_change" | "lab_rules">): { words: string; shared: boolean } | null {
   const price = sharedPrice(moved);
-  if (price) return { words: priceWords(price), shared: true };
+  if (price) return { words: priceWords(price, pair), shared: true };
   const any = moved.find((step) => step.price !== undefined)?.price;
   return any ? { words: "Each step has a price of its own, said on the page", shared: false } : null;
 }

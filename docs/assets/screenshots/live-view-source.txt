@@ -2,16 +2,18 @@ The live view's pictures in this folder (live-view-path-goal.png and
 live-view-first-alert.png) and the pages docs/live-view/attack-path.html and
 docs/live-view/replay.html are copied unchanged from the artifact
 live-view-pictures of the CI run
-https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45647753914
-made from the commit 316408feac034aefb894127c9f21c3bf987669ab, the head
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45697835609
+made from the commit d442ae69f656492c009d9f21fada150ee84f1700, the head
 commit of the pull request whose run that is.
 
 They show the two recordings shipped with BlueFire:
 20261125T054314Z-037227 (bluefire/data/recordings/lab-range-one-path.json),
-the attack path, which the range-one workflow recorded in the CI run
+the attack path, which the range one workflow (.github/workflows/range-one.yml)
+recorded in the CI run
 https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964
 and 175a3a26 (bluefire/data/recordings/lab-linux-host.json), the run on one
-Linux machine, which the lab workflow recorded in the CI run
+Linux machine, which the lab workflow (.github/workflows/lab.yml) recorded in
+the CI run
 https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895
 
 Each file and its name in the artifact:

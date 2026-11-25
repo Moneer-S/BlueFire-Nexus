@@ -15,7 +15,7 @@ const RESOLVED = `\0${MODULE}`;
 const FOLDER = fileURLToPath(new URL("../bluefire/data/recordings/", import.meta.url));
 
 /** The service's note for a shipped recording (`SHIPPED_NOTE` in bluefire/recordings.py). */
-const SHIPPED_NOTE = "Shipped with BlueFire. This repository's lab workflow recorded it in the CI run at {run_url}. BlueFire checked that it follows the recording format and that its parts agree with each other.";
+const SHIPPED_NOTE = "Shipped with BlueFire. A workflow of this repository recorded it in the CI run at {run_url}. BlueFire checked that it follows the recording format and that its parts agree with each other.";
 const SOURCE_KEYS = ["engine", "environment", "started", "finished", "run_url", "commit"] as const;
 
 type Json = Record<string, unknown>;

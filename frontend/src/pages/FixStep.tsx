@@ -13,8 +13,8 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingSummary } from "../lib/api";
 import { activeProviderKind, backPath, browserStorage, candidates, defenseHome, draftKey, hasStableIds, keepDraft, labRulesCommit, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type DefenseHome, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
 import { originWords, recordedRunPath, RUNNING_POLL_MS } from "../lib/recorded-runs";
-import { alertedByLabOnly, chipField, codeSpans, isOneRun, pairChangeWords, priceLead, resultWords, verdictParts } from "../lib/recording-pairs";
-import { stepRows, type StepRow } from "../live/analyse";
+import { alertedByLabOnly, chipField, codeSpans, isOneRun, pairChangeWords, priceWords, resultWords, verdictParts } from "../lib/recording-pairs";
+import { fixHint, stepRows, type StepRow } from "../live/analyse";
 import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, sensorColours, stepLabel, unitWord } from "../live/format";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
@@ -253,13 +253,18 @@ function RuleHome({ home }: { home: DefenseHome }) {
 /** Where a fix starts, in a sentence or two, decided by what the recording holds: a sensor, a rule, or nothing to fix. */
 function WhereToStart({ recording, row, start, home }: { recording: Recording; row: StepRow; start: StartWith; home: DefenseHome }) {
   const what = noun(recording, row.step);
+  // The rule the step's caption and its detail in analyse mode name, chosen there and nowhere else.
+  const hint = start.kind === "rule" ? fixHint(recording, row.step, row.matches) : null;
   return <section className="cmp-sec fx-start" aria-labelledby="fx-start">
     <h2 id="fx-start">Where to start</h2>
     {start.kind === "sensor" ? <>
       <p className="fx-lead"><b>Nothing of this {what} was recorded. Start with a sensor's settings:</b> a rule can only match what a sensor records.</p>
       <SensorHome home={home} />
     </> : start.kind === "rule" ? <>
-      <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert. Start with a rule</b> that matches what the sensor recorded.</p>
+      {hint && start.review.length ? <>
+        <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert.</b> {hint}</p>
+        {start.review.length > 1 ? <p className="fx-why">Of the {count(start.review.length)} published rules that matched it below alert level, it is the one at the highest level; a tie goes to the one that matched least ordinary activity.</p> : null}
+      </> : <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert. Start with a rule</b> that matches what the sensor recorded.</p>}
       <RuleHome home={home} />
     </> : start.kind === "lab alerted" ? <>
       <p className="fx-lead"><b>One of the lab's own rules alerted on it, which the score does not count.</b> The score counts published rules only, and none of those alerted.</p>
@@ -278,13 +283,13 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
   return <section className="cmp-sec fx-matched" aria-labelledby="fx-matched">
     <h2 id="fx-matched">Rules that matched it</h2>
     {start.kind === "rule" ? <>
-      <RuleGroup title="Published rules that matched, below alert level" empty="No published rule matched it, at any level." matches={start.review} />
+      {start.review.length ? <PublishedBelow matches={start.review} /> : <RuleGroup title="Published rules below alert level" empty="No published rule matched it, at any level." matches={[]} />}
       <RuleGroup title="The lab's own rules that matched" empty={recording.network.detectors.some((detector) => detector.id === "lab") ? "None of the lab's own rules matched it." : "This run did not try the lab's own rules."} matches={start.lab} />
       {start.launcher.length ? <RuleGroup title="Matched only the line that starts the test, which never counts" matches={start.launcher} /> : null}
     </> : start.kind === "lab alerted" ? <>
       <RuleGroup title={`The rule that raised the ${MARK_WORDS.lab}`} matches={start.alerted} />
       {labCommit ? <p className="fx-why">The run loaded it from commit <code>{labCommit.slice(0, 8)}</code>.</p> : null}
-      {start.review.length ? <RuleGroup title="Published rules that matched, below alert level" matches={start.review} /> : null}
+      <PublishedBelow matches={start.review} />
     </> : <>
       <RuleGroup title="The rule that raised the alert" matches={start.alerted} />
       {start.lab.length ? <RuleGroup title="The lab's own rules that matched" matches={start.lab} /> : null}
@@ -295,6 +300,18 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
   </section>;
 }
 
+/** Published rules that matched below alert level, grouped as analyse mode groups them: those for review, and those at informational level, which nobody reviews. */
+function PublishedBelow({ matches }: { matches: RuleMatch[] }) {
+  return <>
+    <RuleGroup title="Published rules below alert level: for review" matches={matches.filter((match) => !isInformational(match))} />
+    <RuleGroup title="Published rules at informational level: nobody reviews them" matches={matches.filter(isInformational)} />
+  </>;
+}
+
+function isInformational(match: RuleMatch): boolean {
+  return match.rule.level === "informational";
+}
+
 function RuleGroup({ title, empty, matches }: { title: string; empty?: string; matches: RuleMatch[] }) {
   if (matches.length === 0) return empty ? <div className="fx-rules"><h3>{title}</h3><p className="cmp-empty">{empty}</p></div> : null;
   return <div className="fx-rules">
@@ -303,10 +320,12 @@ function RuleGroup({ title, empty, matches }: { title: string; empty?: string; m
   </div>;
 }
 
-function matchChip(match: RuleMatch): { words: string; className: string } {
+function matchChip(match: RuleMatch): { words: string; className: string; title?: string } {
   const [first] = match.alerts;
   if (first?.launcher_only === true) return { words: "launcher line", className: "is-launcher" };
   if (match.rule.origin === "lab") return { words: first?.counts ? `${MARK_WORDS.lab} · ${match.rule.level}` : `lab · ${match.rule.level}`, className: "is-lab" };
+  // As analyse mode words it: an informational match is not one for review.
+  if (!first?.counts && isInformational(match)) return { words: "informational", className: "is-review", title: "An informational match: nobody reviews it." };
   return { words: first?.counts ? `alert · ${match.rule.level}` : `review · ${match.rule.level}`, className: first?.counts ? "is-alert" : "is-review" };
 }
 
@@ -316,7 +335,7 @@ function RuleCard({ match }: { match: RuleMatch }) {
   const verdict = match.verdict;
   return <article className="fx-rule" aria-label={match.rule.title}>
     <p className="fx-rule-line">
-      <span className={`lv-mchip ${chip.className}`}>{chip.words}</span>
+      <span className={`lv-mchip ${chip.className}`} title={chip.title}>{chip.words}</span>
       <b>{match.rule.title}</b>
       <span className="fx-rule-meta">
         {match.rule.origin === "lab" ? "the lab's own" : "published"}
@@ -430,7 +449,8 @@ function TriedLine({ item }: { item: Tried }) {
   const { summary, delta, step } = item;
   const field = chipField(delta);
   const parts = verdictParts(step);
-  const price = parts.price ? priceLead(parts.price) : null;
+  // The price in the words the comparison's page and the cards use; the lab's own line stays in its words below.
+  const price = parts.price ? { words: priceWords(parts.price, delta), unknown: parts.price.startsWith("price not known") } : null;
   const result = step.result.replace(/\s+/g, "-");
   const oneRun = isOneRun(delta);
   return <li className={`cmp-step is-${result}`}>
@@ -450,8 +470,8 @@ function TriedLine({ item }: { item: Tried }) {
     <p className="fx-where"><WhereWords item={item} oneRun={oneRun} /></p>
     <p className="cmp-verdict fx-tried-verdict">
       <span className={`cmp-result is-${result}`}>{resultWords(step.result)}</span>
-      {/* The price's lead on the line; the lab's whole verdict, with what the price quotes, one click away. */}
-      {price ? <span className={`cmp-price${price.lead.startsWith("price not known") ? " is-unknown" : ""}`}><LabText text={price.lead} /></span> : null}
+      {/* The price on the line; the lab's whole verdict, with the price as the lab wrote it, one click away. */}
+      {price ? <span className={`cmp-price${price.unknown ? " is-unknown" : ""}`}>{price.words}</span> : null}
     </p>
     <details className="fx-quoted">
       <summary>The comparison's own words</summary>

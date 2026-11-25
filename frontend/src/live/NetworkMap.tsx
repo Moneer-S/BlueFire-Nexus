@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { useSize } from "./useSize";
 import type { Alert, Host, Recording, Sensor } from "./recording";
 import { alertMoment, eventsByStep } from "./recording";
-import { badgeBoxOf, curvePath, ENGINE_EDGE, layoutNetwork, leastHeights, linkBetween, markAlertedHosts, markGoalHost, pointOn, roleParts, SENSOR_NAME_LARGE, sharedSensorName, SILENCE_WORDS, travelPath, ZONE_RADIUS, zoneSaid } from "./networkLayout";
+import { badgeBoxOf, curvePath, ENGINE_EDGE, layoutNetwork, leastHeights, linkBetween, markAlertedHosts, markBadgedHosts, markGoalHost, pointOn, roleParts, SENSOR_NAME_LARGE, sharedSensorName, SILENCE_WORDS, travelPath, ZONE_RADIUS, zoneSaid } from "./networkLayout";
 import type { Box, Curve, HostNode, LinkLine, NetworkLayout, Point } from "./networkLayout";
 import { capital, detectorParts, elapsed, kindRank, matchKind, plainMarks, plural, raisedAfterStep, sensorShortName, stepLabel, testNumbers, unseenWords } from "./format";
 import type { MatchKind } from "./format";
@@ -509,7 +509,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
 
       <div className="lv-glows" aria-hidden="true">
         {hostNode ? (
-          <div className={`lv-glow lv-glow--host${moment?.running && !moment.revealed ? " is-on" : ""}${alerted ? " is-alert" : ""}${stopped ? " is-stopped" : ""}`} style={{ left: hostNode.x, top: hostNode.y, width: hostNode.r * 6, height: hostNode.r * 6 }} />
+          <div className={`lv-glow lv-glow--host${moment?.running && !moment.ended ? " is-on" : ""}${alerted ? " is-alert" : ""}${stopped ? " is-stopped" : ""}`} style={{ left: hostNode.x, top: hostNode.y, width: hostNode.r * 6, height: hostNode.r * 6 }} />
         ) : null}
         {layout.detectors.map((node) => {
           const state = engine.get(node.detector.id);
@@ -939,7 +939,7 @@ function pairKey(a: string, b: string): string {
 }
 
 /** A hop of the attack's path on a network: a drawn link the steps crossed, the way the latest of them went. */
-interface Hop {
+export interface Hop {
   line: LinkLine;
   curve: Curve;
   /** The numbers of the steps that crossed it, in order: "5 · 9". */
@@ -953,7 +953,7 @@ interface Hop {
 }
 
 /** The hops of the steps up to the one at `index`, each with its steps' numbers and its age. */
-function hopsOf(recording: Recording, layout: NetworkLayout, index: number): Hop[] {
+export function hopsOf(recording: Recording, layout: NetworkLayout, index: number): Hop[] {
   const numbers = testNumbers(recording);
   const pairs = new Map<string, { from: string; to: string; numbers: string[]; names: string[]; last: number }>();
   recording.steps.slice(0, Math.max(0, index + 1)).forEach((item, at) => {
@@ -969,18 +969,37 @@ function hopsOf(recording: Recording, layout: NetworkLayout, index: number): Hop
     const found = linkBetween(layout, hop.from, hop.to);
     if (!found) return [];
     const steps = hop.names.length > 1 ? `${hop.names.slice(0, -1).join(", ")} and ${hop.names[hop.names.length - 1] ?? ""}` : (hop.names[0] ?? "");
-    return [{ ...found, numbers: hop.numbers.join(" · "), age: index - hop.last, words: `${capital(steps)}, from ${name(hop.from)} to ${name(hop.to)}`, label: hopLabel(found.line, found.curve, layout) }];
+    const numbers = hop.numbers.join(" · ");
+    return [{ ...found, numbers, age: index - hop.last, words: `${capital(steps)}, from ${name(hop.from)} to ${name(hop.to)}`, label: hopLabel(found.line, found.curve, layout, numbers) }];
   });
 }
 
 /** How strong a hop of the way the attacker came is drawn, by how many steps ago it was last crossed: the latest strongest. */
 const hopFade = (age: number): number => (age <= 0 ? 1 : Math.max(0.38, 1 - age * 0.11));
 
+/** Half the width and height of a hop's numbers as the map draws them (11 px, tabular figures), a little generous. */
+function hopLabelHalf(numbers: string): { x: number; y: number } {
+  return { x: (numbers.length * 11 * 0.62) / 2, y: 7 };
+}
+
+/** Pixels kept clear between a hop's numbers and the middle of its own line: half the lit line's width and clear air. */
+export const HOP_LABEL_CLEAR = 6;
+
+/** The least distance from a point to a box: 0 inside it. */
+function distanceToBox(point: Point, box: Box): number {
+  const dx = Math.max(box[0] - point.x, 0, point.x - box[2]);
+  const dy = Math.max(box[1] - point.y, 0, point.y - box[3]);
+  return Math.hypot(dx, dy);
+}
+
 /**
  * Where a hop's numbers stand: beside its line near the host it reached, on the side where they cover the least of
- * the hosts and their words, 13 px off the line.
+ * the hosts and their words, as far off the line as their own size and the line's direction need, so that every part
+ * of the line, lit or not, stays `HOP_LABEL_CLEAR` pixels from them.
  */
-function hopLabel(own: LinkLine, curve: Curve, layout: NetworkLayout): Point {
+function hopLabel(own: LinkLine, curve: Curve, layout: NetworkLayout, numbers: string): Point {
+  const half = hopLabelHalf(numbers);
+  const ownPoints = Array.from({ length: 101 }, (_, index) => pointOn(curve, index / 100));
   // The hosts, their words under them, the place of their badge above them, and their badge where it stands: beside a
   // host in a short room, as wide as the goal's.
   const taken: Box[] = layout.hosts.flatMap((node): Box[] => [
@@ -1005,8 +1024,14 @@ function hopLabel(own: LinkLine, curve: Curve, layout: NetworkLayout): Point {
     const length = Math.hypot(ahead.x - on.x, ahead.y - on.y) || 1;
     const normal = { x: -(ahead.y - on.y) / length, y: (ahead.x - on.x) / length };
     for (const side of [1, -1]) {
-      const point = { x: on.x + normal.x * side * 13, y: on.y + normal.y * side * 13 };
-      const box: Box = [point.x - 12, point.y - 8, point.x + 12, point.y + 8];
+      // Off the line by the reach of the numbers' box along the line's normal, then further where the line bends near.
+      let away = half.x * Math.abs(normal.x) + half.y * Math.abs(normal.y) + HOP_LABEL_CLEAR;
+      const at = (distance: number): Point => ({ x: on.x + normal.x * side * distance, y: on.y + normal.y * side * distance });
+      const boxAt = (point: Point): Box => [point.x - half.x, point.y - half.y, point.x + half.x, point.y + half.y];
+      while (away < 60 && ownPoints.some((item) => distanceToBox(item, boxAt(at(away))) < HOP_LABEL_CLEAR)) away += 1;
+      const point = at(away);
+      // Short numbers keep the room of two figures from words and other lines, so they never read as part of them.
+      const box: Box = [point.x - Math.max(half.x, 12), point.y - Math.max(half.y, 8), point.x + Math.max(half.x, 12), point.y + Math.max(half.y, 8)];
       // Above the line reads first, and the nearer the host it reached, the better.
       let score = Math.abs(u - 0.72) * 4 + (point.y > on.y ? 0.5 : 0);
       for (const other of taken) {
@@ -1039,11 +1064,13 @@ function crossedBefore(recording: Recording, index: number): Set<string> {
 
 function badgeOf(moment: StepMoment | null): { text: string; className: string } | null {
   if (!moment || !moment.running) return null;
-  if (!moment.revealed) return { text: "running", className: "is-running" };
+  // Until the clock reaches the step's recorded end, the step is running, whatever an alert has said of it.
+  if (!moment.ended) return { text: "running", className: "is-running" };
   const answer = moment.step.happened.answer;
   // One word for one outcome: a blocked step is "stopped" on the host, in the caption and in the log.
   if (answer === "blocked") return { text: "stopped", className: "is-blocked" };
-  return { text: answer, className: `is-${moment.outcome.replace(/\s+/g, "")}` };
+  // What the step did is known at its end; whether it was seen is told with the caption, and coloured only then.
+  return { text: answer, className: moment.revealed ? `is-${moment.outcome.replace(/\s+/g, "")}` : "is-ended" };
 }
 
 /** True when a recording's rule engines did not all run at the same time: some live, some after the run. */
@@ -1135,11 +1162,13 @@ const MAP_SCALE_WIDTH = 1500;
 const MAP_SCALE_HEIGHT = 380;
 const MAP_SCALE_MOST = 1.25;
 
-function fitScale(recording: Recording, width: number, height: number, goalAt: string | null, squeeze: boolean): { layout: NetworkLayout; scale: number } {
+export function fitScale(recording: Recording, width: number, height: number, goalAt: string | null, squeeze: boolean): { layout: NetworkLayout; scale: number } {
   const network = recording.network;
   const many = network.hosts.filter((host) => host.kind !== "defense").length > 1;
   // The hosts the run's alerts are raised on keep room under their words for the alert's chip, at every moment alike.
   if (many) markAlertedHosts(network, recording.alerts.filter((alert) => matchKind(alert) === "alert").map((alert) => alert.host));
+  // The hosts the steps run on wear a badge: every line keeps out of its place.
+  if (many) markBadgedHosts(network, recording.steps.map((step) => step.host));
   if (many && goalAt) markGoalHost(network, goalAt);
   let scale = many ? Math.round(Math.max(1, Math.min(MAP_SCALE_MOST, width / MAP_SCALE_WIDTH, height / MAP_SCALE_HEIGHT)) * 20) / 20 : 1;
   for (;;) {

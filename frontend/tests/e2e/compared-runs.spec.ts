@@ -69,12 +69,14 @@ test("the second turn reads as one run evaluated twice: a row puts its step on t
   const pairs = page.getByRole("region", { name: "Before against after" });
   const turn = pairs.getByRole("listitem").filter({ hasText: RULE });
   await expect(turn.getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
-  await expect(turn.getByText(/^Not counted: /)).toBeVisible();
+  // The card's price is the page's: the run after kept the one new rule, which alerted on no ordinary activity in it.
+  await expect(turn.getByText(/^None in this run: the new rule alerted on no ordinary activity/)).toBeVisible();
   await turn.getByRole("link", { name: RULE }).click();
 
   await expect(page.getByRole("heading", { level: 1, name: RULE })).toBeVisible();
   await expect(page.getByText("One run, its telemetry read with two rule sets, 24 Nov 2026.", { exact: true })).toBeInViewport();
   for (const name of ["What it cost", "What else moved", "What comes next"]) await expect(page.getByRole("region", { name })).toBeInViewport();
+  await expect(page.getByRole("region", { name: "What it cost" }).getByText("None in this run", { exact: true })).toBeVisible();
   await expect(page.getByText("Only the lab's rules differed.", { exact: true })).toBeInViewport();
   const move = page.getByRole("region", { name: "What the change did" });
   // Four rows, one of them on the stages.

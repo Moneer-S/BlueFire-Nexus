@@ -53,15 +53,19 @@ Linux machine shipped with the app is
 - **The head says what the run is, in one quiet line.** Under the title one
   line says what the run is and when it was recorded: "A real run, recorded 23
   Nov 2026 on a GitHub-hosted runner" for a run shipped with BlueFire or
-  recorded by the lab's own CI, "An imported run, not verified by BlueFire"
+  recorded by the lab's own CI (a run recorded on a developer's machine reads
+  "on containers on a developer machine"), "An imported run, not verified by BlueFire"
   for an imported one, and "A run of unknown origin" for a page that does not
   say where its recording comes from. Its "details" opens the rest: who
   checked what, the link to the CI run that made it, the tool versions and the
   recording's notes. While watching, the score's head says "tests alerted so
   far" ("steps alerted so far" on an attack path), since its counts go up as
   the run plays; at the end of the run they are
-  the run's own. The hardened reruns are counted apart as "repeated tests
-  stopped", and the legend under the timeline calls their short marks, and
+  the run's own. The hardened reruns are counted apart as "hardened reruns
+  stopped", of all the hardened reruns of the run ("3 of 12"), and while they
+  play the race line's sentence counts them the same way ("Hardened reruns: 3
+  of 12 stopped so far."). The legend under the timeline calls their short
+  marks, and
   those of the canary and control steps, "short: checks and repeats"; its
   tooltip names their roles and says that none of them is a test or in the
   score of tests.
@@ -74,13 +78,22 @@ Linux machine shipped with the app is
   whatever its real length. The legend under the timeline says "quiet gaps
   shortened", analyse mode's lanes say "Quiet gaps are shortened" (their tooltip
   says the quiet time between two steps is drawn shorter than it lasted), and
-  the clock always shows the recording's own time. A step whose
-  last match fires near its end stays on screen, its clock held at the step's
-  end, until that match's light has reached the rule engine and the step's
-  outcome is told.
-- **A step is told once what it counts has arrived.** An alerted step is told
-  when its first alert's light reaches the rule engine. Any other step is told
-  only once the light of its last event has reached the rule engines, so the
+  the clock always shows the recording's own time. A step plays its own
+  stretch in the first part of its time on screen, a little under half of it;
+  for the rest its clock stands at the step's end while its outcome is read. A
+  step whose last match fires near its end stays on screen longer, its clock
+  held at the step's end, until that match's light has reached the rule engine
+  and the step's outcome is told.
+- **A step is told once what it counts has arrived.** **Nothing says how a
+  step ended before its clock reaches its recorded end.** Until then the step
+  is running: the map's badge says "running", and neither the map, the caption
+  nor the score says how it ended. An alert is told when it was raised, also
+  while the step still runs, and the step counts as alerted from that moment;
+  the map still says "running" until the step's end. From the step's recorded
+  end on, the badge says what the step did ("took effect", "no effect" or
+  "stopped"), never "running". Any other step's outcome (seen or unseen, with
+  its counts) is told from its end on, once the light of its last event has
+  reached the rule engines, so the
   caption's "1 event recorded" never stands beside a log that says "Nothing
   recorded." or a map that counts "0 events": the three count the same events
   at every moment, and the log says "Nothing recorded." only of a told step
@@ -192,8 +205,9 @@ for one network by hand.
   after the nearest host linked to it. A column's hosts stand in rows, ordered
   so that fewer links cross. The defense's own server stands after the last
   column, where the sensors' lines join, and the rule engines last.
-- Every host's name and role stand under it. A host's badge (running, then its
-  outcome) stands above it, or, when that place is taken, on the top of its
+- Every host's name and role stand under it. A host's badge ("running" until
+  the clock reaches the step's recorded end, then what the step did) stands
+  above it, or, when that place is taken, on the top of its
   ring, and only when both are taken beside it or under its name: never on a
   name. Each sensor stands beside its host, where its name covers nothing and no
   link runs through it, on the side its line to the defense leaves from, so the
@@ -233,8 +247,8 @@ same things as on one host, laid out for a network:
   above that line; the rest are counted ("+ 6 more rules for review").
 - **The attack's path is the strongest line.** The hop of the step on screen
   glows, with an arrowhead; each earlier hop keeps its arrowhead and grows
-  fainter the longer ago it was crossed. Beside each hop, never on its line,
-  stand the numbers of the steps that crossed it ("5 · 9"), so the picture of
+  fainter the longer ago it was crossed. Beside each hop, never on its line and
+  a clear gap from it, lit or not, stand the numbers of the steps that crossed it ("5 · 9"), so the picture of
   the goal tells the order of the attack. A step that stays on its host (no
   `from`, or `from` the same host) lights a short bright arc on that host while
   it runs. The caption names a crossing step's hop in words beside its number:
@@ -242,7 +256,7 @@ same things as on one host, laid out for a network:
   column heads and above the fields' foot; where it has to go round a host's
   words, it takes the shorter way round.
 - **Each sensor's count is in words.** An agent that the defense's line names
-  once has its count under its host's role: "agent · 24 events", or "agent ·
+  once has its count under its host's role: "agent · 8 events", or "agent ·
   1,439 kept" where the recording kept fewer of the step's events than were
   recorded. Every sensor that recorded the step is counted, the agent of the
   host it ran from too, and the log's key names each by its host ("Wazuh agent
@@ -270,7 +284,9 @@ same things as on one host, laid out for a network:
   map leaves no room above it, the badge stands beside the host, starting past
   that ring however wide the badge is ("goal reached 12:10.5" is the widest),
   or under its words; it never lies on the host it marks or on a host's name,
-  and a hop's numbers keep clear of it.
+  no line runs through the place of a badge of a host a step runs on (the
+  host's own links included, as wide as the widest badge it wears), and a
+  hop's numbers keep clear of it.
 - **A field's name stands in a free corner of its field.** The top left corner
   first, then the top right, the bottom left and the bottom right: the first
   where no host, name, badge's place or line is under it, and where no hop's
@@ -382,12 +398,14 @@ A map of one host is drawn as before.
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"
   goes back to watch mode at that step. The table opens on the tests, or on
-  every step when the recording has no test. No cell of the table is cut: a
-  long title or a long list of the rules that matched wraps onto a second
-  line. The title takes the room the other columns leave, each as wide as its
+  every step when the chosen step is not a test (as at the start of a run,
+  where the first canary is chosen) or the recording has no test. No cell of
+  the table is cut: a long title or a long list of the rules that matched wraps onto a second
+  line, and a hardened rerun's "not stopped" stands under its outcome. The title takes the room the other columns leave, each as wide as its
   contents need, and where the recording keeps fewer of a step's events than
-  were recorded, how many were recorded stands under the title, not beside
-  it. The table and the detail beside it let their last visible lines fade
+  were recorded, how many it keeps of how many were recorded stands under the
+  title, not beside it ("1,439 of 1,857 events kept"): the sensors' columns
+  count the kept events, as their tooltips say. The table and the detail beside it let their last visible lines fade
   out at their foot, with as much room after their end, so no row or line is
   cut hard by an edge. When the table scrolls to the chosen row, it stands at
   a row's edge under its head with the chosen row whole, and it finds that
@@ -577,9 +595,13 @@ both recorded runs, its part "Before against after" with the two comparisons
 shipped with the app (`app-runs-pair.png`), the page of the pair of runs
 (`app-pair.png`) and the page of the run evaluated with two rule sets
 (`app-rule-pair.png`), each with both stages drawn, the run on one Linux
-machine in analyse mode after a click on the first row of the table, the test
-no sensor recorded (`app-analyse.png`, 1920 by 1080), and that run's page on
-the first alert, at 1920 by 1080 so that every rule title fits. Before that it
+machine opened from the Runs screen, with Analyse pressed and the first row of
+the table clicked, the unseen test, its detail beside the table with "Fix
+this" (`app-analyse.png`, 1440 by 900), then the Hardened tab and "Watch from
+here" on a rerun that was stopped, paused late in it, the rerun told stopped
+with its hardening change named and what the same test did without it
+(`app-watch-stopped.png`, 1440 by 900), and that run's page on the first
+alert, at 1920 by 1080 so that every rule title fits. Before that it
 opens the recorded run's page at 1440 by 900 too, on the first alert, and on
 the test with the longest command, whose command takes two lines under the
 host.
@@ -615,17 +637,28 @@ The script fails if a page prints an error, if a replay page asks for anything
 beyond its own file or the app for anything beyond the service, if a picture
 or the page at 1440 by 900 would show a rule title cut short or a wrapped one
 reaching the next rule engine, if the host's label reaches below the map, if
-the race line of a watched moment is cut short, or if the lanes' time axis has
-no label past its middle. It also fails, with the sentence to change, if the
-attack path no longer bears out what the [README](../README.md) says of it:
-the caption under the loop (Wazuh's stock rules alerted on the first step, the
-password guessing against the web server, about a minute in; the goal, the
-build server's signing secret on the stand-in internet, was reached about
-eleven minutes after that, by a last step no rule alerted on), "Read what no
-rule alerted on" (every step after the first seen with no alert, and the step
-of its picture matched by a published rule below alert level), and "Find what
-nobody saw" (pressing Analyse in the app lists the test no sensor recorded
-first).
+the race line of a watched moment is cut short, if the lanes' time axis has
+no label past its middle, or if a cell of the analyse table it pictures is cut
+short or a title there takes more than two lines (three where the live view
+is narrower than 1440 pixels, as beside the app's rail). It also fails, with the sentence to change, if the
+shipped recordings and comparisons no longer bear out what the
+[README](../README.md) says of them: the caption under the loop (Wazuh's stock
+rules alerted on the first step, the password guessing against the web server,
+about a minute in; the goal, the build server's signing secret on the
+stand-in internet, was reached about eleven minutes after that, by a last step
+no rule alerted on), "Read what no rule alerted on" (every step after the
+first seen with no alert; at step 9, the step of its picture, published rules
+matched and none at alert level; the picture tells two rules matched for
+review and names a rule to start from), "Change a defense, see before and
+after" (the new auditd settings took "Clear Bash history (echo)" from unseen
+to seen; the one new rule then took 4 steps from seen to alerted with the
+lab's rules, and the score, which counts published rules only, still marks
+them seen), and "Find what nobody saw" (the run on one Linux machine has one
+unseen test, "Clear Bash history (echo)", and pressing Analyse in the app lists
+it first, with "Fix this" in its detail), and "See what hardening stopped"
+(the Hardened tab lists the hardened reruns, and "Watch from here" on one that
+was stopped shows it told stopped, its hardening change named and what the
+same test did without it).
 
 The run keeps them for 90 days as the artifact `live-view-pictures`: the
 pictures, the loop, the two pages they show, and `SOURCE.txt`, which names the

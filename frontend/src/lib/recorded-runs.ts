@@ -3,7 +3,7 @@
 
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
 import type { Recording } from "../live/recording";
-import { count, day, plural, span, unitWord } from "../live/format";
+import { count, day, onEnvironment, plural, span, unitWord } from "../live/format";
 import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
 /** How often a recording that is still running is asked for again, by every page that shows one. */
@@ -61,13 +61,6 @@ export function recordedWhere(summary: Pick<RecordingSummary, "source" | "runnin
   const date = day(summary.source.started);
   const where = onEnvironment(summary.source.environment);
   return summary.running ? `Recording ${where}, started ${date}` : `Recorded ${where}, ${date}`;
-}
-
-/** "on a GitHub-hosted runner", but "on containers on a developer machine": no article before a plural. */
-function onEnvironment(environment: string): string {
-  const first = environment.trim().split(/\s+/)[0] ?? "";
-  if (/^(a|an|the)$/i.test(first) || /[^s]s$/i.test(first)) return `on ${environment}`;
-  return `on ${/^[aeiou]/i.test(first) ? "an" : "a"} ${environment}`;
 }
 
 /** The origin in a few words: "Shipped with BlueFire" or "Imported, not verified by BlueFire". */

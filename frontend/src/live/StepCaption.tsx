@@ -259,7 +259,8 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
               One of the lab&apos;s own rules alerted, which the score does not count: <b>{titleInSentence(labAlert.rule.title)}</b>.
             </div>
           ) : null}
-          <Compare recording={recording} step={step} moment={moment} />
+          {/* What the step did, beside the run it repeats, is said once the step has ended, by its clock. */}
+          {moment.ended ? <Compare recording={recording} step={step} moment={moment} /> : null}
           {hint ? (
             <div className="lv-fix-hint" id={`lv-fix-hint-${step.id}`} role="status">
               {hint}
@@ -287,6 +288,7 @@ export const StepCaption = memo(
     a.late === b.late &&
     a.moment?.step.id === b.moment?.step.id &&
     a.moment?.revealed === b.moment?.revealed &&
+    a.moment?.ended === b.moment?.ended &&
     a.moment?.outcome === b.moment?.outcome &&
     a.moment?.heard === b.moment?.heard &&
     a.moment?.events.length === b.moment?.events.length,

@@ -3,7 +3,7 @@
 import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording";
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
-import { judged, landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepEnd, stepMatchesFiredBy } from "./playback";
+import { endedAt, judged, landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepEnd, stepMatchesFiredBy } from "./playback";
 import { matchKind, span, stepLabel, strongerKind } from "./format";
 import type { MatchKind } from "./format";
 
@@ -19,6 +19,8 @@ export interface StepMoment {
   now: number;
   /** True once the step's real window has started to play. */
   running: boolean;
+  /** True once the clock has reached the step's recorded end: the step is no longer running, and what it did may be said. */
+  ended: boolean;
   /** Screen time at which the step's outcome is told. */
   revealAt: number;
   revealed: boolean;
@@ -98,12 +100,13 @@ const REVEALS = new WeakMap<Segment, number>();
 
 /**
  * The screen time at which a step's outcome is told. An alerted step is told
- * when the light of its first alert that counts reaches the rule engine. Any
- * other step is told once the rule engines have judged what was recorded: a
- * little before the middle of its body, or when the light of its last event or
- * its last match lands, and always a moment before the step ends. The step
- * holds after its body for as long as that takes, so each light lands while
- * the step is on screen.
+ * when the light of its first alert that counts reaches the rule engine, which
+ * may be before the step has ended. Any other step is told once its clock has
+ * reached the step's recorded end and the rule engines have judged what was
+ * recorded: when the light of its last event or its last match lands, if that
+ * is later, and always a moment before the step leaves. The step holds after
+ * its body for as long as that takes, so each light lands while the step is on
+ * screen.
  */
 export function revealTime(timeline: Timeline, segment: Segment): number {
   const known = REVEALS.get(segment);
@@ -114,7 +117,8 @@ export function revealTime(timeline: Timeline, segment: Segment): number {
 }
 
 function workOutReveal(timeline: Timeline, segment: Segment): number {
-  const middle = segment.bodyStart + (segment.bodyEnd - segment.bodyStart) * 0.42;
+  // Never before the step's own clock has reached its recorded end: until then nobody knows how it ended.
+  const ended = endedAt(segment);
   if (segment.step.outcome === "alerted") {
     const fire = timeline.byStep.get(segment.step.id)?.firstCounting;
     // An alert raised after the step ended is not waited for: the step is told
@@ -129,8 +133,8 @@ function workOutReveal(timeline: Timeline, segment: Segment): number {
   const own = timeline.byStep.get(segment.step.id);
   const fires = own?.fires ?? [];
   const lastEvent = own?.arrivals[own.arrivals.length - 1];
-  const last = Math.max(middle, maxOf(fires.map(landing)), lastEvent ? judged(lastEvent.at) : middle);
-  return Math.max(segment.bodyStart, Math.min(last, segment.end - PLAYBACK_RULE.told));
+  const last = Math.max(ended, maxOf(fires.map(landing)), lastEvent ? judged(lastEvent.at) : ended);
+  return Math.max(ended, Math.min(last, segment.end - PLAYBACK_RULE.told));
 }
 
 /**
@@ -142,6 +146,8 @@ export function scoreOnScreen(timeline: Timeline, frame: Frame, moment: StepMome
   const score = { ...frame.score };
   if (!moment || frame.ended || moment.now >= moment.segment.end) return score;
   const step = moment.step;
+  // A test whose clock has reached its end has run, though its outcome may still be to be told.
+  if (step.role === "test" && moment.ended) score.testsDone += 1;
   const test = step.role === "test" && step.happened.answer === "took effect";
   if (step.outcome === "alerted" && test) {
     const fire = firstCountingFire(timeline, step.id);
@@ -228,6 +234,7 @@ export function momentOf(timeline: Timeline, frame: Frame, matches: ReturnType<t
     step: segment.step,
     now,
     running: now >= segment.bodyStart,
+    ended: now >= endedAt(segment) || frame.ended,
     revealAt,
     revealed: now >= revealAt || frame.ended,
     outcome: outcomeAt(timeline, segment, now),

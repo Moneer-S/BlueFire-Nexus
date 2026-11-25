@@ -20,6 +20,8 @@ interface ScrubberProps {
   real: number;
   /** True once the current step's outcome is told: until then the timeline does not say it either. */
   revealed: boolean;
+  /** True once the clock has reached the current step's recorded end: from then it is no longer said to be running. */
+  ended: boolean;
   onSeek: (time: number) => void;
 }
 
@@ -83,7 +85,7 @@ const ScrubberCells = memo(
   (a, b) => a.recording === b.recording && a.timeline === b.timeline && a.current === b.current && a.revealed === b.revealed && a.lateFired === b.lateFired,
 );
 
-export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: ScrubberProps) {
+export function Scrubber({ recording, timeline, time, real, revealed, ended, onSeek }: ScrubberProps) {
   const track = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const duration = timeline.duration;
@@ -169,7 +171,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(time)}
-        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count} steps, ${clockTime(real)} UTC` : "No steps"}
+        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : ended ? "ended" : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count} steps, ${clockTime(real)} UTC` : "No steps"}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

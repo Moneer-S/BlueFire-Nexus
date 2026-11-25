@@ -148,7 +148,7 @@ function expectedScore(recording: ShippedRecording): string {
   const score = recording.score;
   const hardened = recording.steps.filter((step) => step.role === "hardened").length;
   const falseAlerts = score.false_alerts === undefined ? "" : `${score.false_alerts}${score.false_alerts === 1 ? "false alert" : "false alerts"}`;
-  return `${score.alerted}/ ${score.alerted + score.seen + score.unseen}tests alerted${score.seen}seen, no alert${score.unseen}unseen${falseAlerts}${score.stopped} of ${hardened}repeated tests stopped`;
+  return `${score.alerted}/ ${score.alerted + score.seen + score.unseen}tests alerted${score.seen}seen, no alert${score.unseen}unseen${falseAlerts}${score.stopped} of ${hardened}hardened reruns stopped`;
 }
 
 test("watch mode tells the run step by step, and plays, pauses and moves by pointer and keyboard", async ({ page }) => {
@@ -163,7 +163,7 @@ test("watch mode tells the run step by step, and plays, pauses and moves by poin
   await expect(line).toBeVisible();
   await expect(page.getByText(/^Shipped with BlueFire\./)).toHaveCount(0);
   await line.click();
-  const origin = page.getByText(/^Shipped with BlueFire\. This repository's lab workflow recorded it in the CI run at /);
+  const origin = page.getByText(/^Shipped with BlueFire\. A workflow of this repository recorded it in the CI run at /);
   await expect(origin).toBeVisible();
   await expect(origin).toContainText(String(shipped.source.run_url));
   await expect(page.getByRole("link", { name: "The CI run that made this recording (github.com)" })).toHaveAttribute("href", String(shipped.source.run_url));

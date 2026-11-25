@@ -175,14 +175,14 @@ test("the run evaluated with two rule sets shipped with the app reads as one run
   await expect(rule.getByLabel("How each evaluation judged it")).toContainText("it alerted on every run with changed input arguments and on no ordinary activity");
   await expect(rule.getByLabel(`The text of the rule ${RULE}`)).toContainText("key: shell-history");
 
-  // The steps it moved, each a row, each with the event its alert rests on, and the price not counted.
+  // The steps it moved, each a row, each with the event its alert rests on, and the price in this run: none, since the run kept the rule.
   const move = page.getByRole("region", { name: "What the change did" });
   await expect(move.getByRole("button", { name: /^Clear Bash history/ })).toHaveCount(4);
   await expect(move.getByRole("button", { pressed: true })).toHaveCount(1);
   const difference = page.getByRole("region", { name: "What made the difference" });
   await expect(difference.getByText("/home/bluefire-lab/.bash_history", { exact: true })).toHaveCount(2);
   await expect(difference.getByText("/home/bluefire-lab/.zsh_history", { exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "What it cost" })).toContainText("Not counted");
+  await expect(page.getByRole("region", { name: "What it cost" })).toContainText("None in this run");
 
   // A step's whole detail from both evaluations, each by its own file.
   await page.getByRole("button", { name: "Every detail of this step, from both runs" }).click();
