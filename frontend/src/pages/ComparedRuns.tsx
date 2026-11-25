@@ -678,7 +678,7 @@ function Ways({ delta, staged, moved, after }: { delta: Delta; staged: DeltaStep
         <span>
           {movedIds.has(step.id) ? <b>Moved here by this change. </b> : null}
           {step.role === "canary" ? "The canary, a check of the lab itself. " : null}
-          {by.length ? <>By {by.map(([title, origin], index) => <span key={title}>{index ? " and " : ""}{title} ({origin === "lab" ? "the lab's own" : "published"})</span>)}.</> : "No rule alerts on it."}
+          {by.length ? <>By {by.map(([title, origin], index) => <span key={title}>{index ? " and " : ""}{title} ({origin === "lab" ? "the lab's own" : "published"})</span>)}.</> : "No rule alerted on it."}
         </span>
       </li>;
     })}</ul>
