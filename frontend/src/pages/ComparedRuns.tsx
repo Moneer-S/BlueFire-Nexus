@@ -13,7 +13,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api, type Delta, type DeltaLabRule, type DeltaStep, type DeltaSummary } from "../lib/api";
 import { pairsInOrder, recordedRunPath } from "../lib/recorded-runs";
 import { stageSide, type StageSide } from "../lib/pair-stage";
-import { alertedByLabOnly, basisWords, creditedCount, isCredited, isOneRun, judgedWords, LAB_RULES, MARK_FIELD, numberWord, pairHeadline, pairPath, ruleAlerts, ruleChangeWords, ruleText, sideWhere, titlesWords, turnName } from "../lib/recording-pairs";
+import { alertedByLabOnly, basisWords, creditedCount, headlineNamesStep, isCredited, isOneRun, judgedWords, LAB_RULES, MARK_FIELD, pairHeadline, pairPath, ruleAlerts, ruleChangeWords, ruleText, sideWhere, titlesWords, turnName } from "../lib/recording-pairs";
 import { stepRows } from "../live/analyse";
 import { capital, count, plural, sensorColours, sensorShortName, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
@@ -130,17 +130,17 @@ function noAlert(recording: Recording): { left: number; unseen: number; scored: 
 
 /** With no test left without an alert: what that says, and of which tests. */
 function noneLeftWords({ noEffect, inconclusive }: { noEffect: number; inconclusive: number }): { lead: string; rest: string } {
-  if (noEffect + inconclusive === 0) return { lead: "Every test raises an alert or was stopped", rest: "" };
+  if (noEffect + inconclusive === 0) return { lead: "Every test raised an alert or was stopped", rest: "" };
   const parts = [
-    ...(noEffect ? [`${capital(numberWord(noEffect).toLowerCase())} ${noEffect === 1 ? "test" : "tests"} had no effect`] : []),
-    ...(inconclusive ? [`${noEffect ? numberWord(inconclusive).toLowerCase() : capital(numberWord(inconclusive).toLowerCase())} ${inconclusive === 1 ? "test is" : "tests are"} inconclusive`] : []),
+    ...(noEffect ? [`${plural(noEffect, "test")} had no effect`] : []),
+    ...(inconclusive ? [`${plural(inconclusive, "test")} ${inconclusive === 1 ? "was" : "were"} inconclusive`] : []),
   ];
-  return { lead: "Every test the run can judge raises an alert or was stopped", rest: `${parts.join(" and ")}, so the run says nothing about ${noEffect + inconclusive === 1 ? "it" : "them"}` };
+  return { lead: "Every test the run can judge raised an alert or was stopped", rest: `${parts.join(" and ")}, so the run says nothing about ${noEffect + inconclusive === 1 ? "it" : "them"}` };
 }
 
-/** "41 tests still raise no alert", counted with the lab's own rules. */
+/** "41 tests still raised no alert", counted with the lab's own rules. */
 function leftWords(left: number): string {
-  return `${capital(numberWord(left).toLowerCase())} ${left === 1 ? "test still raises" : "tests still raise"} no alert`;
+  return `${plural(left, "test")} still raised no alert`;
 }
 
 function fixAt(delta: Delta, stepId: string): string {
@@ -232,7 +232,7 @@ function LoopBar({ loop, place }: { loop: readonly DeltaSummary[]; place: number
           ? <span className={`cmp-loop-turn is-on${kind}`} aria-current="page">{body}</span>
           : <Link className={`cmp-loop-turn${kind}`} to={pairPath(pair.id)}>{body}</Link>}</li>;
       })}
-      {last ? <li><Link className="cmp-loop-turn is-todo" to={`${recordedRunPath(last.after.id, last.after.sha256)}?mode=analyse`}><span className="cmp-loop-n" aria-hidden="true">+</span><span className="cmp-loop-name">Your next change</span></Link></li> : null}
+      {last ? <li><Link className="cmp-loop-turn is-todo" to={`${recordedRunPath(last.after.id, last.after.sha256)}?mode=analyse`}><span className="cmp-loop-n" aria-hidden="true">+</span><span className="cmp-loop-name">Next change</span></Link></li> : null}
     </ol>
   </nav>;
 }
@@ -249,9 +249,12 @@ function Answer({ delta, moved, after }: { delta: Delta; moved: readonly DeltaSt
   if (!delta.comparable) sub = "The comparison was refused, so nothing here is credited to the change. It still lists what differed.";
   else if (delta.declared_change === null) sub = "So no step is credited to a change: a step that differs is run variation, not an effect.";
   else if (moved.length === 0) sub = "Every step the change could move reads as it did before.";
-  else {
-    const what = variants ? `, each as published and again with other arguments: ${numberWord(creditedCount(delta.counts)).toLowerCase()} steps.`
-      : moved.length === 1 && recorded?.test ? `, a published test of ${recorded.test.project} for ${recorded.technique.id}${recorded.technique.name ? `, ${recorded.technique.name}` : ""}.`
+  else if (headlineNamesStep(delta, moved) && first) {
+    // The headline names the step: the line under it says what the step is.
+    const what = recorded?.test ? `A published test of ${recorded.test.project} for ${recorded.technique.id}${recorded.technique.name ? `, ${recorded.technique.name}` : ""}.` : `Technique ${first.technique}.`;
+    sub = <>{what}{labOnly ? " Alerted by the lab's own rules." : null}</>;
+  } else {
+    const what = variants ? ", each as published and again with other arguments."
       : ` (${[...new Set(moved.map((step) => step.technique))].join(", ")}).`;
     sub = <><b>{titles}</b>{what}{labOnly ? " Alerted by the lab's own rules." : null}</>;
   }
@@ -452,7 +455,7 @@ function Else({ delta, moved, staged }: { delta: Delta; moved: readonly DeltaSte
   });
   const total = delta.steps.length;
   const credited = creditedCount(c);
-  const headline = !delta.comparable ? "Not judged" : others > 0 ? `${numberWord(others)} more ${others === 1 ? "step differs" : "steps differ"}` : credited > 0 ? "Nothing else" : "Nothing";
+  const headline = !delta.comparable ? "Not judged" : others > 0 ? `${count(others)} more ${others === 1 ? "step differed" : "steps differed"}` : credited > 0 ? "Nothing else" : "Nothing";
   return <section className="cmp-side cmp-else" aria-labelledby="cmp-else-heading">
     <h2 id="cmp-else-heading">What else moved</h2>
     <p className="cmp-else-big">{headline}</p>
@@ -468,7 +471,7 @@ function Else({ delta, moved, staged }: { delta: Delta; moved: readonly DeltaSte
         return <span key={run.from} className={`cmp-pointer ${where}`} style={style}>{titlesWords(run.steps)}{run.steps.every((step) => step.role === "variant") ? ", with other arguments" : ""}</span>;
       })}</div>
     </div>
-    <p className="cmp-else-count"><b>{!delta.comparable ? `${plural(c.paired, "paired step")}, none judged.` : credited === 0 ? `None of ${plural(c.paired, "step")} moved.` : `${numberWord(credited)} of ${plural(c.paired, "step")} moved.`}</b> {count(c.same)} {c.same === 1 ? "is" : "are"} the same{others > 0 ? `, ${count(others)} ${others === 1 ? "differs" : "differ"} without a verdict for the change` : ""}{c.new + c.gone > 0 ? `; ${count(c.new + c.gone)} new or gone, listed under How we know` : ""}.</p>
+    <p className="cmp-else-count"><b>{!delta.comparable ? `${plural(c.paired, "paired step")}, none judged.` : credited === 0 ? `None of ${plural(c.paired, "step")} moved.` : `${count(credited)} of ${plural(c.paired, "step")} moved.`}</b> {count(c.same)} {c.same === 1 ? "is" : "are"} the same{others > 0 ? `, ${count(others)} ${others === 1 ? "differs" : "differ"} without a verdict for the change` : ""}{c.new + c.gone > 0 ? `; ${count(c.new + c.gone)} new or gone, listed under How we know` : ""}.</p>
     <p className="cmp-legend" aria-hidden="true">
       <span><i className="cmp-cell is-alerted" />alerted</span>
       <span><i className="cmp-cell is-alerted is-lab" />by the lab's rule</span>
@@ -489,8 +492,9 @@ function Next({ delta, moved, next, after }: { delta: Delta; moved: readonly Del
     body = <><p className="cmp-next-lead">First, a comparison with a verdict.</p><p>Make the two runs again with only the one change between them.</p></>;
   } else if (first) {
     const unseen = first.after[MARK_FIELD] === "unseen";
+    const which = notAlerted.length === 1 ? first.title : `these ${plural(notAlerted.length, "step")}`;
     body = <>
-      <p className="cmp-next-lead">{unseen ? "Still unseen." : notAlerted.length === 1 ? "Seen, but nothing alerts on it." : "Seen, but nothing alerts on them."}</p>
+      <p className="cmp-next-lead">{unseen ? `${capital(which)} ${notAlerted.length === 1 ? "was" : "were"} still unseen in the run after.` : `No rule alerted on ${which} in the run after.`}</p>
       <p>{unseen ? "A sensor has to record it first." : "A rule has to turn the event into an alert."}</p>
       {next ? <Link className="cmp-go" to={pairPath(next.id)}>Next turn: {turnName(next)}<ArrowRight aria-hidden="true" /></Link> : null}
       <Link className="cmp-go is-quiet" to={fixAt(delta, first.id)}>Fix this{next ? " another way" : ""}</Link>
@@ -500,7 +504,7 @@ function Next({ delta, moved, next, after }: { delta: Delta; moved: readonly Del
     const none = counts ? noneLeftWords(counts) : null;
     body = counts === null || none === null ? <p>Loading the run after.</p> : <>
       <p className="cmp-next-lead">{counts.left === 0 ? `${none.lead}.` : `${leftWords(counts.left)}.`}</p>
-      <p>In the run after, with the lab's own rules too{counts.left === 0 ? `.${none.rest ? ` ${none.rest}.` : ""}` : counts.unseen ? `; ${numberWord(counts.unseen).toLowerCase()} of them went unseen.` : "; none went unseen."}</p>
+      <p>In the run after, with the lab's own rules too{counts.left === 0 ? `.${none.rest ? ` ${none.rest}.` : ""}` : counts.unseen ? `; ${count(counts.unseen)} of them went unseen.` : "; none went unseen."}</p>
       {next ? <Link className="cmp-go" to={pairPath(next.id)}>Next turn: {turnName(next)}<ArrowRight aria-hidden="true" /></Link> : null}
       {counts.left ? <Link className="cmp-go" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>See them in the run after<ArrowRight aria-hidden="true" /></Link> : null}
       <p className="cmp-small">{counts.scored !== counts.left ? `Its score counts only published rules: ${count(counts.scored)} with no alert. ` : ""}Each test counted once, as published, each with Fix this.</p>
@@ -541,7 +545,7 @@ function Difference({ delta, moved, staged, recordings }: { delta: Delta; moved:
     body = <>
       <article className="cmp-card" aria-labelledby="cmp-diff-card">
         <header>
-          <h3 id="cmp-diff-card">{staged.records?.new.count && staged.before.recorded !== "recorded" ? `${sensorId} now records ${staged.title}` : `What ${sensorId} recorded of ${staged.title}`}</h3>
+          <h3 id="cmp-diff-card">{staged.records?.new.count && staged.before.recorded !== "recorded" ? `${sensorId} recorded ${staged.title} in the run after` : `What ${sensorId} recorded of ${staged.title}`}</h3>
           <span className="cmp-fromto"><SideMark side={staged.before} /><ArrowRight aria-hidden="true" /><SideMark side={staged.after} /></span>
         </header>
         {events.length ? <div className="cmp-evs">{events.map((event) => <EventLine key={event.id} event={event} tag={fresh.has(event.text ? `${event.kind}: ${event.text}` : event.kind) ? <span className="cmp-tag is-new">only after</span> : undefined} />)}</div> : null}
@@ -634,7 +638,7 @@ function Ways({ delta, staged, moved, after }: { delta: Delta; staged: DeltaStep
   const name = after.steps.find((step) => step.technique.id === staged.technique)?.technique.name;
   return <section className="cmp-sec" aria-labelledby="cmp-ways-heading">
     <h2 id="cmp-ways-heading">Every published test of {staged.technique}</h2>
-    <p className="cmp-sec-lead">{name ? `${name}: the` : "The"} {count(tests.length)} published tests in the {isOneRun(delta) ? "run, with the rules after" : "run after"}. {capital(numberWord(alerted).toLowerCase())} of {count(tests.length)} raise an alert.</p>
+    <p className="cmp-sec-lead">{name ? `${name}: the` : "The"} {count(tests.length)} published tests in the {isOneRun(delta) ? "run, with the rules after" : "run after"}. {count(alerted)} of {count(tests.length)} alerted.</p>
     <ul className="cmp-ways">{tests.map((step) => {
       const alerts = after.alerts.filter((alert) => alert.step === step.id && alert.counts && alert.launcher_only !== true);
       const by = [...new Map(alerts.map((alert) => [alert.rule.title, alert.rule.origin])).entries()];
@@ -672,7 +676,7 @@ function GoFrom({ delta, previous, next, place, after }: { delta: Delta; previou
         {next ? <Link className={`cmp-turn-card${next.declared_change?.startsWith("sensors:") ? "" : " is-rule"}`} to={pairPath(next.id)}>
           <small>Next turn, turn {place + 2}</small><b>{turnName(next)}<ArrowRight aria-hidden="true" /></b><span>{pairHeadline(next, next.moved ?? [])}</span>
         </Link> : <Link className="cmp-turn-card is-todo" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>
-          <small>Your next change</small>{none
+          <small>Next change, not made yet</small>{none
             ? <><b>{none.lead}</b><span>See the run after{none.rest ? `. ${none.rest}` : ""}</span></>
             : <><b>{counts === null ? "The tests with no alert" : `${leftWords(counts.left)}, with the lab's own rules too`}</b><span>See them in the run after, each with Fix this{counts && counts.scored !== counts.left ? `. Its score counts only published rules: ${count(counts.scored)} with no alert` : ""}</span></>}
         </Link>}

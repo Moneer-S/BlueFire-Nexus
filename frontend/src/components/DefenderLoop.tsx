@@ -7,7 +7,7 @@ import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { DeltaSummary } from "../lib/api";
 import { originWords, recordedRunPath, recordedWhere } from "../lib/recorded-runs";
-import { alertedByLabOnly, codeSpans, creditedCount, isOneRun, listedPrice, methodWords, pairHeadline, pairPath, pairResultWords, setupWords, titlesWords, turnName } from "../lib/recording-pairs";
+import { alertedByLabOnly, codeSpans, creditedCount, headlineNamesStep, isOneRun, listedPrice, methodWords, pairHeadline, pairPath, pairResultWords, setupWords, titlesWords, turnName } from "../lib/recording-pairs";
 import { count, plural } from "../live/format";
 import { PathThumb, SideMark } from "./PairStages";
 import "./DefenderLoop.css";
@@ -57,7 +57,8 @@ function Turn({ pair, number, compact }: { pair: DeltaSummary; number: number; c
       <PathThumb side={first.after} label="After" />
     </div> : null}
     <h4><Link className="dl-link" to={pairPath(pair.id)}>{pairHeadline(pair, moved)}</Link></h4>
-    {pair.comparable && moved.length ? <p className="dl-moved">{titlesWords(moved)}{variants ? ", each also with other arguments" : ""}</p> : null}
+    {/* The headline names one moved step itself; several are named here, under it. */}
+    {pair.comparable && moved.length && !headlineNamesStep(pair, moved) ? <p className="dl-moved">{titlesWords(moved)}{variants ? ", each also with other arguments" : ""}</p> : null}
     <p className="dl-method"><span>{methodWords(pair)}</span><span className={`recorded-run-origin is-${pair.origin.kind}`}>{originWords(pair.origin)}</span></p>
     {price ? <p className="dl-price"><span className="dl-price-key">Price</span><span>{price.words}</span></p> : null}
     <p className={`dl-result${result.warn ? " is-warn" : ""}`}><LabWords text={result.text} /></p>

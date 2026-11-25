@@ -120,7 +120,7 @@ describe("the Runs screen's recorded runs", () => {
     const [changed, noVerdict] = within(list).getAllByRole("listitem");
     if (!changed || !noVerdict) throw new Error("Both pairs should be listed.");
     // Named by what it did, from the delta's count; the list entry names no step, so the words stay general.
-    expect(within(changed).getByRole("link", { name: "One step moved." })).toHaveAttribute("href", "/runs/compared/0000000000000001");
+    expect(within(changed).getByRole("link", { name: "1 step moved." })).toHaveAttribute("href", "/runs/compared/0000000000000001");
     expect(within(changed).getByText("New auditd settings")).toBeVisible();
     expect(within(changed).getByText("the settings of sensor auditd")).toBeVisible();
     expect(within(changed).getByText("Before 23 Nov 2026, after 24 Nov 2026")).toBeVisible();
@@ -185,10 +185,11 @@ describe("the Runs screen's recorded runs", () => {
 
     const list = await screen.findByRole("region", { name: "Before against after" });
     const items = within(list).getAllByRole("listitem");
-    expect(items.map((item) => within(item).getAllByRole("link")[0]?.textContent)).toEqual(["One test that nobody saw is now seen.", "Four steps that were seen with no alert now raise an alert."]);
+    expect(items.map((item) => within(item).getAllByRole("link")[0]?.textContent)).toEqual(["Clear Bash history (echo) went from unseen to seen.", "4 steps went from seen to alerted."]);
     const [watch, rule] = items;
     if (!watch || !rule) throw new Error("Both pairs should be listed.");
-    expect(within(watch).getByText("Clear Bash history (echo)")).toBeVisible();
+    // The headline names the one test, and no line under it names it again.
+    expect(within(watch).getAllByText(/Clear Bash history \(echo\)/)).toHaveLength(1);
     expect(within(watch).getByText("unseen")).toBeVisible();
     // The price in plain words, not the lab's log line.
     expect(within(watch).getByText("Price").parentElement).toHaveTextContent("Price2 published rules alert on ordinary activity, before and after");

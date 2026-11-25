@@ -207,7 +207,7 @@ function shippedRule() {
 describe("the page of a change to the defense", () => {
   it("says first what the change did, from the delta alone, with the basis of the verdict in sight", async () => {
     mount(sensorDelta());
-    expect(await screen.findByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
     const move = screen.getByRole("region", { name: "What the change did" });
     expect(within(move).getByText("unseen")).toBeVisible();
     expect(within(move).getByText("seen, no alert")).toBeVisible();
@@ -249,7 +249,7 @@ describe("the page of a change to the defense", () => {
 
   it("says a limited verdict near the top, why, and keeps the steps it does not credit apart", async () => {
     const { user } = mount(limitedDelta());
-    expect(await screen.findByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
     const limit = screen.getByRole("region", { name: "A limited verdict: the two runners differed" });
     const rows = within(within(limit).getByRole("table", { name: "What differed between the two runners" })).getAllByRole("row");
     expect(rows.map((row) => row.textContent)).toEqual([
@@ -392,10 +392,10 @@ describe("the page of a change to the defense", () => {
     fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
 
     const next = await screen.findByRole("region", { name: "What comes next" });
-    expect(await within(next).findByText("Two tests still raise no alert.")).toBeVisible();
-    expect(next).toHaveTextContent("In the run after, with the lab's own rules too; one of them went unseen.");
+    expect(await within(next).findByText("2 tests still raised no alert.")).toBeVisible();
+    expect(next).toHaveTextContent("In the run after, with the lab's own rules too; 1 of them went unseen.");
     expect(next).toHaveTextContent("Its score counts only published rules: 3 with no alert.");
-    expect(screen.getByRole("link", { name: /^Your next change\s*Two tests still raise no alert, with the lab's own rules too/ })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Next change, not made yet\s*2 tests still raised no alert, with the lab's own rules too/ })).toBeVisible();
   }, 20_000);
 
   it("with no test left without an alert, speaks only of the tests the run can judge, and says how many had no effect", async () => {
@@ -410,12 +410,12 @@ describe("the page of a change to the defense", () => {
     fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
 
     const next = await screen.findByRole("region", { name: "What comes next" });
-    expect(await within(next).findByText("Every test the run can judge raises an alert or was stopped.")).toBeVisible();
-    expect(next).toHaveTextContent("In the run after, with the lab's own rules too. Two tests had no effect, so the run says nothing about them.");
-    expect(next).not.toHaveTextContent("Every test raises an alert or was stopped.");
-    const card = screen.getByRole("link", { name: /^Your next change/ });
-    expect(card).toHaveTextContent("Every test the run can judge raises an alert or was stopped");
-    expect(card).toHaveTextContent("See the run after. Two tests had no effect, so the run says nothing about them");
+    expect(await within(next).findByText("Every test the run can judge raised an alert or was stopped.")).toBeVisible();
+    expect(next).toHaveTextContent("In the run after, with the lab's own rules too. 2 tests had no effect, so the run says nothing about them.");
+    expect(next).not.toHaveTextContent("Every test raised an alert or was stopped.");
+    const card = screen.getByRole("link", { name: /^Next change, not made yet/ });
+    expect(card).toHaveTextContent("Every test the run can judge raised an alert or was stopped");
+    expect(card).toHaveTextContent("See the run after. 2 tests had no effect, so the run says nothing about them");
     expect(card).not.toHaveTextContent("The tests with no alert");
   }, 20_000);
 
@@ -474,11 +474,12 @@ describe("the two comparisons shipped with the app", () => {
     const rule = shippedRule();
     const loop = [pairSummary(delta, "0000000000000001"), pairSummary(rule.delta, "0000000000000002")];
     mount(delta, { files, loop, id: "0000000000000001" });
-    expect(await screen.findByRole("heading", { level: 1, name: "One test that nobody saw is now seen." })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
     const bar = screen.getByRole("navigation", { name: "The defender loop" });
     expect(within(bar).getByText("New auditd settings").closest("[aria-current]")).toHaveAttribute("aria-current", "page");
     expect(within(bar).getByRole("link", { name: /^Turn 2:\s*A new rule$/ })).toHaveAttribute("href", "/runs/compared/0000000000000002");
-    expect(await screen.findByText(/a published test of Atomic Red Team for T1070\.003, Indicator Removal: Clear Command History\./)).toBeVisible();
+    // The headline names the test; the line under it says what the test is, and does not name it again.
+    expect(await screen.findByText("A published test of Atomic Red Team for T1070.003, Indicator Removal: Clear Command History.")).toBeVisible();
 
     const stages = screen.getByRole("group", { name: "Clear Bash history (echo), before and after" });
     expect(await within(stages).findByRole("article", { name: /^Before auditd's earlier settings/ })).toHaveTextContent("Nothing of the test was recorded besides its launcher's start.");
@@ -487,25 +488,25 @@ describe("the two comparisons shipped with the app", () => {
     const cost = screen.getByRole("region", { name: "What it cost" });
     expect(cost).toHaveTextContent("2 before, 2 after");
     const others = screen.getByRole("region", { name: "What else moved" });
-    expect(others).toHaveTextContent("One of 91 steps moved. 90 are the same.");
+    expect(others).toHaveTextContent("1 of 91 steps moved. 90 are the same.");
     const next = screen.getByRole("region", { name: "What comes next" });
-    expect(next).toHaveTextContent("Seen, but nothing alerts on it.");
+    expect(next).toHaveTextContent("No rule alerted on Clear Bash history (echo) in the run after.");
     expect(within(next).getByRole("link", { name: /^Next turn: A new rule/ })).toHaveAttribute("href", "/runs/compared/0000000000000002");
 
     const difference = screen.getByRole("region", { name: "What made the difference" });
-    expect(within(difference).getByRole("heading", { name: "auditd now records Clear Bash history (echo)" })).toBeVisible();
+    expect(within(difference).getByRole("heading", { name: "auditd recorded Clear Bash history (echo) in the run after" })).toBeVisible();
     expect(within(difference).getByText("/home/bluefire-lab/.bash_history")).toBeVisible();
     expect(within(difference).getByText("only after")).toBeVisible();
     expect(difference).toHaveTextContent("It marks 9 events on 9 steps.");
     const ways = screen.getByRole("region", { name: "Every published test of T1070.003" });
-    expect(ways).toHaveTextContent("Two of 4 raise an alert.");
+    expect(ways).toHaveTextContent("2 of 4 alerted.");
     expect(within(ways).getAllByRole("listitem")).toHaveLength(4);
   }, 30_000);
 
   it("reads the new rule as one run evaluated twice: four rows, a row chooses the stages, the rule's text and the price not counted", async () => {
     const { delta, files } = shippedRule();
     const { user, fetched } = mount(delta, { files });
-    expect(await screen.findByRole("heading", { level: 1, name: "Four steps that were seen with no alert now raise an alert." })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
     expect(screen.getByText("One run, its telemetry read with two rule sets, 24 Nov 2026.")).toBeVisible();
     expect(screen.getByText("Only the rules of detector lab differed.")).toBeVisible();
     const move = screen.getByRole("region", { name: "What the change did" });
@@ -529,7 +530,7 @@ describe("the two comparisons shipped with the app", () => {
     expect(within(difference).getAllByText("/home/bluefire-lab/.bash_history")).toHaveLength(2);
     expect(within(difference).getByText("/home/bluefire-lab/.zsh_history")).toBeVisible();
     // Counted with the lab's own rules, beside the score the run after's page shows, which counts only published rules.
-    expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("41 tests still raise no alert.In the run after, with the lab's own rules too; none went unseen.");
+    expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("41 tests still raised no alert.In the run after, with the lab's own rules too; none went unseen.");
     expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("Its score counts only published rules: 57 with no alert.");
     // Each evaluation is read by its own file.
     expect(new Set(fetched.mock.calls.map(([, sha256]) => sha256))).toEqual(new Set([delta.before.sha256, delta.after.sha256]));
@@ -541,8 +542,8 @@ describe("the words of a pair", () => {
     const rule = readDelta(JSON.parse(ruleDeltaText));
     const sensor = readDelta(JSON.parse(sensorDeltaText));
     const moved = (delta: Delta) => delta.steps.filter((item) => item.result === "better");
-    expect(pairHeadline(rule, moved(rule))).toBe("Four steps that were seen with no alert now raise an alert.");
-    expect(pairHeadline(sensor, moved(sensor))).toBe("One test that nobody saw is now seen.");
+    expect(pairHeadline(rule, moved(rule))).toBe("4 steps went from seen to alerted.");
+    expect(pairHeadline(sensor, moved(sensor))).toBe("Clear Bash history (echo) went from unseen to seen.");
     expect(pairHeadline({ ...sensor, comparable: false }, [])).toBe("No verdict.");
     expect(turnName(rule)).toBe("A new rule");
     expect(turnName(sensor)).toBe("New auditd settings");
@@ -555,6 +556,45 @@ describe("the words of a pair", () => {
     expect(pairChangeWords(rule)).toBe("A new rule: Shell History File Truncated In Place");
     expect(movedWords({ declared_change: "sensors:auditd", moved: [better] })).toBe("Clear Bash history (echo): unseen to seen");
   });
+
+  it("says in the headline what moved, by the step's title for one step and in figures for several", () => {
+    const pair = sensorDelta();
+    const counted = (better: number, worse = 0) => ({ ...pair, counts: { ...pair.counts, better, worse } });
+    const side = (outcome: "unseen" | "seen" | "alerted") => ({ happened: "took effect", recorded: "recorded", outcome, outcome_with_lab_rules: outcome } as const);
+    const moving = (title: string, from: "unseen" | "seen" | "alerted", to: "unseen" | "seen" | "alerted", role = "test") => ({ role, title, before: side(from), after: side(to) });
+    // One step: its title, then its two outcomes.
+    expect(pairHeadline(counted(1), [moving("Clear Bash history (echo)", "unseen", "seen")])).toBe("Clear Bash history (echo) went from unseen to seen.");
+    expect(pairHeadline(counted(1), [moving("Clear Bash history (echo)", "seen", "alerted", "variant")])).toBe("Clear Bash history (echo), with other arguments, went from seen to alerted.");
+    // A step that got worse reads by the same rule.
+    expect(pairHeadline(counted(0, 1), [moving("Clear Bash history (echo)", "alerted", "seen")])).toBe("Clear Bash history (echo) went from alerted to seen.");
+    // Several that moved the same way: a figure, "tests" only when each is a published test as published.
+    const alike = [moving("A", "seen", "alerted"), moving("B", "seen", "alerted"), moving("C", "seen", "alerted"), moving("D", "seen", "alerted")];
+    expect(pairHeadline(counted(4), alike)).toBe("4 tests went from seen to alerted.");
+    expect(pairHeadline(counted(4), [...alike.slice(0, 3), moving("A", "seen", "alerted", "variant")])).toBe("4 steps went from seen to alerted.");
+    // Several that moved in different ways, or more than the list holds.
+    expect(pairHeadline(counted(4, 1), [...alike, moving("E", "alerted", "seen")])).toBe("5 tests moved.");
+    expect(pairHeadline(counted(5), alike)).toBe("5 steps moved.");
+    expect(pairHeadline(counted(1), [])).toBe("1 step moved.");
+    // None, refused, nothing declared.
+    expect(pairHeadline(counted(0), [])).toBe("No step moved.");
+    expect(pairHeadline({ ...counted(1), comparable: false }, [])).toBe("No verdict.");
+    expect(pairHeadline({ ...counted(1), declared_change: null }, [])).toBe("Nothing was declared as changed.");
+    // No headline says a count word where it can say the step, or the old slogan's words.
+    for (const words of [pairHeadline(counted(1), [moving("X", "unseen", "seen")]), pairHeadline(counted(4), alike)]) {
+      expect(words).not.toMatch(/\b(One|Four|now|nobody)\b/);
+    }
+  });
+
+  it("names the moved step once in the head of the page, even with the longest title of the shipped tests", async () => {
+    const delta = sensorDelta();
+    const title = "Execute a process from a directory masquerading as the current parent directory";
+    delta.steps = delta.steps.map((item) => (item.id === "2" ? { ...item, title } : item));
+    mount(delta);
+    const heading = await screen.findByRole("heading", { level: 1, name: `${title} went from unseen to seen.` });
+    const head = heading.closest("header");
+    if (!head) throw new Error("The headline should stand in the page's head.");
+    expect(head.textContent?.split(title)).toHaveLength(2);
+  }, 20_000);
 
   it("never draws a gain without its price, even when the verdict leaves it out", () => {
     expect(verdictParts(better)).toEqual({
