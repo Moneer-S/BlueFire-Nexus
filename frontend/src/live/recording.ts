@@ -33,8 +33,12 @@ export interface Source {
   finished?: Time;
   repository?: string;
   commit?: string;
+  /** The commit the sensors' settings, and the lab's rules unless the detector `lab` names its own, were loaded from. */
+  defense_commit?: string;
   run_url?: string;
   tools: Tool[];
+  /** What a comparison of two runs needs to know was the same. A recording with it has stable step ids. */
+  setup?: Record<string, string | Record<string, string>>;
 }
 
 export interface Host {
@@ -57,6 +61,8 @@ export interface Sensor {
   name: string;
   host: string;
   records: string;
+  /** On auditd: what its rules watch under each audit key, as the run loaded them. */
+  audit_watches?: Record<string, string[]>;
 }
 
 export interface Detector {
@@ -362,7 +368,14 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
   optionalTime(source.finished, "The source's end");
   optionalText(source.repository, "The source's repository");
   optionalText(source.commit, "The source's commit");
+  optionalText(source.defense_commit, "The commit the source's defense came from");
   optionalText(source.run_url, "The address of the run that made the recording");
+  if (source.setup !== undefined) {
+    for (const [key, value] of Object.entries(object(source.setup, "The source's setup"))) {
+      if (typeof value === "string") continue;
+      for (const [id, item] of Object.entries(object(value, `The setup's ${key}`))) text(item, `The setup's ${key} of ${JSON.stringify(id)}`);
+    }
+  }
   array(source.tools, "The source's tools").forEach((item, index) => {
     const tool = object(item, `Tool ${index + 1}`);
     text(tool.name, `The name of tool ${index + 1}`);
@@ -394,6 +407,9 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     text(sensor.name, `The name of sensor ${index + 1}`);
     known(hostIds, sensor.host, `Sensor ${JSON.stringify(sensor.id)}`, "host");
     text(sensor.records, `What sensor ${index + 1} records`);
+    if (sensor.audit_watches !== undefined) {
+      for (const [key, rules] of Object.entries(object(sensor.audit_watches, `What sensor ${index + 1} watches`))) textList(rules, `What sensor ${index + 1} watches under the key ${JSON.stringify(key)}`);
+    }
   });
   const detectors = array(network.detectors, "The network's detectors").map((item, index) => object(item, `Detector ${index + 1}`));
   const detectorIds = uniqueIds(detectors, "detector");

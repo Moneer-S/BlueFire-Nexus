@@ -6,6 +6,9 @@ import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
 import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
+/** How often a recording that is still running is asked for again, by every page that shows one. */
+export const RUNNING_POLL_MS = 4_000;
+
 /**
  * The runs shipped with BlueFire first, then the imported ones, whatever their
  * dates, each newest first by when the run started: an imported copy never

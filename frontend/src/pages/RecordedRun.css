@@ -38,24 +38,6 @@
 .recorded-run-claimed { color: var(--muted-strong); overflow-wrap: anywhere; }
 .recorded-run-note.is-problem { color: var(--amber-soft); }
 
-.recorded-run-fix {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 7px clamp(16px, 2vw, 32px);
-  border-bottom: 1px solid var(--line);
-  background: var(--ink-900);
-  color: var(--muted-strong);
-  font-size: var(--font-body-sm);
-}
-.recorded-run-fix p { flex: 1; margin: 0; line-height: 1.45; }
-.recorded-run-fix p:focus { outline: none; }
-.recorded-run-fix p:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; }
-.recorded-run-fix strong { color: var(--text-soft); font-weight: 600; }
-.recorded-run-fix button { flex: none; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: transparent; color: var(--muted-strong); font: inherit; cursor: pointer; }
-.recorded-run-fix button:hover { color: var(--text); }
-
 .recorded-run-view { flex: 1; min-height: 720px; }
 
 .recorded-run-message { display: grid; flex: 1; place-items: center; padding: 32px 24px; text-align: center; }

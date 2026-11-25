@@ -13,7 +13,7 @@ import { readRecording } from "../live/recording";
 import type { Recording } from "../live/recording";
 import { isRecordingSummary, type RecordingSummary } from "./api";
 
-export type ShippedRecording = { summary: RecordingSummary; recording: Recording };
+export type ShippedRecording = { summary: RecordingSummary; recording: Recording; sha256: string };
 
 /** The files under bluefire/data/recordings/, each loaded on demand, by file name. */
 const FILES = new Map(Object.entries(import.meta.glob<string>("../../../bluefire/data/recordings/*.json", { query: "?raw", import: "default" }))
@@ -36,18 +36,18 @@ export function shippedSummaries(): RecordingSummary[] {
 
 const opened = new Map<string, Promise<ShippedRecording>>();
 
-async function open(file: string, summary: RecordingSummary): Promise<ShippedRecording> {
+async function open(file: string, sha256: string, summary: RecordingSummary): Promise<ShippedRecording> {
   const load = FILES.get(file);
   if (!load) throw new Error(`The shipped recording ${file} is not in the build.`);
   const recording = readRecording(JSON.parse(await load()));
   if (recording.id !== summary.id) throw new Error(`The shipped recording ${file} is not the one its list entry names.`);
-  return { summary, recording };
+  return { summary, recording, sha256 };
 }
 
-function loaded(file: string, summary: RecordingSummary): Promise<ShippedRecording> {
+function loaded({ file, sha256, summary }: { file: string; sha256: string; summary: RecordingSummary }): Promise<ShippedRecording> {
   let found = opened.get(file);
   if (!found) {
-    found = open(file, summary);
+    found = open(file, sha256, summary);
     opened.set(file, found);
   }
   return found;
@@ -56,13 +56,13 @@ function loaded(file: string, summary: RecordingSummary): Promise<ShippedRecordi
 /** One shipped recording by its id, its first file, loaded whole the first time it is asked for, or undefined. */
 export async function shippedRecording(id: string): Promise<ShippedRecording | undefined> {
   const first = shippedFiles().find(({ summary }) => summary.id === id);
-  return first ? loaded(first.file, first.summary) : undefined;
+  return first ? loaded(first) : undefined;
 }
 
 /** One shipped file of a recording by its id and SHA-256, loaded whole the first time it is asked for, or undefined. */
 export async function shippedFile(id: string, sha256: string): Promise<ShippedRecording | undefined> {
   const found = shippedFiles().find((entry) => entry.summary.id === id && entry.sha256 === sha256);
-  return found ? loaded(found.file, found.summary) : undefined;
+  return found ? loaded(found) : undefined;
 }
 
 /** The list entry of one shipped file, by its id and SHA-256, without loading it. */
