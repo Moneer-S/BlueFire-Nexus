@@ -5,6 +5,18 @@ target, records what the sensors on that target saw, evaluates pinned detection
 rules over those records, and reports two answers for every test: did the
 technique take effect, and what did the defense see.
 
+In this document:
+
+- [The bench on one host](#what-it-shows-today), and what its runs show.
+- [Hardening that blocks a technique](#hardening-that-blocks-a-technique), and [the lab's own detection rules](#detection-rules-of-the-labs-own).
+- [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
+- [The range and its seal](#a-range-and-its-seal): a network of throwaway containers with no route out.
+- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity) and [its path of published tests](#range-one-the-path).
+- [Comparing two runs](#comparing-two-recordings).
+- [The defender loop](#the-defender-loop-so-far): a test nobody saw, a sensor change, then a new rule.
+- [How to run it](#how-to-run-it).
+- [Limits](#limits).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../docs/report-dark.png">
   <img src="../docs/report-light.png" width="1280" alt="Report for run 44133154347 showing the outcome totals, runner details and first rows of the results table.">
@@ -13,6 +25,8 @@ technique take effect, and what did the defense see.
 The top of the report of
 [run 44133154347](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44133154347),
 as that run's job pictured it. The whole report is in the run's artifact.
+This is the report of an early run; the newest results are in the sections
+below.
 
 ## What it shows today
 
@@ -310,17 +324,22 @@ record of T1070.003 Clear Bash history (echo) in
   front of it. It names no account, no command and no shell. An open the
   kernel refused emptied nothing, and does not match.
 - **Why ordinary writers mostly do not do it.** By their source code: bash
-  4.4 and later (readline 7.0 and later), tcsh and busybox ash append to their
+  4.4 and later (readline 7.0 and later) and busybox ash append to their
   history file with `O_APPEND` and rewrite it by writing a new file and
+  renaming it over the old one; tcsh always saves by writing a new file and
   renaming it over the old one; ksh93 appends and trims with `ftruncate`; zsh
-  appends, or renames a new file over the old one. Three exceptions are known,
-  and the rule alerts on each: bash creating a missing history file, which it
-  opens with `O_TRUNC`, once per account; bash before 4.4, whose readline trims
-  the file in place on exit once it is longer than `HISTFILESIZE`, and rewrites
-  it in place for `history -w`; and zsh with its option `HIST_SAVE_BY_COPY`
-  unset. The rule cannot leave out the creation: auditd's system call record
-  gives the number of path items, but on kernels before 6.12 an `O_CREAT` open
-  of an existing file records two items too, as a creation does.
+  appends, or renames a new file over the old one. Three exceptions among the
+  shells are known, and the rule alerts on each: bash creating a missing
+  history file, which it opens with `O_TRUNC`, once per account; bash before
+  4.4, whose readline trims the file in place on exit once it is longer than
+  `HISTFILESIZE`, and rewrites it in place for `history -w`; and zsh with its
+  option `HIST_SAVE_BY_COPY` unset. Besides the shells, any program that
+  rewrites the history file in place under its own name truncates it and
+  alerts: an editor that saves in place, as nano does, or a copy onto the
+  existing file, `cp backup ~/.bash_history`. The rule cannot leave out the
+  creation: auditd's system call record gives the number of path items, but
+  on kernels before 6.12 an `O_CREAT` open of an existing file records two
+  items too, as a creation does.
 - **What it rests on.** auditd's system call record holds the open's flags and
   not the file's name; its path record holds the name and not the flags; and
   the rule engine reads one record at a time. So the rule takes the file from
@@ -340,8 +359,13 @@ record of T1070.003 Clear Bash history (echo) in
 Its text was fixed from that one record and from what the shells do, before
 it was evaluated over a whole run.
 [Run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682)
-is the first to evaluate it. Of the 4 published procedures of T1070.003 on
-the list besides the canary, it alerted on two, the echo test and T1070.003
+is the first to evaluate it. Its recordings and job summary were written
+before a recording named the pull request's head commit: they name commit
+`e809f685`, the merge commit GitHub made for the run, which no clone has. A
+clone has the pull request's head, `09f4c4b4`, whose files are that merge
+commit's, on its base `3d8f3610`, whose rules are the before side. Of the 4
+published procedures of T1070.003 on the list besides the canary, it alerted
+on two, the echo test and T1070.003
 Clear Bash history (cat dev/null), `cat /dev/null > ~/.bash_history`, each by
 one event, and not on `truncate` and `ln dev/null`, for the reasons above, nor
 on the canary's `rm`. It matched none of that run's 8,847 ordinary events. A
@@ -432,8 +456,11 @@ command in the same process (`bash -c "sysctl ..."`), so only the first program
 start of the launcher's process is the launcher's, which, holding the whole
 test, is never counted as a detection; the ASLR test's `sysctl` start, in the
 same process, is the test's. And auditd rotates its log at 8 MB by default,
-which it did during the first run with this change: the lab now sets it not to
-rotate, and the loss control would fail a run in which it did; none has since.
+which it did during
+[run 44050159740](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/44050159740),
+the first with this change, so its export missed records and the run failed
+its readiness control: the lab now sets auditd not to rotate, and the loss
+control fails a run in which it does.
 
 ## How a run works
 
@@ -1041,8 +1068,9 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `manifest.json` records the daemon's security options under `docker`, and
 every plant check that uses them passed there.
 
-Not yet shown: the path of published tests through the range, and the scoring
-of its steps. The ordinary day is scored, and shown,
+The path of published tests runs through the range, and a CI run shows it
+([the path](#range-one-the-path)). Not yet shown: the scoring of its steps.
+The ordinary day is scored, and shown,
 [below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
 ## Range one: ordinary activity
@@ -1287,8 +1315,7 @@ first time, a frequency, a rule that follows another) have already seen the
 plant checks' logins and sudo before the go, so a rule that fires only on a
 first occurrence may not fire on the jobs: in this run the plant check's sudo
 raised 5403 "First time user executed sudo." and `admin`'s sudo only 5402.
-The path of published tests is not yet in the range, so nothing here ties an
-event to a step.
+Nothing here ties an event to a step of the path yet.
 
 ## Range one: the path
 
@@ -1305,13 +1332,104 @@ every vector that exists was identical: the attack and the cleanup of all 11
 steps (six of those cleanups are empty, `bash -c ""` or `sh -c ""`, because
 their tests publish none) and the prereq checks of the two steps that have
 one (`s01` and `s09`), 24 vectors in all. For the other nine steps the job
-checked that neither side started a prereq command. A run of the path in
-range one's hosts: not yet shown.
+checked that neither side started a prereq command.
+
+`bluefire-lab range run lab/range/range-one.yaml` runs the path inside the
+sealed range (`bluefire_lab/range/path.py`): after the seal's phases
+`static`, `no way out` and `segmentation` have passed and the plants are
+in place, between the warm-up and the tail of the ordinary activity, and
+before the seal is checked again (`after path`). The tests are the published
+ones at the pinned commit, unchanged apart from their declared input
+arguments, which the spec writes out.
+
+| Step | What the published test does here | Host, account | How the engine checks its effect |
+| --- | --- | --- | --- |
+| s01 | Tries the published list of user and password pairs over SSH against `web` | `attacker`, root | `web`'s auth.log has `Accepted password for webadmin from` `attacker`'s address |
+| s02 | Downloads a script from `inet` over HTTP and runs it | `web`, webadmin | its output has `Hello From Atomic Red Team`, and `inet`'s access log a 200 for that file from `web` |
+| s03 | Writes the system's description to `/tmp/T1082.txt` | `web`, webadmin | the file holds `Linux` |
+| s04 | Collects the `known_hosts` files under webadmin's home | `web`, webadmin | `/tmp/ssh_enum.txt` has a line that starts with `build ` |
+| s05a | Tries every TCP port of `build` | `web`, webadmin | its output has `port 22 is open` |
+| s05b | Tries every TCP port of `db` | `web`, webadmin | its output has `port 3306 is open` |
+| s06 | Searches the shop's folder for passwords | `web`, webadmin | its output has the database password |
+| s07 | Finds the private SSH keys under webadmin's home and copies them to `/tmp/creds.txt` | `web`, webadmin | the file holds a private key |
+| s08 | Logs in to `deploy@build` with the found key and copies `/etc` of `build` back as an archive | `web`, webadmin | `/tmp/stage/etc.tar.gz` lists `buildbot/signing.env` |
+| s09 | Packs `/tmp/stage` into `/tmp/loot.tar.gz` | `web`, webadmin | the archive lists `tmp/stage/etc.tar.gz` |
+| s10 | Uploads `/tmp/loot.tar.gz` to `https://inet/upload` with wget | `web`, webadmin | `inet`'s first upload came from `web`'s address and has the SHA-256 of `/tmp/loot.tar.gz` |
+
+Each step runs through `docker exec` in its container, as its account and in
+its folder, with exactly the argument vector above and without `-i`. First
+comes the test's published prerequisite check, where it has one. After the
+test and a grace of 5 s, the engine runs the effect check as root, then the
+published cleanup where the spec asks for one. What happened is one of four:
+
+- `took effect`: the test ran and its effect check passed;
+- `attempted without effect`: the test ran and the check failed;
+- `not attempted`: the prerequisite check failed, or Docker could not start
+  the test;
+- `inconclusive`: the check itself could not run, or the run was stopped
+  during the step.
+
+The path goes on after a step that failed. After the last step, the goal
+check reads files copied out of the range: `inet`'s first upload came from
+`web`, holds `tmp/stage/etc.tar.gz`, and that archive holds
+`buildbot/signing.env` byte for byte as it is on `build`. An event on the
+range that the engine did not cause stops the path and makes the run invalid.
+A run leaves `raw/steps/<id>/` (the command, its standard output and error,
+and what the prerequisite check, the effect check and the cleanup printed),
+the steps and the goal in `manifest.json`, and `path.md`.
+
+Limits:
+
+- A test's parent is the container runtime, not a login shell, and s02 to
+  s10 are started through `docker exec`, not inside the SSH session of s01.
+- Snoopy does not see the first program of an exec (the published `sh -c` or
+  `bash -c`); `raw/steps/<id>/command` records it.
+- A step's start and end are the Docker daemon's times of its exec, not the
+  engine's; where those events were not matched, the engine's own clock is
+  used and `path.md` marks it.
+- The published port scan tries every port, so s05a and s05b may run until
+  the step's timeout of 300 s. At a timeout the engine kills what the step
+  started, as the step's account, and the effect check still decides what
+  happened.
+- Before any container exists, the loader refuses a step that names a host
+  outside the spec, or one its host shares no network with, in the forms it
+  recognises: the step's `to`, a URL with a scheme, `user@host`,
+  `/dev/tcp/<host>` and `/dev/udp/<host>`. It refuses an address that
+  Python's `ipaddress` reads. It does not recognise a bare host name, nor an
+  address in a short, integer or hex form. This is an early, plain refusal of
+  mistakes; the seal is what keeps a step inside the range.
+- `blocked` cannot occur: range one configures no active response.
+
+In [run 45464907926](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45464907926),
+job "range one's path, sealed and watched" on a hosted runner, the range
+stayed sealed in every phase (static, no way out, segmentation, after path,
+teardown), every step took effect, and the goal check passed: the first
+upload `inet` stored came from `web`, and the `buildbot/signing.env` in it is
+byte for byte the file on `build`. Seconds are the Docker daemon's times of
+each step's exec. The two port scans ended by themselves before their timeout
+of 300 s, with exit code 1, and nothing was killed. s08 exits 2 because tar
+could not read every file of `/etc` on `build` as `deploy`; the archive holds
+`buildbot/signing.env`, which is what the check asks.
+
+| Step | Host | Technique | Test | Seconds | Exit code | What happened | The check |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| s01 | attacker | T1110.004 | SSH Credential Stuffing From Linux | 60.05 | 5 | took effect | pass |
+| s02 | web | T1105 | Linux Download File and Run | 0.029 | 0 | took effect | pass |
+| s03 | web | T1082 | List OS Information | 0.027 | 0 | took effect | pass |
+| s04 | web | T1018 | Enumerate SSH Configuration | 0.027 | 0 | took effect | pass |
+| s05a | web | T1046 | Port Scan | 242.124 | 1 | took effect | pass |
+| s05b | web | T1046 | Port Scan | 262.528 | 1 | took effect | pass |
+| s06 | web | T1552.001 | Extract passwords with grep | 0.024 | 0 | took effect | pass |
+| s07 | web | T1552.004 | Discover Private SSH Keys | 0.026 | 0 | took effect | pass |
+| s08 | web | T1048 | Exfiltration Over Alternative Protocol - SSH | 0.224 | 2 | took effect | pass |
+| s09 | web | T1560.001 | Data Compressed - nix - tar Folder or File | 0.031 | 0 | took effect | pass |
+| s10 | web | T1048.002 | Exfiltrate data in a file over HTTPS using wget | 0.042 | 0 | took effect | pass |
+
+Not yet shown: whether the defense saw, alerted on or stopped each step.
 
 ## Not yet shown
 
-- Tests on Windows, attack chains of several steps, and a lab on a local
-  machine.
+- Tests on Windows, and a lab on a local machine.
 
 ## How to run it
 
@@ -1403,16 +1521,19 @@ summary. `--change` declares the one thing that changed between the two runs:
 - Every verdict rests on one pair of runs, and says so.
 
 The job "compare with the latest run on main" of the `lab` workflow runs it
-with nothing declared, on every run without a pair (next section). Until a run
-on `main` has a recording with `source.setup`, its comparison is refused for
-that reason, and lists the steps.
+with nothing declared, on every run without a pair (next section).
 
 With `--two-runners`, as the pair gives it, `delta.json` says `runners: 2` and
 `delta.md` says that the two runs were made side by side, each on a fresh
 runner of its own. With `--change sensors:<id>`, a changed step also lists what
 that sensor recorded of it in one run only, and a step whose outcome moved
 while that sensor recorded the same for it in both runs is not credited to the
-change: it is run variation. When two runners side by side got another image
+change: it is run variation. A change of Sysmon's settings is credited with no
+step at all: two runs of the same settings already differ in what Sysmon
+records of a step, by temporary file names, and Sysmon's events carry nothing,
+as auditd's carry an audit key, that tells what new settings recorded from
+that, so every step that moved is not attributable, and its verdict says why.
+When two runners side by side got another image
 or kernel, and nothing else differs besides the declared change, a change of
 the audit rules gets a limited verdict (`limit` in `delta.json`): it is
 credited only on a step it left its own mark on, every event of the step being
@@ -1526,10 +1647,11 @@ change of the lab's own rules alone needs no second run: see the next section.
   already differ in auditd's text, by temporary file names and a password's
   salt that are new in every run, so for `sensors:auditd` a step is credited
   only through events of an audit key that one run's events carry and the
-  other's never do, and `delta.md` gives how many events of each such key the
-  recordings hold. That is a description: on two runners that differed it
-  also says whether each such key can carry the change's own mark, and why
-  not.
+  other's never do, with every alert that one run has on it and the other
+  lacks resting on those events alone, and `delta.md` gives how many events
+  of each such key the recordings hold. That is a description: on two
+  runners that differed it also says whether each such key can carry the
+  change's own mark, and why not.
   Each side says the commit its rules and sensor settings came from.
 - **What it costs.** One more run of the whole list: in the three pairs told
   below it took 13.5 to 15.5 minutes of runner time, and each of the two short
@@ -1538,8 +1660,10 @@ change of the lab's own rules alone needs no second run: see the next section.
 
 **The first change: auditd watches the history files.** One test of the list
 was unseen: T1070.003 Clear Bash history (echo) empties `~/.bash_history` with
-the shell's own redirect, which starts no program, and neither sensor recorded
-anything of it, so no rule could alert on it. The change is to a sensor: the
+the shell's own redirect, which starts no program. Both sensors recorded only
+the launcher's own start, `sh -c` with the test's whole command, which the lab
+never counts, since it holds the whole test, and nothing of what the test did.
+The change is to a sensor: the
 rules in [`sensors/audit.rules`](sensors/audit.rules) now watch the test
 account's shell history files by path (`~/.bash_history`, `~/.zsh_history`,
 `~/.histfile`, `~/.sh_history`, `~/.history`) for writes and changes of
@@ -1551,7 +1675,12 @@ seen.
 **The pair that shows it** is run
 [45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367)
 of the pull request that made the change (its job "the change to the defense,
-before against after", and the artifact `lab-pair`). Its two runners had the
+before against after", and the artifact `lab-pair`). Its recordings and job
+summary were written before a recording named the pull request's head
+commit: they name commit `35df6a6f`, the merge commit GitHub made for the
+run, which no clone has. A clone has the pull request's head, `fc33afe0`,
+whose files are that merge commit's, on its base `673169ec`, whose rules and
+sensor settings are the before side. Its two runners had the
 same image and kernel, so the comparison is like with like, with a verdict on
 every step. Before, with the old audit rules, "Clear Bash history (echo)"
 (`test:cbf506a5`) had no telemetry; after, it is seen, by one event:
@@ -1648,13 +1777,19 @@ A step nobody saw, its telemetry, a rule drafted from it, and before against
 after, each turn shown by a CI run of the `lab` workflow:
 
 1. **The watch.** T1070.003 Clear Bash history (echo) was unseen. The audit
-   rules now watch the test account's history files, and the pair of runs of
-   [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637)
-   recorded the step for the first time, as one audit event: it is seen, and
-   no rule alerts on it. See
+   rules now watch the test account's history files. The pair of runs of
+   [run 45365902367](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45365902367),
+   on two runners with the same image and kernel, gives the verdict: the step
+   went from unseen to seen, by one audit event, `openat` of
+   `~/.bash_history` under the watch's key `shell-history`, and no rule alerts
+   on it. The 90 other steps are the same. An earlier pair,
+   [run 45350480637](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45350480637),
+   recorded the same event, but its two runners differed and the comparison
+   of that day refused the pair. See
    [A pair of runs for a change to the defense](#a-pair-of-runs-for-a-change-to-the-defense).
 2. **The rule.** [Shell History File Truncated In Place](#a-rule-on-auditds-records-a-history-file-truncated-in-place),
-   drafted from that event, shown as one run evaluated twice in
+   drafted from that event as run 45350480637 recorded it, shown as one run
+   evaluated twice in
    [run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682):
    the run accepted the rule, and the step went from seen to alerted with the
    lab's rules, as did T1070.003 Clear Bash history (cat dev/null). See

@@ -138,10 +138,13 @@ jobs:
         side: ${{ fromJSON(needs.plan.outputs.sides) }}
     env:
       SIDE: ${{ matrix.side }}
+      # The commit the run records for the lab's code. For a pull request, github.sha is the merge commit
+      # GitHub made to test it, which no clone keeps, so the run records the pull request's head commit.
+      LAB_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       # Where the run takes the lab's own rules and the sensors' settings from.
       DEFENSE: ${{ matrix.side == 'base' && 'base/lab' || 'lab' }}
       # The commit those files are of: the run records it, and the report links the lab's rules there.
-      DEFENSE_COMMIT: ${{ matrix.side == 'base' && github.event.pull_request.base.sha || github.sha }}
+      DEFENSE_COMMIT: ${{ matrix.side == 'base' && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -446,7 +449,8 @@ jobs:
       - name: Evaluate the run with each commit's rules, and record each
         env:
           BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
-          HEAD_COMMIT: ${{ github.sha }}
+          # The pull request's head commit, as the run records it, not the merge commit GitHub tested.
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
         run: |
           engine=$(find "$RUNNER_TEMP/zircolite" -maxdepth 2 -type f -name Zircolite)
           url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

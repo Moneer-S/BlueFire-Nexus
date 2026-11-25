@@ -16,8 +16,39 @@ known.
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.recording/1`.
 Times are ISO 8601 in UTC with a `Z`, with up to six digits after the second
-where the source has them (`2026-11-17T17:07:23.834Z`). The live view plays
-them to the millisecond.
+where the source has them (`2026-11-17T17:07:23.834Z`). The app and the live
+view compare them to the microsecond, and the live view shows them to the
+millisecond.
+
+## Characters a text cannot hold
+
+No text or key holds NUL or half of a character pair (a lone surrogate). A
+step's `command`, `output` and `plain`, the attacker's `description` and
+`goal`, and `notes` are free text: they may hold line breaks, tabs and a
+terminal's escapes. Every other text and every key, an event's `text`, a
+title, a host's or a sensor's name and a rule's title included, holds no
+control character: no C0 or C1 control or DEL, no direction mark, embedding,
+override or isolate (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to
+U+2069), and no line or paragraph separator (U+2028, U+2029). Each of these can
+make a name read otherwise on screen than it is written. What the app refuses
+on import is under "In the app".
+
+A sensor can still record such a character: a command line with a tab in it,
+or a file name with a right-to-left override, as a test of ATT&CK T1036.002
+makes one. A writer neither drops it nor replaces it with another character.
+Where the format refuses a character, the writer writes `\u{`, the
+character's code point in uppercase hexadecimal, and `}`: a tab is `\u{9}`, a
+line break `\u{A}`, a right-to-left override `\u{202E}`, a NUL `\u{0}`. So
+that this form never stands for text the source held already, a backslash that
+comes right before `u{` in the source is written `\u{5C}`, in every text, free
+text included: what the source held as `\u{41}` is written `\u{5C}u{41}`.
+Nothing else changes. Free text keeps its line breaks and tabs, every other
+backslash is the source's own, and a text that holds none of these characters
+and no `\u{` is written as the source gave it. So each `\u{<hex>}` in a text
+stands for one character the source recorded there, and a reader that turns
+each back into its character gets the source's text. A text that is cut
+(`...`) keeps such a form whole or leaves it out. `bluefire-lab recording`
+does this for every text and key it writes.
 
 ## Top level
 
@@ -44,8 +75,8 @@ them to the millisecond.
 | `engine` | string | The program that ran the steps, such as `bluefire-lab`. |
 | `environment` | string | Plain words: `GitHub-hosted runner` or `containers on a developer machine`. |
 | `started`, `finished` | time | The run's start and end. |
-| `repository`, `commit` | string | Optional. The repository and commit of the code that ran the steps. The recording can be written later from the run's files, by newer code. |
-| `defense_commit` | string | Optional. The commit of the same repository that the sensors' settings were loaded from, and the lab's own rules too unless the detector `lab` has its own `commit`: that one names where the rules came from, and wins. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`. When one run is evaluated twice, both recordings have the run's `defense_commit`, and the detector `lab` of each names its rules' commit. |
+| `repository`, `commit` | string | Optional. The GitHub repository, as `owner/name`, and a commit of it that stays there, for the code that ran the steps. For a run of a push to a branch, a scheduled run or one started by hand, it is the commit the run checked out: the branch's newest commit. For a run of a pull request, it is the pull request's head commit, its branch's newest commit when the run started. The pull request's own reference `refs/pull/<number>/head` points to it until the branch is pushed again, and a merge of the pull request by a merge commit keeps it in the base branch's history. GitHub runs a pull request's code as a merge of that commit into the base branch as it then was, in a merge commit that it makes anew whenever either side moves and that no branch holds, so a clone does not have it. The code that ran is this commit's changes on that base, which is this commit itself when the branch was not behind its base. A recording of a pull request's run written before the lab recorded the head commit names GitHub's merge commit here instead, and wherever else it names the head's files (`defense_commit`, the detector `lab`'s `commit`), and `lab/README.md` gives the head commit a clone has beside each run it cites with such recordings. The recording can be written later from the run's files, by newer code. |
+| `defense_commit` | string | Optional. The commit of the same repository that the sensors' settings were loaded from, and the lab's own rules too unless the detector `lab` has its own `commit`: that one names where the rules came from, and wins. In the run of a pair that loads a pull request's base commit, it is that commit and not `commit`; otherwise it is the same commit as `commit`, with the same meaning for a pull request. When one run is evaluated twice, both recordings have the run's `defense_commit`, and the detector `lab` of each names its rules' commit: the base commit, and the pull request's head commit. |
 | `run_url` | string | Optional. The CI run that made the recording. A reader shows it as a link only when it is the https address of a GitHub Actions run (`https://github.com/<owner>/<repository>/actions/runs/<number>`) of the recording's own `repository` when that is given, and leaves out anything else. |
 | `tools` | array | Each `{ "name", "version", "role" }`: a pinned tool of the run. `role` is one of `tests`, `executor`, `sensor`, `rules`, `rule engine`. The list is always there, and empty when the run names no pinned tool. |
 | `setup` | object | Optional. What a comparison of two runs needs to know was the same. See below. A recording with `setup` has stable step ids. |
@@ -68,7 +99,7 @@ runs must share.
 | --- | --- | --- |
 | `hosts` | array | Each host of the run. |
 | `links` | array | Optional. Each `{ "from", "to", "label" }` between host ids: who can reach whom. |
-| `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_watches`, an object that maps each audit key of its rules (the word after `-k`, or after `key=` in `-F`) to what the rules under that key watch, read from the rules as the run loaded them (after `-D`, `-d` and `-W`; `""` for the rules without a key). Each rule is a string in one fixed form, its keys taken out: `-a <list>,<action>` sorted, then `-S` with the system calls sorted and joined by commas, then each `-F` sorted, then each `-C`. A watch `-w <path> -p <perms>` is written as the rule it stands for, `-a always,exit -F path=<path> -F perm=<perms>` (`perm=arwx` without `-p`), `dir=` as `path=`, the letters of `perm` sorted, `arch=` left out, so that a rule for `b32` and the same one for `b64` are one, and an unset login uid (`-1`, `4294967295`) written `unset`. The forms of a key are sorted and each is there once. An older recording does not have it. |
+| `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_watches`, an object that maps each audit key of its rules (the word after `-k`, or after `key=` in `-F`) to what the rules under that key watch, read from the rules as the run loaded them (after `-D`, `-d` and `-W`; `""` for the rules without a key). Each rule is a string in one fixed form, its keys taken out: `-a <list>,<action>` sorted, then `-S` with the system calls sorted and joined by commas, then each `-F` sorted, then each `-C`. A watch `-w <path> -p <perms>` is written as the rule it stands for, `-a always,exit -F path=<path> -F perm=<perms>` (`perm=arwx` without `-p`), `dir=` as `path=`, the letters of `perm` sorted, `arch=` left out, so that a rule for `b32` and the same one for `b64` are one, and an unset login uid (`-1`, `4294967295`) written `unset`. The forms of a key are sorted and each is there once. An older recording does not have it, and may have `audit_keys` instead: the audit keys of its rules, sorted, without what they watch. Nothing reads `audit_keys` now, and on two runners that differed a comparison of `sensors:auditd` refuses a recording that has only that (see Two runners that differed). |
 | `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
 
 A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
@@ -92,12 +123,15 @@ repository (such as `lab/rules/linux/auditd/<name>.yml`), and `lines`, an array
 of strings, the file's text line by line, without the line breaks (no value of
 the format outside a step's own text holds a line break). Joined with a line
 break after each line, the lines give the file whose SHA-256 is `digest`, for a
-file that ends with a line break and uses no other kind, as the lab's do. The
+file that ends with a line break, uses no other kind and holds no character a
+text cannot hold (see above), as the lab's do. The
 detector can also have `commit`, optional, the commit of this repository the
 rules came from; where it is given, it and not `source.defense_commit` says
-where the lab's rules came from. For the recording of run 45350480637, written again outside
-CI from that run's artifact, the lab's 9 rules added about 14 KB to about
-1.16 MB. A recording written before these keys has none of them.
+where the lab's rules came from. In the artifact `lab-rules-twice` of
+[CI run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682),
+which holds one run's recording written with two sets of the lab's rules, the
+text of 9 rules makes about 14 KB of a 1.2 MB recording, and that of 10 rules
+about 17 KB. A recording written before these keys has none of them.
 
 A host is `{ "id", "name", "role", "kind", "os", "addresses" }`. `kind` is one
 of `host`, `attacker`, `internet`, `defense`. `role` is plain words, such as
@@ -114,7 +148,9 @@ reason.
 
 `{ "kind", "description", "goal" }`. `kind` is `scripted` or `agent`.
 `description` says in plain words what drove the steps. `goal` is the end of an
-attack path in plain words, or null for a test list: it is always there.
+attack path in plain words, or null for a test list: it is always there. An
+attack path with `score.goal_seconds` has a goal, and the live view names it
+where it says the goal was reached.
 
 ## A step
 
@@ -129,7 +165,7 @@ attack path in plain words, or null for a test list: it is always there.
 | `test` | object | Optional. `{ "project", "guid", "executor", "elevated" }`: the published test this step ran. `elevated` is a boolean: true when the test ran as root. |
 | `host` | string | The id of the host the step ran on. |
 | `from` | string | Optional. The id of the host the step came from, for a step that crosses the network. |
-| `started`, `ended` | time | When the step's attack command started and ended. Left out when the engine could not measure them, as for a test whose attack did not start. |
+| `started`, `ended` | time | When the step's attack command started and ended. Left out when the engine could not measure them, as for a test whose attack did not start. `ended` is never earlier than `started`. See "Steps run forward" below. |
 | `command` | string | Optional. What ran, as text. It keeps its start: when it is cut it ends in `...`. |
 | `output` | string | Optional. What the step printed. It keeps its end: when it is cut it starts with `...`. |
 | `happened` | object | `{ "answer", "basis" }`. `answer` is `took effect`, `attempted without effect`, `blocked`, `not attempted` (the attack did not start) or `inconclusive`. `basis` says what the answer rests on. |
@@ -139,7 +175,7 @@ attack path in plain words, or null for a test list: it is always there.
 | `first_event` | time | Optional. The first sensor event of the step. |
 | `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert, at its moment: its `raised` time when its detector ran live, and its `time` when the rules ran after the run, like the score's `first_alert_seconds`. Absent when there is none. |
 | `first_alert_with_lab_rules` | time | Optional. The same, when the accepted rules written in this repository count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
-| `compared_with` | string | Optional. For a `hardened` or `variant` step: the id of the step it repeats. |
+| `compared_with` | string | Optional. For a `hardened` or `variant` step only: the id of the step it repeats, an earlier step that is itself neither `hardened` nor `variant`, never the step itself. |
 | `defense` | object | Optional. For a `hardened` step: `{ "title", "why" }` of the hardening change. |
 
 The lab makes a step's id from parts joined by `:`: its `role`; the first 8
@@ -155,7 +191,23 @@ events, such as `31-4`.
 
 `command` and `output` are at most 2,000 characters, the `...` included. Each
 sensor stamps its own records, so a step's `first_event` or `first_alert` can be
-a few milliseconds earlier than its `started`.
+a few milliseconds earlier than its `started`, and an event a little later than
+its `ended`.
+
+**Steps run forward.** Steps run one after another in their `order`: a step's
+`started` is not earlier than the `started` of the step before it with one, nor
+earlier than that step's `ended`, so steps do not overlap. The stretch of the
+run a step holds, from its `started` or its earliest event or alert `time`,
+whichever comes first, to its `ended` or its latest event or alert `time`,
+whichever comes last, begins no earlier than the stretch of the step before it
+ends. An event stamped a moment outside its step's start and end is kept; one
+stamped inside another step's stretch is not.
+
+**An attack path's race** counts from one moment: its first step in `order` is
+of role `test` and has a `started`, and both `score.first_alert_seconds` and
+`score.goal_seconds` count from that start. A check of the lab's own, such as a
+canary or a control, comes after the first test or is left out. A test list has
+no race.
 
 `outcome` is the first of these that holds:
 
@@ -179,7 +231,9 @@ source's own field names and values, and for auditd also `paths` and `command`,
 which the lab puts together from the record). `sensor` is a sensor id. `kind`
 is plain words such as `process start`, `file created`, `network connection`,
 or the sensor's own name for the record: a call such as auditd's `execve` or
-`openat`, or a record type such as `USER_ACCT`. `text` is one line: the command
+`openat`, or a record type such as `USER_ACCT`. `text` is one line, where a line
+break or a tab the sensor recorded is shown as "Characters a text cannot hold"
+says (`\u{A}`, `\u{9}`): the command
 line for a program start, the file for a file record, a sentence that names the
 file and the kernel's answer for a start the kernel refused, the connection for
 a network record, auditd's own `op=`, `cmd=`, `acct=` and `res=` words for a
@@ -214,7 +268,7 @@ kept.
 | `rule` | object | `{ "id", "title", "level", "origin" }`. `level` is one of Sigma's levels: `informational`, `low`, `medium`, `high`, `critical`. `origin` is `pinned` for a published rule and `lab` for an accepted rule written in this repository. |
 | `counts` | boolean | True when the match counts as an alert: its level is high or critical. A lower level is a match for review. This holds for both origins: a counting match of a lab rule goes toward `outcome_with_lab_rules` and `first_alert_with_lab_rules` only, never toward `outcome` or `first_alert`. |
 | `step` | string | The id of the step the matched event belongs to. |
-| `events` | array of strings | The ids of the matched events. |
+| `events` | array of strings | The ids of the matched events. The alert's moment (its `raised` time where its detector ran live, else its `time`) is not earlier than the earliest of them; it can be earlier than a later one. |
 | `launcher_only` | boolean | Optional. True when the rule matched only the one shell command that carried the whole test, not what the test did. Such a match never counts, and its `events` is empty: that command is the step's `command`, not one of its events. |
 
 ## `ordinary`
@@ -225,8 +279,13 @@ ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
 `matches` lists `{ "rule", "level", "count" }` for the published rules that
-matched any of those events: `rule` is the rule's title, and `count` the number
-of events it matched. A match at a level that counts as an alert is a false
+matched any of those events, each rule once: `rule` is the rule's title, and
+`count` the number of events it matched, not more than `events`. Two published
+rules can share a title, so where two listed rules do, each one's `rule` is its
+title followed by its id in parentheses, such as `Some Title (<id>)`, and no two
+rules are listed under one `rule`. `id`, optional, is the rule's id, as an
+alert's `rule.id` gives it; the lab writes it on every match, and an older
+recording has none. A match at a level that counts as an alert is a false
 alert.
 
 ## `score`
@@ -238,9 +297,9 @@ alert.
 | `alerted`, `seen`, `unseen` | number | Of those that took effect, how many have each outcome. |
 | `alerted_with_lab_rules` | number | Optional. The same count of alerted steps when the accepted rules of this repository count too. Present when the run evaluated such rules. |
 | `stopped` | number | Steps of any role with outcome `stopped`. |
-| `first_alert_seconds` | number | Optional, attack path only: seconds from the start of the first step of role `test` to the first alert of a published rule on a step of role `test`. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
-| `goal_seconds` | number | Optional, attack path only: seconds from the start of the first step to the end of the step that reached the goal. Not written for a test list. |
-| `false_alerts` | number | Optional. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
+| `first_alert_seconds` | number | Optional, attack path only: seconds from the `started` of the first step, which is of role `test`, to the first alert of a published rule on a step of role `test`, and zero when that alert's stamp is a moment earlier. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
+| `goal_seconds` | number | Optional, attack path only: seconds from the same start, the first step's `started`, to the end of the step that reached the goal. Written only with an `attacker.goal`. Not written for a test list. |
+| `false_alerts` | number | Optional, and only with `ordinary`. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
 
 ## A recording that is still running
 
@@ -249,7 +308,10 @@ finished the run. While it runs, the engine sends the recording again, whole,
 each time it grows, with the same `id`, `source.engine` and `source.started`. A
 reader replaces what it holds with the newer copy; it never merges two copies.
 The last copy the engine sends has `source.finished`, and from then on the
-recording does not change.
+recording does not change. Each copy follows every rule of this format, the
+end time aside: the service's import and the app's live view check a copy of a
+running recording as they check a finished one, so an attack path's first step
+is already its first test, with a `started`.
 
 ## In the app
 
@@ -274,20 +336,27 @@ follows this format and its parts agree with each other:
   rule, and `ordinary`. Every word is one the tables allow, and every time is a
   UTC time. An optional key is left out when it is not known, never null; only
   `attacker.goal` and the values of an event's `fields` may be null. A value of
-  `fields` is text, a number no further than 2^53 from zero, true, false or
-  null. The replay page reads every one of these keys, so a recording the app
+  `fields` is text, a number no further than 2^53 from zero (written as a whole
+  number or with a decimal point or an exponent alike), true, false or null.
+  The replay page reads every one of these keys, so a recording the app
   keeps is one the page can play once it has its end time. The events, the
   alerts with their `raised`, and each step's `started` and `ended` fall inside
   the run's `started` and `finished`. Steps are sorted by `order`, and events
-  and alerts by `time`.
+  and alerts by `time`. Steps run forward, as "Steps run forward" above says:
+  none ends before it starts, starts go forward in `order` with no overlap, and
+  no step's events or alerts fall inside the stretch of another. `repository`
+  is `owner/name`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the
-  alert's step.
+  alert's step and are on the alert's host.
 - An alert `counts` exactly when its rule's level is `high` or `critical` and it
   is not `launcher_only`; a `launcher_only` alert has no events, and one that
   counts has at least one. An alert of the detector `pinned` has the origin
   `pinned`, and one of the detector `lab` the origin `lab`. `raised` is not
-  earlier than `time`, and is absent when the detector ran after the run.
+  earlier than `time`, and is absent when the detector ran after the run. An
+  alert's moment is not earlier than the earliest event it names. A
+  `compared_with` is on a `hardened` or `variant` step only, and names an
+  earlier step that is neither.
 - A step's `visibility.answer` is `alert` exactly when an alert of a published
   rule that counts is on the step. Its `outcome` is the one the rules under
   "A step" give for its `happened.answer` and `visibility.answer`, and its
@@ -305,21 +374,29 @@ follows this format and its parts agree with each other:
   gives a live alert's `time` instead is refused with both times named.
   `first_alert_with_lab_rules` is the same over every counting alert, on a step
   with `outcome_with_lab_rules` only.
-- The counts of `score` are the ones its steps give; `false_alerts`, when
-  `ordinary` is there, is the number of `ordinary.matches` at a level that counts.
-  A test list has no `first_alert_seconds` or `goal_seconds`. In an attack path,
-  `first_alert_seconds` is the time its steps and alerts give, to the
-  millisecond, counted to the alert's `raised` time where its detector ran live
-  (zero when the alert's stamp is earlier than the first start), and `goal_seconds` the time
-  from the first step's start to the end of one of the steps. Which step reached
-  the goal is not checked.
+- The counts of `score` are the ones its steps give. `false_alerts` is there
+  only with `ordinary`, and is the number of rules of `ordinary.matches` at a
+  level that counts; each rule is listed there once, with no more events than
+  `ordinary.events`. A test list has no `first_alert_seconds` or
+  `goal_seconds`, and its `attacker.goal` is null. An attack path begins with a
+  step of role `test` that has a `started`; its `first_alert_seconds` is the
+  time its steps and alerts give from that start, to the millisecond, counted
+  to the alert's `raised` time where its detector ran live (zero when the
+  alert's stamp is earlier than that start), and its `goal_seconds`, written
+  only with a goal, the time from that start to the end of one of the steps.
+  Which step reached the goal is not checked.
 - The file is at most 8 MiB, with at most 2,000 steps, 20,000 events and 20,000
   alerts, nested at most 8 deep. Event `fields` hold at most 64 plain values.
   Numbers are finite, keys appear once in an object, and no text or key holds a
   NUL. Only a step's `command`, `output` and `plain`, the attacker's
   `description` and `goal`, and `notes` may hold other control characters, such
-  as line breaks, tabs or a terminal's escapes; every other text holds none,
-  an event's `text` included.
+  as line breaks, tabs or a terminal's escapes; every other text and every key
+  holds none, an event's `text` included: no C0 or C1 control character, no
+  direction mark, embedding, override or isolate (U+061C, U+200E, U+200F,
+  U+202A to U+202E, U+2066 to U+2069), and no line or paragraph separator
+  (U+2028, U+2029). Each of these can make a name read otherwise on screen than
+  it is written. A writer shows a character the format refuses as
+  "Characters a text cannot hold" says.
 
 These checks show that a recording agrees with itself. They do not show that
 its steps ran, where or when, which sensor recorded each event, or which step
@@ -507,6 +584,9 @@ not a recording. `bluefire-lab compare <before.json> <after.json> --out
 in a few lines for a job summary (see `lab/README.md`).
 
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.delta/1`.
+`one_run` and `lab_rules` were added to it later: a delta that lacks them,
+such as that of the pair of runs of run 45365902367, is read as `one_run`
+false and `lab_rules` null.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -582,9 +662,9 @@ settings, so it refuses a declared `sensors:<id>`.
 | `changed` | array of strings | The fields whose value differs. |
 | `underneath` | array of strings | For a changed step, what changed under it: `recorded now` or `no longer recorded` with the number of events, `matches now:` or `no longer matches:` and a rule as `<level>: <title>`. |
 | `records` | object | Only on a changed step, when the declared change is `sensors:<id>`: `{ "sensor", "new", "gone" }`, where `new` is what that sensor recorded of the step in the after recording and not in the before one, and `gone` the other way, each `{ "count", "lines" }` with the first 20 lines as `<kind>: <text>` of the events (`<kind>` alone when the text is empty), in time order. Only the events a recording kept count. For `sensors:auditd`, only events of an audit key that one recording's events carry and the other's never do (`audit_keys`) count, and under a `limit` also those of a key that can carry the change's own mark. Being listed here does not make an event the change's own: the step's `result` and `mark` say whether it is. |
-| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too; for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved; for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step; or, under a `limit`, the step does not carry the change's mark); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
+| `result` | string | `same`; `better` or `worse` (every judged field that moved went up, or down, in the order `unseen`, `seen`, `alerted`, `stopped`, and `recorded` from `no telemetry` to `recorded`), or `changed` (a value outside that order, or both ways); `without cause` (only the control moved); `not attributable` (the control moved too; for a change of rules, a rule of the lab's own that is the same file in both runs matched the step differently while its outcome with the lab's rules moved; for a sensor's settings, that sensor's `records` of the step are empty while the recordings hold events of the step; for `sensors:auditd`, an alert that one run has on the step and the other lacks does not rest on the events of `records` alone; for `sensors:sysmon`, any judged field moved; or, under a `limit`, the step does not carry the change's mark); or `no verdict` (the comparison is refused). A step of role `control` must raise no alert, so for it a move to `alerted` is `worse`, a move away from it `better`, and nothing else is ranked. |
 | `mark` | object | Only under a `limit`, on a step credited by the change's own mark: `{ "run", "keys", "events" }`, the run whose events carry the mark (`after` or `before`), their audit keys and their number. Under a `limit`, a `not attributable` step without one says in its verdict why it carries no mark. |
-| `verdict` | string | The result in plain words. A changed step's ends with the `claim`. Under a `limit`, a credited step's starts with `<result> by the change's own mark, on two runners that differed` and says what it rests on, and a `not attributable` step's names the runners' difference. |
+| `verdict` | string | The result in plain words. A changed step's ends with the `claim`, except on a refused comparison with `one_run` true, which has not shown that it is one run. Under a `limit`, a credited step's starts with `<result> by the change's own mark, on two runners that differed` and says what it rests on, and a `not attributable` step's names the runners' difference. |
 | `procedures`, `price` | object, string | On a `better` step, and in its `verdict` too: `price`, what the gain cost; and on a step of role `test` only, `procedures`, `{ "better", "of" }`, on how many of the steps of role `test` of the same technique the result is `better`. |
 
 **Like with like.** A change of the lab's rules (`detectors:lab`) is judged on
@@ -614,7 +694,13 @@ same. Two runs of the same audit rules already differ in auditd's text, by
 temporary file names and a password's salt that are new in every run, so for
 `sensors:auditd` a step that moved with no event of an audit key that one
 run's events carry and the other's never do (or, under a `limit`, of a key that
-can carry the change's own mark) is `not attributable`. That a key
+can carry the change's own mark) is `not attributable`, and so is one with an
+alert that one run has and the other lacks, by rule, that does not rest on
+such events alone. Sysmon's events carry nothing like an audit key, so nothing
+a recording holds tells what new Sysmon settings recorded from what two runs
+of the same settings differ by, such as temporary file names: for
+`sensors:sysmon` every step whose judged fields moved is `not attributable`,
+and its verdict says why. That a key
 is in one run's events only is a description, not the change's own mark (below):
 a rule both runs have may have fired on one runner only. Under a sensor change,
 `delta.md` also names the steps recorded now and by no sensor before, or says

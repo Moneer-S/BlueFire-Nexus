@@ -33,8 +33,12 @@ export interface Source {
   finished?: Time;
   repository?: string;
   commit?: string;
+  /** The commit the sensors' settings, and the lab's rules unless the detector `lab` names its own, were loaded from. */
+  defense_commit?: string;
   run_url?: string;
   tools: Tool[];
+  /** What a comparison of two runs needs to know was the same. A recording with it has stable step ids. */
+  setup?: Record<string, string | Record<string, string>>;
 }
 
 export interface Host {
@@ -57,6 +61,8 @@ export interface Sensor {
   name: string;
   host: string;
   records: string;
+  /** On auditd: what its rules watch under each audit key, as the run loaded them. */
+  audit_watches?: Record<string, string[]>;
 }
 
 export interface Detector {
@@ -306,10 +312,14 @@ function time(value: unknown, where: string): void {
   if (Number.isNaN(timeOf(raw))) fail(`${where} is not a time: ${JSON.stringify(raw)}.`);
 }
 
-/** The values a source field of an event may hold: text, a number, true or false, null, or a list of text. */
+/** The furthest from zero a number in an event's fields may be: the largest whole number a browser holds exactly. */
+const MAX_FIELD_NUMBER = 2 ** 53;
+
+/** The values a source field of an event may hold: text, a number no further than 2^53 from zero, true or false, null, or a list of text. */
 function fieldValue(value: unknown): boolean {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
+  // However the number is written, 1e300 or 9007199254740993: past 2^53 a browser holds another number.
+  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= MAX_FIELD_NUMBER;
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
@@ -358,7 +368,14 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
   optionalTime(source.finished, "The source's end");
   optionalText(source.repository, "The source's repository");
   optionalText(source.commit, "The source's commit");
+  optionalText(source.defense_commit, "The commit the source's defense came from");
   optionalText(source.run_url, "The address of the run that made the recording");
+  if (source.setup !== undefined) {
+    for (const [key, value] of Object.entries(object(source.setup, "The source's setup"))) {
+      if (typeof value === "string") continue;
+      for (const [id, item] of Object.entries(object(value, `The setup's ${key}`))) text(item, `The setup's ${key} of ${JSON.stringify(id)}`);
+    }
+  }
   array(source.tools, "The source's tools").forEach((item, index) => {
     const tool = object(item, `Tool ${index + 1}`);
     text(tool.name, `The name of tool ${index + 1}`);
@@ -390,6 +407,9 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     text(sensor.name, `The name of sensor ${index + 1}`);
     known(hostIds, sensor.host, `Sensor ${JSON.stringify(sensor.id)}`, "host");
     text(sensor.records, `What sensor ${index + 1} records`);
+    if (sensor.audit_watches !== undefined) {
+      for (const [key, rules] of Object.entries(object(sensor.audit_watches, `What sensor ${index + 1} watches`))) textList(rules, `What sensor ${index + 1} watches under the key ${JSON.stringify(key)}`);
+    }
   });
   const detectors = array(network.detectors, "The network's detectors").map((item, index) => object(item, `Detector ${index + 1}`));
   const detectorIds = uniqueIds(detectors, "detector");
@@ -479,7 +499,7 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     optionalText(event.image, `The program of ${name}`);
     if (event.fields !== undefined) {
       for (const [key, field] of Object.entries(object(event.fields, `The fields of ${name}`))) {
-        if (!fieldValue(field)) fail(`The field ${JSON.stringify(key)} of ${name} is not text, a number, true or false, null or a list of text.`);
+        if (!fieldValue(field)) fail(`The field ${JSON.stringify(key)} of ${name} is not text, a number no further than 2^53 from zero, true or false, null or a list of text.`);
       }
     }
   });
@@ -518,14 +538,154 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
   for (const key of ["alerted_with_lab_rules", "first_alert_seconds", "goal_seconds", "false_alerts"]) optionalNumber(score[key], `The score's ${key}`);
   array(top.notes, "The recording's notes").forEach((note, index) => text(note, `Note ${index + 1}`));
 
-  return value as Recording;
+  const recording = value as Recording;
+  noControls(recording);
+  agree(recording);
+  return recording;
 }
 
-/** Milliseconds since 1970 of a recording time. */
+/**
+ * Control characters as docs/RECORDING.md means them: C0, DEL and C1, the
+ * direction marks, embeddings, overrides and isolates, and the line and
+ * paragraph separators. The service's import refuses the same.
+ */
+function isControl(code: number): boolean {
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x61c || code === 0x200e || code === 0x200f || code === 0x2028 || code === 0x2029 || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+}
+
+function holdsControl(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) if (isControl(value.charCodeAt(index))) return true;
+  return false;
+}
+
+/** The only texts that may hold them: what a step ran and printed, and sentences. Paths as the service writes them. */
+const FREE_TEXT = /^(?:notes\[\d+\]|attacker\.(?:description|goal)|steps\[\d+\]\.(?:command|output|plain))$/;
+
+/** Refuses a NUL in any text, and a control character in any key or in any text the format does not let hold one. */
+function noControls(recording: Recording): void {
+  const stack: { item: unknown; where: string }[] = [{ item: recording, where: "" }];
+  while (stack.length > 0) {
+    const next = stack.pop();
+    if (!next) break;
+    const { item, where } = next;
+    if (typeof item === "string") {
+      // No text holds a NUL, a free one neither.
+      if (item.includes("\u0000")) fail(`The text at ${where} holds a NUL character.`);
+      if (!FREE_TEXT.test(where) && holdsControl(item)) fail(`The text at ${where} holds a control character, a direction mark or a line separator; only a step's command, output and plain sentence, the attacker's description and goal, and the notes may.`);
+    } else if (Array.isArray(item)) {
+      item.forEach((child, index) => stack.push({ item: child, where: `${where}[${index}]` }));
+    } else if (isObject(item)) {
+      for (const [key, child] of Object.entries(item)) {
+        if (holdsControl(key)) fail(`A key at ${where || "the top of the recording"} holds a control character.`);
+        stack.push({ item: child, where: where ? `${where}.${key}` : key });
+      }
+    }
+  }
+}
+
+/** A GitHub repository as `owner/name`. */
+const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+const RERUNS: readonly StepRole[] = ["hardened", "variant"];
+
+/**
+ * The parts of a well-formed recording that must agree for the page to show
+ * them truthfully, each refused with the field named, as the service refuses
+ * them on import.
+ */
+function agree(recording: Recording): void {
+  const { steps, events, alerts, source, attacker, score, ordinary } = recording;
+  const name = (step: Step) => `Step ${JSON.stringify(step.id)}`;
+  if (source.repository !== undefined && source.repository.trim() !== "" && !REPOSITORY.test(source.repository)) fail(`The source's repository, ${JSON.stringify(source.repository)}, is not a GitHub repository as owner/name.`);
+
+  if (recording.kind === "test list" && attacker.goal !== null) fail("The attacker's goal is set, but a test list has no goal: it is null.");
+  if (recording.kind === "attack path") {
+    if (score.goal_seconds !== undefined && attacker.goal === null) fail("The score's goal_seconds is set, but the attacker has no goal.");
+    const first = steps[0];
+    if (first && first.role !== "test") fail(`The first step of an attack path, ${name(first)}, has the role ${first.role}: an attack path begins with a step of role test, and its race counts from that step's started.`);
+    if (first && first.started === undefined) fail(`The first step of an attack path, ${name(first)}, has no started: its race counts from that step's start.`);
+    if (!first && score.goal_seconds !== undefined) fail("The score's goal_seconds is set, but the recording has no step to reach the goal at.");
+  }
+
+  // Ordinary activity: each rule listed once, with no more events than there were.
+  if (score.false_alerts !== undefined && ordinary === undefined) fail("The score's false_alerts is set, but the recording has no ordinary activity to count it from.");
+  if (ordinary) {
+    const listed = new Set<string>();
+    ordinary.matches.forEach((match, index) => {
+      if (listed.has(match.rule)) fail(`Match ${index + 1} on ordinary activity names the rule ${JSON.stringify(match.rule)} again; each rule is listed once.`);
+      listed.add(match.rule);
+      if (match.count > ordinary.events) fail(`The count of match ${index + 1} on ordinary activity, ${match.count}, is more than the ${ordinary.events} events of ordinary activity.`);
+    });
+  }
+
+  // A rerun names an earlier step that is not a rerun itself.
+  const place = new Map(steps.map((step, index) => [step.id, index]));
+  steps.forEach((step, index) => {
+    if (step.compared_with === undefined) return;
+    const at = place.get(step.compared_with) ?? -1;
+    const other = steps[at];
+    if (!RERUNS.includes(step.role)) fail(`${name(step)} has compared_with, but it is of role ${step.role}; only a hardened or variant step repeats another.`);
+    if (step.compared_with === step.id) fail(`${name(step)} names itself in compared_with; a rerun is compared with the step it repeats.`);
+    if (at > index) fail(`${name(step)} names a later step in compared_with; a rerun repeats a step run before it.`);
+    if (other && RERUNS.includes(other.role)) fail(`${name(step)} names a ${other.role} step in compared_with; a rerun is compared with a step that is neither.`);
+  });
+
+  // Steps run forward, one after another: the stretch of the run each one
+  // plays, from its start or earliest event or alert to its end or latest one,
+  // follows the stretch of the step before it.
+  const stamps = new Map<string, number[]>(steps.map((step) => [step.id, []]));
+  for (const item of [...events, ...alerts]) stamps.get(item.step)?.push(timeOf(item.time));
+  let lastStart: { step: Step; at: number } | null = null;
+  let lastEnd: { step: Step; at: number } | null = null;
+  let lastWindow: { step: Step; at: number } | null = null;
+  for (const step of steps) {
+    const started = step.started === undefined ? null : timeOf(step.started);
+    const ended = step.ended === undefined ? null : timeOf(step.ended);
+    const own = stamps.get(step.id) ?? [];
+    if (started !== null && ended !== null && ended < started) fail(`${name(step)} ends before it starts: its ended, ${step.ended ?? ""}, is earlier than its started, ${step.started ?? ""}.`);
+    if (started !== null && lastStart && started < lastStart.at) fail(`${name(step)} starts before ${name(lastStart.step)}, the step before it: its started is earlier, and steps run forward in their order.`);
+    if (started !== null && lastEnd && started < lastEnd.at) fail(`${name(step)} starts before ${name(lastEnd.step)}, the step before it, has ended: its started is earlier than that step's end, and steps do not overlap.`);
+    const starts = [...(started === null ? [] : [started]), ...own];
+    const ends = [...(ended === null ? [] : [ended]), ...(started === null ? [] : [started]), ...own];
+    const first = starts.length > 0 ? minimum(starts) : ends.length > 0 ? minimum(ends) : null;
+    if (first !== null && lastWindow && first < lastWindow.at) fail(`${name(step)} begins before ${name(lastWindow.step)}, the step before it, ends: a step's start, events and alerts come after the end, events and alerts of the step before it.`);
+    if (started !== null) lastStart = { step, at: started };
+    if (started !== null || ended !== null) lastEnd = { step, at: Math.max(ended ?? Number.NEGATIVE_INFINITY, started ?? Number.NEGATIVE_INFINITY) };
+    if (ends.length > 0) lastWindow = { step, at: maximum(ends) };
+  }
+
+  // An alert comes after the first event it names, at its moment, on the host of those events.
+  const eventTime = new Map(events.map((event) => [event.id, timeOf(event.time)]));
+  const eventHost = new Map(events.map((event) => [event.id, event.host]));
+  for (const alert of alerts) {
+    if (alert.events.length === 0) continue;
+    if (alert.events.some((id) => eventHost.get(id) !== alert.host)) fail(`Alert ${JSON.stringify(alert.id)} is on the host ${JSON.stringify(alert.host)}, but an event it matched is on another host: an alert is on the host of its events.`);
+    const earliest = minimum(alert.events.map((id) => eventTime.get(id) ?? Number.POSITIVE_INFINITY));
+    if (alertMoment(alert) < earliest) fail(`Alert ${JSON.stringify(alert.id)} is earlier than the earliest event it matched: its ${alert.raised === undefined ? "time" : "raised"}, ${alert.raised ?? alert.time}, comes before that event.`);
+  }
+}
+
+function minimum(values: readonly number[]): number {
+  let low = Number.POSITIVE_INFINITY;
+  for (const value of values) if (value < low) low = value;
+  return low;
+}
+
+function maximum(values: readonly number[]): number {
+  let high = Number.NEGATIVE_INFINITY;
+  for (const value of values) if (value > high) high = value;
+  return high;
+}
+
+/**
+ * Milliseconds since 1970 of a recording time, with the digits past the
+ * millisecond kept as a fraction of one, so the page orders and compares
+ * times as finely as the service, to the microsecond.
+ */
 export function timeOf(value: Time): number {
-  // A browser reads at most milliseconds the same everywhere, so digits past
-  // the third are cut, which keeps every time in its order.
-  return Date.parse(value.replace(/(\.\d{3})\d+Z$/, "$1Z"));
+  const found = /^(.*\.\d{3})(\d+)Z$/.exec(value);
+  if (!found) return Date.parse(value);
+  const [, head = "", rest = ""] = found;
+  return Date.parse(`${head}Z`) + Number(`0.${rest}`);
 }
 
 function groupByStep<T extends { step: string }>(recording: Recording, items: readonly T[]): Map<string, T[]> {

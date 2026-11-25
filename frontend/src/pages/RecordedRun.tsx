@@ -5,17 +5,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingList, type RecordingSummary } from "../lib/api";
-import { addressShows, momentFromSearch, momentSearch, originWords, recordingKindWords, withSummary } from "../lib/recorded-runs";
+import { fixPath } from "../lib/fix-step";
+import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originWords, recordingKindWords, RUNNING_POLL_MS, withSummary } from "../lib/recorded-runs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
 import { RecordingError, readRecording, type Recording } from "../live/recording";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "./RecordedRun.css";
 
-/** How often a recording that is still running is asked for again. */
-const RUNNING_POLL_MS = 4_000;
 /** The address follows the viewer after this pause, so dragging the scrubber does not rewrite it on every move. */
 const ADDRESS_SETTLE_MS = 300;
 
@@ -46,7 +45,8 @@ export function RecordedRunPage() {
 
 /**
  * One recording: the first file kept for its id, or, with `file`, the kept file
- * with that SHA-256, as a run evaluated more than once keeps one per evaluation.
+ * with that SHA-256: a run evaluated more than once keeps one per evaluation,
+ * and the same recording sent in other bytes is kept beside the first.
  */
 function RecordedRun({ recordingId, file }: { recordingId: string; file?: string }) {
   const entry = useQuery({
@@ -83,7 +83,7 @@ function RecordedRun({ recordingId, file }: { recordingId: string; file?: string
   return <div className="recorded-run">
     <RecordedRunBar summary={data.summary} pollError={entry.isError && data.summary.running ? entry.error : null} />
     {reading && "recording" in reading
-      ? <RecordedRunView recording={reading.recording} />
+      ? <RecordedRunView recording={reading.recording} recordingId={recordingId} file={file} originKind={data.summary.origin.kind} />
       : <CannotPlay message={reading?.problem ?? "The recording could not be read."} />}
   </div>;
 }
@@ -122,31 +122,40 @@ function RecordedRunBar({ summary, pollError }: { summary?: RecordingSummary; po
   </header>;
 }
 
-function RecordedRunView({ recording }: { recording: Recording }) {
+function RecordedRunView({ recording, recordingId, file, originKind }: { recording: Recording; recordingId: string; file?: string; originKind: RecordingSummary["origin"]["kind"] }) {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [initial, setInitial] = useState<NonNullable<LiveViewProps["initial"]>>(() => momentFromSearch(searchParams));
   const [mount, setMount] = useState(0);
-  const [fixing, setFixing] = useState<string | null>(null);
   const latest = useRef<LiveMoment | null>(null);
   const pending = useRef<number | undefined>(undefined);
-  const note = useRef<HTMLParagraphElement | null>(null);
   // The address this page last wrote, or opened with. Any other is a moment someone asked for.
   const written = useRef(searchParams.toString());
   const address = searchParams.toString();
+  // Where the view opened, as an address, when the address named a step the recording does not hold.
+  // Until the viewer moves from there, the address keeps naming that step, as the line under the title
+  // does: it does not take the place the view fell back to for the one that was asked for.
+  const opened = useRef<{ search: string; left: boolean } | null>(null);
+  const missing = namesMissingStep(recording, initial);
 
   // The address follows the viewer, replacing itself, so moving through a run adds nothing to the browser's history.
   // Only while the address is still this run's: once someone has gone to another page, writing it would take them back.
   const onMoment = useCallback((moment: LiveMoment) => {
     latest.current = moment;
     window.clearTimeout(pending.current);
+    const next = momentSearch(moment).toString();
+    if (missing && !opened.current?.left) {
+      opened.current ??= { search: next, left: false };
+      if (next === opened.current.search) return;
+      opened.current.left = true;
+    }
     pending.current = window.setTimeout(() => {
-      const next = momentSearch(moment).toString();
       if (next === written.current || !addressShows(pathname)) return;
       written.current = next;
       setSearchParams(next, { replace: true, preventScrollReset: true });
     }, ADDRESS_SETTLE_MS);
-  }, [pathname, setSearchParams]);
+  }, [missing, pathname, setSearchParams]);
   useEffect(() => () => window.clearTimeout(pending.current), []);
 
   // A link to another moment of this run, or the browser's Back, opens the view there.
@@ -154,35 +163,21 @@ function RecordedRunView({ recording }: { recording: Recording }) {
     if (address === written.current) return;
     window.clearTimeout(pending.current);
     written.current = address;
-    setFixing(null);
+    opened.current = null;
     setInitial(momentFromSearch(new URLSearchParams(address)));
     setMount((value) => value + 1);
   }, [address]);
 
-  // "Fix this" opens the step's detail, whose hint says where the gap is. Making the change in BlueFire comes later.
+  // "Fix this" opens the step's own page. Its address keeps the moment the reader is at, so its Back returns there.
   const onFix = useCallback((stepId: string) => {
-    const now = latest.current;
-    setFixing(stepId);
-    if (now?.mode === "analyse" && now.select === stepId) return;
-    setInitial({ step: stepId, paused: true, mode: "analyse", select: stepId });
-    setMount((value) => value + 1);
-  }, []);
-  useEffect(() => {
-    if (fixing !== null) note.current?.focus();
-  }, [fixing, mount]);
-  const fixingTitle = fixing === null ? undefined : recording.steps.find((step) => step.id === fixing)?.title;
+    window.clearTimeout(pending.current);
+    const moment = latest.current ? momentSearch(latest.current).toString() : "";
+    navigate(`${fixPath(recordingId, file, stepId)}${moment ? `?${moment}` : ""}`);
+  }, [navigate, recordingId, file]);
 
-  return <>
-    {fixing !== null ? <div className="recorded-run-fix">
-      <p ref={note} tabIndex={-1} role="status">
-        Fix this{fixingTitle ? <>, <strong>{fixingTitle}</strong></> : null}: the hint in the step's detail says where the gap is. BlueFire cannot make the change for you yet.
-      </p>
-      <button type="button" onClick={() => setFixing(null)}>Dismiss</button>
-    </div> : null}
-    <div className="recorded-run-view">
-      <LiveViewBoundary fallback={(message) => <CannotPlay message={message} />}>
-        <LiveView key={mount} recording={recording} initial={initial} onFix={onFix} onMoment={onMoment} />
-      </LiveViewBoundary>
-    </div>
-  </>;
+  return <div className="recorded-run-view">
+    <LiveViewBoundary fallback={(message) => <CannotPlay message={message} />}>
+      <LiveView key={mount} recording={recording} originKind={originKind} initial={initial} onFix={onFix} onMoment={onMoment} />
+    </LiveViewBoundary>
+  </div>;
 }

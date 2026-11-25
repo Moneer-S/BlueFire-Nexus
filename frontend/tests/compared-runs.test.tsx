@@ -12,7 +12,7 @@ import sensorAfterText from "../../bluefire/data/recordings/lab-pair-history-wat
 import { api, readDelta, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { codeSpans, listedPrice, movedWords, pairChangeWords, pairHeadline, pairResultWords, raceWords, titlesWords, turnName, variationWords, verdictParts } from "../src/lib/recording-pairs";
 import { ComparedRunsPage } from "../src/pages/ComparedRuns";
-import { event, recording, step } from "./live-fixture";
+import { alert, event, recording, step } from "./live-fixture";
 
 // Small deltas in the shape `bluefire-lab compare` writes them, and the two real
 // comparisons shipped with the app. The page draws what each one says; none of
@@ -372,7 +372,9 @@ describe("the page of a change to the defense", () => {
     expect(within(detail).getByRole("heading", { name: "Clear Bash history (echo), every detail before and after" })).toHaveFocus();
     expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2&detail=1`);
     const articles = await within(detail).findAllByRole("article");
-    expect(articles[0]).toHaveTextContent("It took effect, and no sensor recorded it.");
+    expect(articles).toHaveLength(2);
+    // The unseen test is told in its recording's own words.
+    expect(articles[0]).toHaveTextContent("It took effect, and nothing of the test was recorded besides its launcher's start.");
     expect(articles[1]).toHaveTextContent("1 event recorded, no rule matched, none at alert level.");
     await user.click(within(detail).getByRole("button", { name: "Close the step's detail" }));
     expect(screen.queryByRole("region", { name: /every detail before and after/ })).not.toBeInTheDocument();
@@ -394,6 +396,54 @@ describe("the page of a change to the defense", () => {
     expect(next).toHaveTextContent("In the run after, with the lab's own rules too; one of them went unseen.");
     expect(next).toHaveTextContent("Its score counts only published rules: 3 with no alert.");
     expect(screen.getByRole("link", { name: /^Your next change\s*Two tests still raise no alert, with the lab's own rules too/ })).toBeVisible();
+  }, 20_000);
+
+  it("shows the alert a changed rule no longer raises, with the rule and the event it matched, from the before recording alone", async () => {
+    // One run read with two rule sets: the lab's rule was changed, not removed, and stopped alerting on step 2.
+    const RULE = "Shell History File Truncated In Place";
+    const seen = { happened: "took effect", recorded: "recorded", outcome: "seen", outcome_with_lab_rules: "seen" } as const;
+    const lost: DeltaStep = {
+      ...same("2", "Clear Bash history (echo)"),
+      before: { ...seen, outcome_with_lab_rules: "alerted" },
+      after: seen,
+      changed: ["outcome_with_lab_rules"],
+      underneath: [`matches no more: high: ${RULE}`],
+      result: "worse",
+      verdict: "worse: alerted to seen with the lab's rules; one run evaluated with two rule sets",
+    };
+    const base = sensorDelta();
+    const delta: Delta = {
+      ...base,
+      claim: "one run evaluated with two rule sets",
+      one_run: true,
+      before: { ...side("run-once", "2026-11-24T12:42:13Z"), sha256: "b".repeat(64) },
+      after: { ...side("run-once", "2026-11-24T12:42:13Z"), sha256: "c".repeat(64) },
+      declared_change: "detectors:lab",
+      lab_rules: [{ rule: "r1", title: RULE, change: "changed", before: { accepted: true, reason: "it alerted on every run" }, after: { accepted: true, reason: "it alerted on every run" } }],
+      differences: [{ what: "detectors:lab", before: DIGEST_BEFORE, after: DIGEST_AFTER, declared: true }],
+      judged: ["outcome_with_lab_rules"],
+      counts: { ...base.counts, better: 0, worse: 1 },
+      steps: [same("1", "List OS Information"), lost],
+    };
+    const truncate = { ...event("2-1", "2", 3.5), kind: "open for writing", text: "/home/bluefire-lab/.bash_history" };
+    const ruleAlert = alert("a1", "2", 3.6, ["2-1"], { detector: "lab", rule: { id: "r1", title: RULE, level: "high", origin: "lab" } });
+    const steps = [step("1", 1, 2, { title: "List OS Information" }), step("2", 3, 4, { title: "Clear Bash history (echo)", technique: { id: "T1070.003" } })];
+    const before = { ...recording({ steps: steps.map((item) => (item.id === "2" ? { ...item, outcome_with_lab_rules: "alerted" as const } : item)), events: [truncate], alerts: [ruleAlert] }), id: "run-once" };
+    const after = { ...recording({ steps, events: [truncate] }), id: "run-once" };
+    mount(delta, { files: new Map<string, unknown>([["b".repeat(64), before], ["c".repeat(64), after]]) });
+
+    // The rule that alerted before is drawn on the stage of the run before, which only the before recording holds.
+    const stages = await screen.findByRole("group", { name: "Clear Bash history (echo), before and after" });
+    const beforeStage = await within(stages).findByRole("article", { name: /^Before/ });
+    expect(await within(beforeStage).findAllByText(RULE)).not.toHaveLength(0);
+    expect(within(within(stages).getByRole("article", { name: /^After/ })).queryAllByText(RULE)).toHaveLength(0);
+    // The event its alert rests on, said to be of the rules before.
+    const difference = screen.getByRole("region", { name: "What made the difference" });
+    const evidence = await within(difference).findByRole("article", { name: "What the alerts rest on" });
+    expect(evidence).toHaveTextContent("Clear Bash history (echo)");
+    expect(evidence).toHaveTextContent("with the rules before");
+    expect(within(evidence).getByText("/home/bluefire-lab/.bash_history")).toBeVisible();
+    expect(evidence).toHaveTextContent("alert · high");
   }, 20_000);
 });
 

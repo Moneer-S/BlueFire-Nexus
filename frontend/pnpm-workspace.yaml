@@ -8,3 +8,5 @@ confirmModulesPurge: false
 
 allowBuilds:
   esbuild: true
+  # The pictures script uses sharp's prebuilt binary; its install script only builds from source.
+  sharp: false

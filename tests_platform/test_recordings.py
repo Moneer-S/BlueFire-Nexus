@@ -11,7 +11,7 @@ from typing import Any, Iterator
 import pytest
 
 from bluefire import cli, recordings
-from bluefire.api import generate_browser_bootstrap_capability
+from bluefire.api import MAX_RECORDING_REQUEST_BODY, generate_browser_bootstrap_capability
 from bluefire.application_errors import APIError
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes
@@ -99,6 +99,15 @@ def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
     }  # fmt: skip
 
 
+def attack_path(recording_id: str = "rec-path") -> dict[str, Any]:
+    """The same two tests as an attack path toward a goal: its race counts from test 1's start."""
+
+    value = small_recording(recording_id)
+    value["kind"] = "attack path"
+    value["attacker"]["goal"] = "Read the history file of another account."
+    return value
+
+
 @pytest.fixture
 def service(tmp_path: Path) -> Iterator[BlueFireService]:
     instance = BlueFireService(
@@ -158,6 +167,8 @@ def test_the_shipped_lab_recording_is_listed_with_its_origin_and_read_back_whole
     detail = service.recording(entry["id"])
     assert detail["summary"] == entry
     assert detail["recording"] == json.loads(SHIPPED.read_bytes())
+    # The file a comparison would name it by.
+    assert detail["sha256"] == hashlib.sha256(SHIPPED.read_bytes()).hexdigest()
 
     shipped = json.loads(SHIPPED.read_bytes())
     again = service.import_recording({"recording": shipped})
@@ -203,6 +214,8 @@ def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
     del recording["source"]["finished"]
     service.import_recording({"recording": recording})
     running = service.recording("rec-live")["summary"]["running"]
+    # A running recording is replaced as it grows: its file has no SHA-256 to name it by yet.
+    running_file = service.recording("rec-live").get("sha256")
 
     growing = copy.deepcopy(recording)
     growing["notes"] = ["Two steps have run."]
@@ -220,7 +233,7 @@ def test_a_running_recording_grows_by_import_and_is_frozen_once_finished(
     with pytest.raises(APIError) as refused:
         service.import_recording({"recording": changed})
 
-    assert running is True
+    assert running is True and running_file is None
     assert still_running["replaced"] is True and still_running["summary"]["running"] is True
     assert other_refused.value.status == 409
     assert other_refused.value.code == "recording_id_taken"
@@ -258,6 +271,8 @@ def test_another_evaluation_of_a_finished_run_is_kept_beside_it_by_its_file(
     assert first_whole["recording"] == first
     # The list and the id's own address show the first file; the other is reached by its file.
     assert len(listed) == 1 and service.recording("rec-twice")["recording"] == first
+    # The id's own address names its first file by the SHA-256 a comparison would name it by.
+    assert service.recording("rec-twice")["sha256"] == hashlib.sha256(payload).hexdigest()
     assert unknown.value.status == 404 and unknown.value.code == "recording_file_not_found"
     assert malformed.value.status == 400 and malformed.value.code == "invalid_recording_file"
     assert sorted(service.recording_library.kept_files("rec-twice")) == sorted(
@@ -379,6 +394,11 @@ def test_every_import_that_names_a_file_ends_with_that_file_served(
     held.unlink()
     assert len(service.recording_library.kept_files("rec-finished")) < recordings.MAX_FILES_PER_ID
     assert service.recording("rec-finished")["recording"] == finished
+    # The id's own answer names its first file, whatever is kept beside it, and that file is
+    # served under the SHA-256 it names.
+    own = service.recording("rec-finished")
+    assert own["sha256"] == first_digest
+    assert service.recording_file("rec-finished", own["sha256"])["recording"] == own["recording"]
 
     # A running imported id: the latest bytes sent are its one file.
     running = small_recording("rec-running")
@@ -387,6 +407,8 @@ def test_every_import_that_names_a_file_ends_with_that_file_served(
     assert served(first_as(running))["created"] is False
     other_bytes = served(second_as(running))
     assert other_bytes["replaced"] is (first_as is not second_as)
+    # While it runs, its file is replaced as it grows, so its own answer names none.
+    assert "sha256" not in service.recording("rec-running")
     grown = copy.deepcopy(running)
     grown["notes"] = ["One step has run."]
     assert served(second_as(grown))["replaced"] is True
@@ -398,6 +420,7 @@ def test_every_import_that_names_a_file_ends_with_that_file_served(
     assert list(service.recording_library.kept_files("rec-running")) == [
         _sent_digest(first_as(finished_run))
     ]
+    assert service.recording("rec-running")["sha256"] == _sent_digest(first_as(finished_run))
 
     # A shipped id: the shipped file answers, by its own digest, or the import is refused.
     whole = json.loads(SHIPPED.read_bytes())
@@ -469,8 +492,7 @@ def test_a_malformed_recording_is_refused_with_a_plain_message(service: BlueFire
     for _ in range(1000):
         nested["a"] = {}
         nested = nested["a"]
-    huge = small_recording("rec-path")
-    huge["kind"] = "attack path"
+    huge = attack_path()
     huge["score"].update(first_alert_seconds=0.1, goal_seconds=10**1000)
 
     message, problems = refusal(service, recording)
@@ -509,8 +531,7 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
     claims["steps"][1]["first_alert"] = "2026-11-17T17:07:22.100Z"
     claims["events"][0]["time"] = "1999-01-01T00:00:00Z"
     claims["score"]["first_alert_seconds"] = 0.5
-    race = small_recording("rec-path")
-    race["kind"] = "attack path"
+    race = attack_path()
     race["score"].update(first_alert_seconds=0.001, goal_seconds=999999)
 
     message, problems = refusal(service, claims)
@@ -546,8 +567,7 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
 
 def test_the_race_counts_a_live_alert_from_when_it_was_raised(service: BlueFireService) -> None:
     def path(recording_id: str, when: str, first_alert_seconds: float) -> dict[str, Any]:
-        race = small_recording(recording_id)
-        race["kind"] = "attack path"
+        race = attack_path(recording_id)
         race["network"]["detectors"][0]["when"] = when
         if when == "live":
             # The first test starts at 21.000 s and its event is at 21.100 s; the alert is
@@ -635,8 +655,7 @@ def test_a_steps_first_alert_counts_a_live_alert_from_when_it_was_raised(
 
 
 def test_a_null_in_place_of_a_left_out_value_is_refused(service: BlueFireService) -> None:
-    race = small_recording("rec-path")
-    race["kind"] = "attack path"
+    race = attack_path()
     race["score"].update(first_alert_seconds=None, goal_seconds=1.5)
     live = small_recording("rec-live")
     live["network"]["detectors"][0]["when"] = "live"
@@ -723,6 +742,125 @@ def test_a_step_role_the_format_does_not_name_is_refused(service: BlueFireServic
     _, problems = refusal(service, recording)
 
     assert problems == ["steps[1].role must be one of: test, canary, control, hardened, variant."]
+
+
+def _set(value: dict[str, Any], path: tuple[Any, ...], item: Any) -> None:
+    holder: Any = value
+    for key in path[:-1]:
+        holder = holder[key]
+    if item is _LEFT_OUT:
+        del holder[path[-1]]
+    else:
+        holder[path[-1]] = item
+
+
+_T = "2026-11-17T17:07:"
+_SUDO = {"rule": "Sudo Use", "level": "high", "count": 1}
+
+
+@pytest.mark.parametrize(
+    ("kind", "changes", "problem"),
+    [
+        ("test list", [(("steps", 0, "ended"), f"{_T}20.900Z")],
+         f"steps[0].ended is {_T}20.900Z, earlier than the step's started, {_T}21.000Z."),
+        ("test list", [(("steps", 1, "started"), f"{_T}20.500Z")],
+         f"steps[1].started is {_T}20.500Z, earlier than the start of steps[0], the step before "
+         "it: steps run forward in their order."),
+        ("test list", [(("steps", 1, "started"), f"{_T}21.400Z")],
+         f"steps[1].started is {_T}21.400Z, earlier than the end of steps[0], the step before "
+         "it: steps do not overlap."),
+        ("test list", [(("events", 1, "time"), f"{_T}22.050Z")],
+         f"steps[1] begins at {_T}22.000Z, before steps[0] ends at {_T}22.050Z: a step's events "
+         "and alerts come after those of the step before it."),
+        ("test list", [(("alerts", 0, "time"), f"{_T}21.050Z"), (("steps", 0, "first_alert"), f"{_T}21.050Z")],
+         f"alerts[0].time is {_T}21.050Z, earlier than the earliest event the alert matched, at "
+         f"{_T}21.100Z: an alert comes after the first event it names."),
+        ("test list", [(("score", "false_alerts"), 7)],
+         "score.false_alerts is set, but the recording has no ordinary activity to count it from."),
+        ("test list", [(("ordinary",), {"events": 100, "matches": [_SUDO, _SUDO]}), (("score", "false_alerts"), 1)],
+         "ordinary.matches[1].rule names 'Sudo Use' again; each rule is listed once."),
+        ("test list", [(("ordinary",), {"events": 0, "matches": [{**_SUDO, "count": 1000000}]}), (("score", "false_alerts"), 1)],
+         "ordinary.matches[0].count is 1000000, more than the 0 events of ordinary activity."),
+        ("test list", [(("attacker", "goal"), "Read the history file.")],
+         "attacker.goal is set, but a test list has no goal: it is null."),
+        ("test list", [(("steps", 1, "role"), "hardened"), (("steps", 1, "compared_with"), "2"),
+                       (("score", "steps"), 1), (("score", "took_effect"), 1), (("score", "seen"), 0)],
+         "steps[1].compared_with names the step itself; a rerun is compared with the step it repeats."),
+        ("test list", [(("steps", 0, "role"), "variant"), (("steps", 0, "compared_with"), "2"),
+                       (("score", "steps"), 1), (("score", "took_effect"), 1), (("score", "alerted"), 0)],
+         "steps[0].compared_with names '2', a later step; a rerun repeats a step run before it."),
+        ("test list", [(("steps", 1, "compared_with"), "1")],
+         "steps[1].compared_with is set on a step of role test; only a hardened or variant step "
+         "repeats another."),
+        ("test list", [(("source", "repository"), "example")],
+         "source.repository must be a GitHub repository as owner/name, such as example/lab."),
+        ("test list", [(("steps", 0, "title"), "Clear\x85history")],
+         "steps[0].title must not hold control characters."),
+        ("test list", [(("network", "hosts", 0, "name"), "runner\u202e")],
+         "network.hosts[0].name must not hold control characters."),
+        ("test list", [(("events", 0, "text"), "rm\u2028history")],
+         "events[0].text must not hold control characters."),
+        ("attack path", [(("steps", 0, "role"), "canary"),
+                         (("score", "steps"), 1), (("score", "took_effect"), 1), (("score", "alerted"), 0)],
+         "steps[0].role is canary, but an attack path begins with a step of role test: its race "
+         "counts from that step's start."),
+        ("attack path", [(("steps", 0, "started"), _LEFT_OUT)],
+         "steps[0].started is missing, but an attack path's race counts from its first step's "
+         "start."),
+        ("attack path", [(("attacker", "goal"), None), (("score", "goal_seconds"), 1.5)],
+         "score.goal_seconds is set, but the attacker has no goal."),
+        ("attack path", [(("steps",), []), (("events",), []), (("alerts",), []),
+                         (("score",), {"steps": 0, "took_effect": 0, "alerted": 0, "seen": 0,
+                                       "unseen": 0, "stopped": 0, "goal_seconds": 5})],
+         "score.goal_seconds is 5, but no step ends that long after the first step started."),
+        ("test list", [(("steps", 0, "command"), "rm\x00x")],
+         "steps[0].command must not hold a NUL character."),
+    ],
+)  # fmt: skip
+@pytest.mark.parametrize("running", [False, True], ids=["finished", "still running"])
+def test_what_the_replay_page_could_not_show_truthfully_is_refused_with_the_field_named(
+    service: BlueFireService,
+    kind: str,
+    changes: list[tuple[tuple[Any, ...], Any]],
+    problem: str,
+    running: bool,
+) -> None:
+    """The page's reader refuses each of these too (frontend/tests/live-recording.test.ts).
+
+    A recording that is still running is checked as a finished one is: the app follows it
+    as it grows, and its reader refuses the same.
+    """
+
+    recording = attack_path() if kind == "attack path" else small_recording()
+    for path, item in changes:
+        _set(recording, path, item)
+    if running:
+        del recording["source"]["finished"]
+
+    _, problems = refusal(service, recording)
+
+    assert problems == [problem]
+
+
+def test_what_every_real_recording_holds_is_kept(service: BlueFireService) -> None:
+    """Sensors stamp their own records, and a match can name events after its moment."""
+
+    recording = attack_path()
+    # An event stamped a moment before its step's start, another after its end, and a
+    # live alert raised after its first event but before the second one it names.
+    recording["network"]["detectors"][0]["when"] = "live"
+    recording["events"][0]["time"] = f"{_T}20.995Z"
+    recording["events"][1]["time"] = f"{_T}21.700Z"
+    recording["steps"][0].update(first_event=f"{_T}20.995Z", first_alert=f"{_T}21.200Z")
+    recording["alerts"][0].update(time=f"{_T}20.995Z", raised=f"{_T}21.200Z", events=["1-1", "1-2"])
+    recording["steps"][0]["command"] = "sh -c 'rm history'\n\x1b[0m\u2028"
+    recording["source"].update(
+        repository="example/lab", run_url="https://github.com/example/lab/actions/runs/1"
+    )
+    recording["ordinary"] = {"events": 40, "matches": [{**_SUDO, "count": 3}]}
+    recording["score"].update(false_alerts=1, first_alert_seconds=0.2, goal_seconds=1.5)
+
+    assert service.import_recording({"recording": recording})["created"] is True
 
 
 def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(
@@ -836,6 +974,111 @@ def test_recordings_are_imported_and_read_through_the_http_server(
     assert unauthenticated[0] in {401, 403}
 
 
+REFUSED = ROOT / "tests_platform" / "fixtures" / "refused-recordings"
+REFUSED_REASONS: dict[str, str] = json.loads((REFUSED / "reasons.json").read_bytes())["files"]
+
+
+def file_body(payload: bytes) -> bytes:
+    """The import route's body for a file, as the Runs screen sends it: its bytes in base64."""
+
+    return json.dumps({"recording_file": base64.b64encode(payload).decode("ascii")}).encode()
+
+
+@pytest.mark.parametrize("name", sorted(REFUSED_REASONS))
+def test_a_refused_file_gets_the_same_reason_from_the_command_line_and_the_import_route(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    # The Runs screen sends the file's own bytes in this body; frontend/tests/service
+    # sends the same files through the screen.
+    payload = (REFUSED / name).read_bytes()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    capability = generate_browser_bootstrap_capability()
+
+    status = cli.main(["recordings", "import", str(REFUSED / name)])
+    printed = json.loads(capsys.readouterr().out)["error"]
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        answer = request(server, "POST", "/api/v1/recordings", body=file_body(payload))
+    routed = json_body(answer[2])["error"]
+
+    reason = REFUSED_REASONS[name]
+    assert status == 2
+    assert printed["code"] == "recording_invalid"
+    assert printed["details"]["problems"] == [reason]
+    assert answer[0] == 422
+    assert routed == printed
+    assert imported(service) == []
+
+
+@pytest.mark.parametrize("over", [600, 4096])
+def test_a_file_over_the_size_limit_gets_the_same_reason_from_every_door(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    over: int,
+) -> None:
+    # A valid recording padded with spaces: just over the file limit, with its body in
+    # base64 inside the route's own limit (600), and with its body beyond that too (4096).
+    valid = (REFUSED / "title-null.json").read_bytes().replace(b'"title": null', b'"title": "Run"')
+    padded = valid + b" " * (recordings.MAX_RECORDING_BYTES + over - len(valid))
+    path = tmp_path / "padded.json"
+    path.write_bytes(padded)
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    capability = generate_browser_bootstrap_capability()
+
+    status = cli.main(["recordings", "import", str(path)])
+    printed = json.loads(capsys.readouterr().out)["error"]
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        body = file_body(padded)
+        if len(body) <= MAX_RECORDING_REQUEST_BODY:
+            answer = request(server, "POST", "/api/v1/recordings", body=body)
+        else:
+            # Refused from its Content-Length alone, before a byte of it is read.
+            answer = request(
+                server,
+                "POST",
+                "/api/v1/recordings",
+                extra_headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            )
+
+    assert status == 2
+    assert printed["details"]["problems"] == [
+        f"A recording file is limited to {recordings.MAX_RECORDING_BYTES} bytes."
+    ]
+    assert answer[0] == 422
+    assert json_body(answer[2])["error"] == printed
+    assert imported(service) == []
+
+
+def test_an_import_body_that_is_not_json_is_refused_as_json(
+    service: BlueFireService,
+) -> None:
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        service,  # type: ignore[arg-type]
+        max_request_body=1024,
+        bootstrap_capability=capability,
+    ) as (server, _):
+        other = request(server, "POST", "/api/v1/recordings", body=b'{"record": NaN}')
+        after = request(server, "POST", "/api/v1/recordings", body=file_body(b"{}") + b" x")
+
+    assert other[0] == 400
+    assert json_body(other[2])["error"]["code"] == "invalid_json"
+    assert after[0] == 400
+    assert json_body(after[2])["error"]["code"] == "invalid_json"
+
+
 PAGE_ELEMENT = '<script id="bluefire-recording" type="application/json">'
 ORIGIN_ELEMENT = '<script id="bluefire-origin" type="application/json">'
 
@@ -889,6 +1132,24 @@ def test_the_command_line_writes_the_replay_page_of_the_shipped_recording(
     assert out.read_text(encoding="utf-8") == page
     assert missing == 2 and missing_output["error"]["code"] == "recording_not_found"
     assert not (tmp_path / "none.html").exists()
+
+
+def test_the_page_into_a_folder_that_does_not_exist_says_so(
+    service: BlueFireService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    shipped = json.loads(SHIPPED.read_bytes())
+    out = tmp_path / "no-such-folder" / "replay.html"
+
+    status = cli.main(["recordings", "page", shipped["id"], "--out", str(out)])
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+
+    assert status == 2
+    assert "the folder --out names does not exist" in message
+    assert not out.parent.exists()
 
 
 def test_the_page_of_an_imported_recording_says_what_was_not_confirmed_and_a_running_one_has_none(
@@ -995,3 +1256,112 @@ def test_the_command_line_imports_and_lists_a_recording_file(
         "imported",
     ]
     assert listed_output["recordings"][4]["id"] == "rec-small"
+
+
+# Each kind of character the format refuses outside free text, then NUL and half of a pair.
+ODD = (
+    "\t\n\r\x1b\x7f\x85\x9b\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+    "\u2028\u2029\x00\ud800"
+)
+
+
+def test_a_recording_the_lab_writes_from_telemetry_with_control_characters_is_imported(
+    service: BlueFireService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lab's writer from this checkout, as the browser tests run the lab's command line with the
+    # app's own Python (frontend/tests/service/replay-page.spec.ts).
+    monkeypatch.syspath_prepend(str(ROOT / "lab"))
+    from bluefire_lab import recording as lab_recording
+
+    renamed = "/tmp/lab/\u202ehs.gpj"  # a file name as ATT&CK T1036.002 makes one
+    rule = {"id": "rule-1", "title": "Deletion\t" + ODD, "level": "high", "origin": "pinned"}
+    event = {
+        "record": 7,
+        "time": "2026-11-16 04:04:03.100",
+        "kind": "file created",
+        "user": "lab",
+        "image": "/usr/bin/touch",
+        "detail": renamed,
+        "why": "session",
+        "fields": {"ProcessId": "41", "ParentCommandLine": "sh -c 'touch a\tb'\n" + ODD},
+    }
+    launcher = {**event, "record": 6, "time": "2026-11-16 04:04:03.000", "kind": "process start"}
+    test = {
+        "order": 4,
+        "role": "test",
+        "technique": "T1036.002",
+        "technique_name": "Right-to-Left Override\u2028",
+        "guid": "guid-4",
+        "name": "Test\u202e 4",
+        "executor": "sh",
+        "elevated": False,
+        "execution": {"answer": "took effect", "basis": "the effect check exited with 0"},
+        "visibility": {
+            "answer": "alert",
+            "basis": "a rule matched",
+            "window": ["2026-11-16 04:04:01.000", "2026-11-16 04:04:06.000"],
+            "events": 1,
+            "rules": [{**rule, "records": [7], "alert": True}],
+            "launcher": {**launcher, "detail": "sh -c 'touch a\tb'\n" + ODD, "why": "launcher"},
+            "launcher_only_rules": [],
+        },
+        "events": [{**event, "detail": "touch a\tb\n" + ODD}, {**event, "record": 8}],
+    }
+    test["visibility"]["events"] = 2
+    shared = {"title": "Same Title" + ODD, "level": "high"}
+    results = {
+        "run": {
+            "id": "r1",
+            "started": "2026-11-16T04:00:00Z",
+            "finished": "2026-11-16T04:30:00Z",
+            "target": {"os": "Ubuntu\u2069 24.04", "kernel": "7.0\t"},
+            "tools": {
+                "atomic-red-team": "a" * 40,
+                "invoke-atomicredteam": "b" * 40,
+                "lab": "example/lab@" + "c" * 40,
+            },
+        },
+        "sensor": {"name": "Sysmon\u200f for Linux", "version": "1.6.0\x1b[0m"},
+        "rules": {
+            "source": "SigmaHQ/sigma@" + "d" * 40,
+            "evaluated": {"file_event": 1},
+            "alert_levels": ["high"],
+        },
+        "ordinary_activity": {
+            "baseline_events": 4,
+            "system_events": 9,
+            "pinned_rules": [
+                {**shared, "id": "rule-a", "events": 1},
+                {**shared, "id": "rule-b", "events": 2},
+            ],
+        },
+        "engine": {"name": "Zircolite", "version": "4.7.1"},
+        "tests": [test],
+    }
+    run = {
+        "tests": [
+            {
+                "order": 4,
+                "role": "test",
+                "steps": [{"label": "attack", "output": "a\tb\n" + ODD, "error": ""}],
+            }
+        ]
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    (tmp_path / "results.json").write_text(json.dumps(results), encoding="utf-8")
+    assert lab_recording.main(tmp_path) == 0
+
+    written = recordings.parse_recording_bytes((tmp_path / "recording.json").read_bytes())
+    stored = service.import_recording({"recording": written})
+
+    assert stored["created"] is True
+    kept = service.recording("r1")["recording"]
+    # What the sensor recorded can be read back from the shown form: \u{<hex>} for each character.
+    assert kept["events"][0]["text"] == "touch a\\u{9}b\\u{A}" + "".join(
+        f"\\u{{{ord(odd):X}}}" for odd in ODD
+    )
+    assert kept["events"][1]["text"] == "/tmp/lab/\\u{202E}hs.gpj"
+    assert kept["steps"][0]["title"] == "Test\\u{202E} 4"
+    assert kept["steps"][0]["command"] == "sh -c 'touch a\tb'\n" + ODD[:-2] + "\\u{0}\\u{D800}"
+    assert [match["id"] for match in kept["ordinary"]["matches"]] == ["rule-a", "rule-b"]
+    assert len({match["rule"] for match in kept["ordinary"]["matches"]}) == 2

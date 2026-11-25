@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { alertsByStep, countsAsAlert, countsForScore, eventsByStep, readRecording, RecordingError, timeOf } from "../src/live/recording";
-import { alert, event, recording, step } from "./live-fixture";
+import type { Recording } from "../src/live/recording";
+import { alert, at, event, recording, step } from "./live-fixture";
 
 function valid() {
   return recording({
@@ -131,7 +132,8 @@ describe("refusing a wrong value in a field the view shows", () => {
     ["a visibility", ["steps", 0, "visibility", "events"], Number.NaN, 'The events counted for Step "1" is not a number.'],
     ["a hardening change", ["steps", 0, "defense"], { title: "Mount /tmp noexec" }, 'Why the hardening change of Step "1" is deployed is not text.'],
     ["an event", ["events", 0, "user"], 0, 'The user of Event "1-1" is not text.'],
-    ["an event's fields", ["events", 0, "fields"], { exit: { code: 1 } }, 'The field "exit" of Event "1-1" is not text, a number, true or false, null or a list of text.'],
+    ["an event's fields", ["events", 0, "fields"], { exit: { code: 1 } }, 'The field "exit" of Event "1-1" is not text, a number no further than 2^53 from zero, true or false, null or a list of text.'],
+    ["an event's fields, with a number past 2^53 written as a float", ["events", 0, "fields"], { size: 1e300 }, 'The field "size" of Event "1-1" is not text, a number no further than 2^53 from zero, true or false, null or a list of text.'],
     ["a rule", ["alerts", 0, "rule", "id"], 12, 'The rule id of Alert "a1" is not text.'],
     ["ordinary activity", ["ordinary"], { events: 5, matches: [{ rule: "R", level: "high", count: "3" }] }, "The count of match 1 on ordinary activity is not a number."],
     ["the score", ["score", "seen"], "1", "The score's seen is not a number."],
@@ -149,11 +151,129 @@ describe("times", () => {
     expect(() => readRecording(changed(["steps", 0, "started"], "2026-01-01T10:00:10.5Z"))).not.toThrow();
   });
 
-  it("accepts up to six digits after the second, as the service does, and plays them to the millisecond", () => {
+  it("accepts up to six digits after the second, as the service does, and orders them as finely as it does", () => {
     const read = readRecording(changed(["steps", 0, "started"], "2026-01-01T10:00:09.999999Z"));
-    expect(timeOf(read.steps[0]?.started ?? "")).toBe(Date.parse("2026-01-01T10:00:09.999Z"));
-    expect(timeOf("2026-01-01T10:00:00.000001Z")).toBe(Date.parse("2026-01-01T10:00:00Z"));
+    expect(timeOf(read.steps[0]?.started ?? "")).toBeCloseTo(Date.parse("2026-01-01T10:00:09.999Z") + 0.999, 6);
+    expect(timeOf("2026-01-01T10:00:00.000001Z")).toBeGreaterThan(Date.parse("2026-01-01T10:00:00Z"));
+    // Two times a fraction of a millisecond apart keep their order, and the same moment written two ways is one time.
+    expect(timeOf("2026-01-01T10:00:00.2001Z")).toBeLessThan(timeOf("2026-01-01T10:00:00.2009Z"));
+    expect(timeOf("2026-01-01T10:00:00.2000Z")).toBe(timeOf("2026-01-01T10:00:00.2Z"));
     expect(refusal(changed(["steps", 0, "started"], "2026-01-01T10:00:10.0000001Z"))).toBe('The start of Step "1" is not a UTC time such as 2026-11-17T17:07:23.834Z: "2026-01-01T10:00:10.0000001Z".');
+  });
+});
+
+/** The valid recording as an attack path toward a goal, whose first step is a test with a start. */
+function path(): Recording {
+  return { ...valid(), kind: "attack path", attacker: { kind: "scripted", description: "A script", goal: "Read the history file." } };
+}
+
+type Refusal = [string, (value: Recording) => void, string];
+
+/** The same recording as the engine sends it while the run is still going: no end time yet. */
+function running(value: Recording): unknown {
+  const copied = JSON.parse(JSON.stringify(value)) as Recording;
+  delete copied.source.finished;
+  return copied;
+}
+
+function runningRefusal(value: unknown): string {
+  try {
+    readRecording(value, { running: true });
+  } catch (error) {
+    if (error instanceof RecordingError) return error.message;
+    throw new Error(`not a RecordingError: ${String(error)}`);
+  }
+  throw new Error("the recording was accepted");
+}
+
+describe("refusing what the page could not show truthfully, as the service does on import", () => {
+  const refusals: Refusal[] = [
+    ["a step that ends before it starts", (value) => Object.assign(value.steps[0] ?? {}, { ended: at(9) }), 'Step "1" ends before it starts: its ended, 2026-01-01T10:00:09.000Z, is earlier than its started, 2026-01-01T10:00:10.000Z.'],
+    ["a step that starts before the step before it", (value) => Object.assign(value.steps[1] ?? {}, { started: at(5), ended: at(6) }), 'Step "2" starts before Step "1", the step before it: its started is earlier, and steps run forward in their order.'],
+    ["a step that starts before the step before it has ended", (value) => Object.assign(value.steps[1] ?? {}, { started: at(10.5) }), 'Step "2" starts before Step "1", the step before it, has ended: its started is earlier than that step\'s end, and steps do not overlap.'],
+    ["an event of a step stamped inside the next step", (value) => value.events.splice(1, 0, event("1-2", "1", 20.3)), 'Step "2" begins before Step "1", the step before it, ends: a step\'s start, events and alerts come after the end, events and alerts of the step before it.'],
+    ["an alert whose moment is earlier than the first event it names", (value) => Object.assign(value.alerts[0] ?? {}, { time: at(20.3) }), 'Alert "a1" is earlier than the earliest event it matched: its time, 2026-01-01T10:00:20.300Z, comes before that event.'],
+    [
+      "an alert on another host than the events it names",
+      (value) => {
+        value.network.hosts.push({ id: "other", name: "other", role: "another host", kind: "host" });
+        Object.assign(value.alerts[0] ?? {}, { host: "other" });
+      },
+      'Alert "a1" is on the host "other", but an event it matched is on another host: an alert is on the host of its events.',
+    ],
+    ["false alerts without ordinary activity", (value) => Object.assign(value.score, { false_alerts: 7 }), "The score's false_alerts is set, but the recording has no ordinary activity to count it from."],
+    ["a rule listed twice in ordinary activity", (value) => Object.assign(value, { ordinary: { events: 100, matches: [{ rule: "Sudo Use", level: "high", count: 1 }, { rule: "Sudo Use", level: "high", count: 1 }] } }), 'Match 2 on ordinary activity names the rule "Sudo Use" again; each rule is listed once.'],
+    ["a rule that matched more ordinary events than there were", (value) => Object.assign(value, { ordinary: { events: 0, matches: [{ rule: "Sudo Use", level: "high", count: 1000000 }] } }), "The count of match 1 on ordinary activity, 1000000, is more than the 0 events of ordinary activity."],
+    ["a goal on a test list", (value) => Object.assign(value.attacker, { goal: "Read the history file." }), "The attacker's goal is set, but a test list has no goal: it is null."],
+    ["a rerun compared with itself", (value) => Object.assign(value.steps[1] ?? {}, { role: "hardened", compared_with: "2" }), 'Step "2" names itself in compared_with; a rerun is compared with the step it repeats.'],
+    ["a rerun compared with a later step", (value) => Object.assign(value.steps[0] ?? {}, { role: "variant", compared_with: "2" }), 'Step "1" names a later step in compared_with; a rerun repeats a step run before it.'],
+    ["a test compared with another step", (value) => Object.assign(value.steps[1] ?? {}, { compared_with: "1" }), 'Step "2" has compared_with, but it is of role test; only a hardened or variant step repeats another.'],
+    ["a repository without its owner", (value) => Object.assign(value.source, { repository: "example" }), 'The source\'s repository, "example", is not a GitHub repository as owner/name.'],
+    ["a C1 control in a step's title", (value) => Object.assign(value.steps[0] ?? {}, { title: "Clear\u0085history" }), "The text at steps[0].title holds a control character, a direction mark or a line separator; only a step's command, output and plain sentence, the attacker's description and goal, and the notes may."],
+    ["a right-to-left override in a host's name", (value) => Object.assign(value.network.hosts[0] ?? {}, { name: "tegrat\u202e" }), "The text at network.hosts[0].name holds a control character, a direction mark or a line separator; only a step's command, output and plain sentence, the attacker's description and goal, and the notes may."],
+    ["a line separator in an event's text", (value) => Object.assign(value.events[0] ?? {}, { text: "one\u2028two" }), "The text at events[0].text holds a control character, a direction mark or a line separator; only a step's command, output and plain sentence, the attacker's description and goal, and the notes may."],
+    ["a NUL in a step's command", (value) => Object.assign(value.steps[0] ?? {}, { command: "rm\u0000x" }), "The text at steps[0].command holds a NUL character."],
+  ];
+  it.each(refusals)("refuses %s, with the field named", (_case, change, message) => {
+    const value = valid();
+    change(value);
+    expect(refusal(JSON.parse(JSON.stringify(value)))).toBe(message);
+  });
+
+  const pathRefusals: Refusal[] = [
+    ["that begins with a canary", (value) => Object.assign(value.steps[0] ?? {}, { role: "canary" }), 'The first step of an attack path, Step "1", has the role canary: an attack path begins with a step of role test, and its race counts from that step\'s started.'],
+    ["whose first step has no start", (value) => Object.assign(value, { steps: [step("1", null, null, { visibility: { answer: "telemetry only", basis: "events", events: 1 } }), value.steps[1]] }), 'The first step of an attack path, Step "1", has no started: its race counts from that step\'s start.'],
+    ["with a goal time and no goal", (value) => Object.assign(value, { attacker: { ...value.attacker, goal: null }, score: { ...value.score, goal_seconds: 11 } }), "The score's goal_seconds is set, but the attacker has no goal."],
+    ["with a goal time and no step", (value) => Object.assign(value, { steps: [], events: [], alerts: [], score: { ...value.score, goal_seconds: 5 } }), "The score's goal_seconds is set, but the recording has no step to reach the goal at."],
+  ];
+  it.each(pathRefusals)("refuses an attack path %s", (_case, change, message) => {
+    const value = path();
+    change(value);
+    expect(refusal(JSON.parse(JSON.stringify(value)))).toBe(message);
+  });
+
+  // The app follows a recording as it grows: each copy it is sent is checked as a finished one is.
+  it.each(refusals)("refuses %s in a recording that is still running, with the same words", (_case, change, message) => {
+    const value = valid();
+    change(value);
+    expect(runningRefusal(running(value))).toBe(message);
+  });
+
+  it.each(pathRefusals)("refuses an attack path %s while it is still running, with the same words", (_case, change, message) => {
+    const value = path();
+    change(value);
+    expect(runningRefusal(running(value))).toBe(message);
+  });
+
+  it("follows a running attack path from its first copy to its last: no step yet, a step under way, then the run's end", () => {
+    // Before any step: the race has not begun, and nothing is there to begin it.
+    const empty = { ...path(), steps: [], events: [], alerts: [], score: { ...path().score, steps: 0 } };
+    expect(() => readRecording(running(empty), { running: true })).not.toThrow();
+    // The second step has started and not ended, and its sensor has stamped one event so far.
+    const underway = path();
+    const second = underway.steps[1];
+    if (!second) throw new Error("fixture");
+    delete second.ended;
+    underway.events = underway.events.filter((item) => item.id !== "2-2");
+    underway.alerts = [];
+    underway.score = { ...underway.score, alerted: 0 };
+    expect(() => readRecording(running(underway), { running: true })).not.toThrow();
+    // The finished copy is read by the replay page too; a running one only by the app.
+    expect(() => readRecording(running(underway))).toThrow("This recording is still running");
+    expect(() => readRecording(JSON.parse(JSON.stringify(path())))).not.toThrow();
+  });
+
+  it("keeps a free text's line breaks and the shapes every real recording has", () => {
+    const value = path();
+    Object.assign(value.steps[0] ?? {}, { command: "sh -c 'a'\nb\u2028", output: "\u001b[1mok" });
+    value.notes = ["Two lines,\nof a note."];
+    // A sensor stamps its own records: an event a little before its step's start, or after its end.
+    value.events.unshift(event("1-0", "1", 9.99));
+    value.events.splice(2, 0, event("1-2", "1", 11.2));
+    value.score = { ...value.score, goal_seconds: 11 };
+    value.ordinary = { events: 40, matches: [{ rule: "Sudo Use", level: "high", count: 3 }] };
+    value.score.false_alerts = 1;
+    expect(() => readRecording(JSON.parse(JSON.stringify(value)))).not.toThrow();
   });
 });
 

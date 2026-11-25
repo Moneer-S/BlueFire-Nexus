@@ -694,7 +694,8 @@ function SideDetail({ side, recordingId, sha256, stepId }: { side: Side; recordi
     const row = stepRows(recording, timeline).find((item) => item.step.id === stepId);
     if (!row) return null;
     const numbers = testNumbers(recording);
-    return { row, colours: sensorColours(recording.network.sensors), number: numbers.get(stepId), tests: numbers.size, origin: runFacts(recording, timeline).start };
+    const facts = runFacts(recording, timeline);
+    return { row, colours: sensorColours(recording.network.sensors), number: numbers.get(stepId), tests: numbers.size, origin: facts.start, originWords: facts.startWords };
   }, [recording, stepId]);
   let body;
   if (entry.isPending) body = <p className="cmp-empty">Loading the {side} recording.</p>;
@@ -708,6 +709,7 @@ function SideDetail({ side, recordingId, sha256, stepId }: { side: Side; recordi
     testNumber={view.number}
     testsTotal={view.tests}
     origin={view.origin}
+    originWords={view.originWords}
     onSelect={(other) => navigate(`${recordedRunPath(recordingId, sha256)}?mode=analyse&select=${encodeURIComponent(other)}`)}
     takeFocus={false}
   />;

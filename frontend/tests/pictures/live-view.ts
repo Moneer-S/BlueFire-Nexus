@@ -5,8 +5,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { loopFrames, takeFrames, writeLoop } from "./loop";
+import type { LoopPlan } from "./loop";
 
-// Takes the pictures of the live view that the README shows, and keeps the
+// Takes the pictures of the live view that the README shows, and the loop of it
+// playing (see loop.ts), and keeps the
 // single replay page they were taken of, from the recording shipped with the
 // app and the real service. CI runs it and keeps the folder as an artifact:
 //
@@ -24,6 +27,7 @@ interface Step {
   role: string;
   title: string;
   outcome: string;
+  command?: string;
 }
 
 interface Shipped {
@@ -51,6 +55,7 @@ const FILES = [
   "app-rule-pair.png",
   "app-runs-pair.png",
   "app-runs.png",
+  "live-view-loop.gif",
   "replay.html",
   "watch-first-alert.png",
   "watch-seen.png",
@@ -85,6 +90,15 @@ function launcherLine(step: Step): boolean {
 }
 
 const firstAlert = first("test that alerted", (step) => step.role === "test" && step.outcome === "alerted");
+const afterFirstAlert = first("step after the first alert on a test", (step) => step.order > firstAlert.order);
+// The README's caption under the loop says that the test after the first alert is one no sensor recorded.
+if (afterFirstAlert.role !== "test" || afterFirstAlert.outcome !== "unseen") {
+  throw new Error(
+    `The step after the first alert, "${afterFirstAlert.title}", is a ${afterFirstAlert.role} with the outcome ${afterFirstAlert.outcome}, not an unseen test. ` +
+      'The caption under the loop in README.md ("a published rule raises its first alert, then the next test does its work and neither sensor records it") ' +
+      "would be untrue of this recording: change the caption, or the loop's plan, with the recording.",
+  );
+}
 const unseen = first("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
 // Seen with no alert, while a rule written in this repository would have alerted: the gap and its fix in one picture.
 // The first of these whose rule titles fit the picture whole.
@@ -186,9 +200,55 @@ async function expectMoment(page: Page, step: Step): Promise<string[]> {
   return cut;
 }
 
-/** Each match line on screen holds its rule's whole title. */
+/** Each match line on screen holds its rule's whole title, and a title that wraps does not reach the next engine's label. */
 async function expectWholeMoment(page: Page, step: Step): Promise<void> {
   expect(await expectMoment(page, step), "match lines cut short").toEqual([]);
+  const overlaps = await page.evaluate(() => {
+    const labels = [...document.querySelectorAll(".lv-engine-label")].map((label) => ({ top: label.getBoundingClientRect().top, bottom: label.querySelector(".lv-matches")?.getBoundingClientRect().bottom ?? label.getBoundingClientRect().bottom })).sort((one, other) => one.top - other.top);
+    return labels.slice(1).map((label, index) => (labels[index]?.bottom ?? 0) - label.top).filter((overlap) => overlap > 0);
+  });
+  expect(overlaps, "an engine's matches reach the next engine's label by these many pixels").toEqual([]);
+}
+
+/**
+ * The host's label under the node, with the step's command on two lines, ends
+ * above the bottom of the map: the band below it does not cut its last line.
+ */
+async function expectWholeHostLabel(page: Page, step: Step): Promise<void> {
+  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(step.title);
+  await settle(page);
+  const found = await page.evaluate(() => {
+    const command = document.querySelector(".lv-host-command");
+    const role = document.querySelector(".lv-host-role");
+    const stage = document.querySelector(".lv-stage");
+    if (!command || !role || !stage) return { lines: 0, below: Number.NaN };
+    const lines = Math.round(command.getBoundingClientRect().height / parseFloat(getComputedStyle(command).lineHeight));
+    return { lines, below: role.getBoundingClientRect().bottom - stage.getBoundingClientRect().bottom };
+  });
+  expect(found.lines, `the command of ${step.title} takes two lines`).toBe(2);
+  expect(found.below, "the host's label ends this far below the map").toBeLessThanOrEqual(0);
+}
+
+/** The race line above the map holds its whole sentence: nothing of it is cut short. */
+async function expectWholeRaceLine(page: Page, name: string): Promise<void> {
+  const cut = await page.evaluate(() => {
+    const line = document.querySelector(".lv-winning");
+    return line ? line.scrollWidth - line.clientWidth : 0;
+  });
+  expect(cut, `${name}: the race line is cut short by these many pixels`).toBeLessThanOrEqual(1);
+}
+
+/** The lanes' time axis has labels across the run: its last one lies past the middle of the axis. */
+async function expectLabelledAxis(page: Page): Promise<void> {
+  const where = await page.evaluate(() => {
+    const svg = document.querySelector(".lv-ln-svg");
+    const labels = [...document.querySelectorAll(".lv-ln-tick text")];
+    const last = labels[labels.length - 1];
+    if (!svg || !last) return Number.NaN;
+    const box = svg.getBoundingClientRect();
+    return (last.getBoundingClientRect().left - box.left) / box.width;
+  });
+  expect(where, "the last label of the lanes' time axis lies this far along it").toBeGreaterThan(0.5);
 }
 
 test("pictures of the live view, in the replay page and in the app", async ({ page }) => {
@@ -231,6 +291,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
       await open(`step=${step.id}&at=${LATE}&paused=1`);
       const cut = await expectMoment(page, step);
       if (cut.length === 0) {
+        await expectWholeRaceLine(page, name);
         await picture(page, folder, name);
         break;
       }
@@ -242,6 +303,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await open("mode=analyse");
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("table")).toBeVisible();
+  await expectLabelledAxis(page);
   await pictureOfLists(page, folder, "analyse.png");
 
   await open(`mode=analyse&select=${unseen.id}`);
@@ -295,13 +357,49 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
 
   const path = await link.getAttribute("href");
   if (!path?.startsWith("#/")) throw new Error(`The recorded run's link is ${path}.`);
-  // Inside the app the live view shares the width with the app's own rail: the wide size keeps every rule title whole.
+  const moment = (step: Step) =>
+    page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, `${path.slice(1)}?step=${step.id}&at=${LATE}&paused=1`);
+  // At 1440 by 900 too, where the live view shares the width with the app's own rail: every rule title
+  // of the first alert is whole, wrapped where it is long, and the host's label is not cut by the band
+  // below the map when the step's command takes two lines, as the longest command of a test does.
+  await moment(firstAlert);
+  await expectWholeMoment(page, firstAlert);
+  const [longest] = every("test with a command", (step) => step.role === "test" && (step.command ?? "") !== "").sort((one, other) => (other.command ?? "").length - (one.command ?? "").length);
+  if (!longest) throw new Error("The recording has no test with a command.");
+  await moment(longest);
+  await expectWholeHostLabel(page, longest);
+
   await page.setViewportSize({ width: 1920, height: 1080 });
-  await page.evaluate((hash) => {
-    window.location.hash = hash;
-  }, `${path.slice(1)}?step=${firstAlert.id}&at=${LATE}&paused=1`);
+  await moment(firstAlert);
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "app-recorded-run.png");
+
+  // The loop for the top of the README, back in the replay page. It comes last because its frames
+  // take minutes, and the app above has to be opened while the address the service printed is
+  // still good. Its first frame, which a still or a link preview shows, is the moment of
+  // watch-first-alert.png, held a second. It goes on to the step after it, held there, then plays
+  // the alerted test from the moment it begins up to that first frame again, so it closes with no
+  // seam. Six tenths of the view's speed, so the lights can be followed.
+  // Leave the app first, so that nothing of it is still asking the service when only the page's own file may be reached.
+  await page.goto("about:blank");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  reachable = own;
+  const alertMoment = { step: firstAlert.id, at: LATE };
+  const loop: LoopPlan = {
+    stretches: [
+      { from: alertMoment, to: { step: afterFirstAlert.id, at: 1 }, holdFirst: 1000, holdLast: 2000 },
+      { from: { step: firstAlert.id, at: 0 }, to: alertMoment },
+    ],
+    fps: 10,
+    pace: 0.6,
+  };
+  const frames = loopFrames(shipped, loop);
+  const pictures = await takeFrames(page, open, frames);
+  // The last frame is the alerted test just before the loop's first frame.
+  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(firstAlert.title);
+  await writeLoop(pictures, frames, 1000, join(folder, "live-view-loop.gif"));
 
   writeFileSync(
     join(folder, "SOURCE.txt"),

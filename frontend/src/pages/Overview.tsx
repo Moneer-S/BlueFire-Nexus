@@ -5,7 +5,7 @@ import { objectiveLabel, shortRunId } from "../lib/run-presentation";
 import { profileChoiceLabel, scopeLabel } from "../lib/run-review-labels";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Boxes, CircleDot, GitBranch, GitCompareArrows, Network, Play, Radio, RotateCcw, ScanLine, Server } from "lucide-react";
-import { newestFirst, newestListed, originWords, ownRuns, pairsInOrder, recordedRunPath, recordedScoreWords, recordedWhere } from "../lib/recorded-runs";
+import { inListOrder, newestListed, originWords, ownRuns, pairsInOrder, recordedRunPath, recordedScoreWords, recordedWhere } from "../lib/recorded-runs";
 import { movedWords, pairChangeWords, pairPath, pairResultWords } from "../lib/recording-pairs";
 import { DefenderLoop } from "../components/DefenderLoop";
 import { Link } from "react-router-dom";
@@ -26,12 +26,13 @@ export function OverviewPage() {
   const activeSummary = useActiveWorkSummary(DEMO_MODE ? undefined : activeWork);
   const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
   const pairs = useQuery({ queryKey: ["recording-deltas"], queryFn: api.recordingDeltas });
-  // The newest of what the Runs screen lists: a run of its own, or a pair whose runs it lists only with the pair.
+  // The newest of what the Runs screen lists: its first run of its own, or a pair whose runs it lists only with the pair.
   const newestRecorded = recordings.data && !pairs.isPending ? newestListed(recordings.data.recordings, pairs.data?.deltas ?? []) : null;
-  // The product's heart leads: the newest run the Runs screen lists on its own, to watch, and the turns of the loop under it.
+  // The product's heart leads: the first run the Runs screen lists on its own (what was shipped with BlueFire before
+  // what was imported), to watch, and the turns of the loop under it.
   // With nothing recorded and nothing compared, the workspace comes first, as it always did.
   const pairList = pairsInOrder(pairs.data?.deltas ?? []);
-  const heroRun = recordings.data && !pairs.isPending ? ownRuns(recordings.data.recordings, pairList)[0] ?? newestFirst(recordings.data.recordings)[0] : undefined;
+  const heroRun = recordings.data && !pairs.isPending ? ownRuns(recordings.data.recordings, pairList)[0] ?? inListOrder(recordings.data.recordings)[0] : undefined;
   const recent = runs.data?.runs.slice(0, 4);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
   const historyIsEmpty = runs.isSuccess && runs.data?.runs.length === 0 && unavailable === 0;
@@ -94,7 +95,7 @@ export function OverviewPage() {
 
       <section className="work-section overview-recent-work" aria-labelledby="recent-work-heading">
         <header className="work-section-heading"><h2 id="recent-work-heading">Recent outcomes</h2><div className="work-section-actions"><Link to="/runs">View all<ArrowRight aria-hidden="true"/></Link><Button variant="ghost" size="small" aria-label="Refresh runs" disabled={runs.isFetching} onClick={() => { void runs.refetch(); }}><RotateCcw aria-hidden="true"/><span className="sr-only">{runs.isFetching ? "Refreshing" : "Refresh runs"}</span></Button></div></header>
-        {newestRecorded && "run" in newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.run.id)}><Radio aria-hidden="true"/><span>Watch the newest recorded run: <strong>{newestRecorded.run.title}</strong><small>{originWords(newestRecorded.run.origin)} · {recordedScoreWords(newestRecorded.run)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
+        {newestRecorded && "run" in newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.run.id)}><Radio aria-hidden="true"/><span>Watch the first recorded run on Runs: <strong>{newestRecorded.run.title}</strong><small>{originWords(newestRecorded.run.origin)} · {recordedScoreWords(newestRecorded.run)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {newestRecorded && "pair" in newestRecorded ? <Link className="overview-recorded" to={pairPath(newestRecorded.pair.id)}><GitCompareArrows aria-hidden="true"/><span>See the newest change to the defense, before against after: <strong>{pairChangeWords(newestRecorded.pair)}</strong><small>{originWords(newestRecorded.pair.origin)} · {(newestRecorded.pair.comparable ? movedWords(newestRecorded.pair) : null) ?? pairResultWords(newestRecorded.pair).replaceAll("`", "")}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
         {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}

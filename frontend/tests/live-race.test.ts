@@ -17,10 +17,10 @@ function sentenceAt(value: Recording, timeline: Timeline, screen: number): strin
 }
 
 /** Three tests on an attack path, at 10, 20 and 30 s; the first step starts the clock. */
-function path(alerts: Alert[], goal?: number, firstStarts = true): Recording {
+function path(alerts: Alert[], goal?: number): Recording {
   const value = recording({
     when: "live",
-    steps: [firstStarts ? step("1", 10, 11) : step("1", null, null), step("2", 20, 21), step("3", 30, 31)],
+    steps: [step("1", 10, 11), step("2", 20, 21), step("3", 30, 31)],
     events: [event("1-1", "1", 10.8), event("3-1", "3", 30.5)],
     alerts,
   });
@@ -114,12 +114,12 @@ describe("the race sentence on an attack path", () => {
       expect(told.goal ?? -1).toBeGreaterThan(told.first ?? Infinity);
     });
 
-    it("holds the goal back for an alert raised before it that fires on screen only after it", () => {
+    it("fires an alert at its moment although it names an event stamped after it, and tells the goal after it", () => {
       // The alert raised at 19.95 s also names an event stamped at 20.5 s, after test 1's recorded
-      // end at 20 s, which is the goal: it fires once that event has arrived, with the clock past the goal.
+      // end at 20 s, which is the goal: it fires at 19.95 s all the same, before the clock reaches the goal.
       const value = early(false, true);
       const timeline = buildTimeline(value);
-      expect(frameAt(timeline, timeline.fire.get("a") ?? 0).real).toBeGreaterThan(timeOf(at(20)));
+      expect(frameAt(timeline, timeline.fire.get("a") ?? 0).real).toBeCloseTo(timeOf(at(19.95)), 3);
       let shown = false;
       for (let screen = 0; screen <= timeline.duration; screen += 0.1) {
         const now = line(value, screen);
@@ -134,15 +134,30 @@ describe("the race sentence on an attack path", () => {
     });
   });
 
-  it("counts the goal from the earliest recorded start when the first step has none", () => {
-    // Test 1 has no start and its event is at 10.8 s; test 2 starts at 20 s, so the goal, 11 s on, is test 3's end at 31 s.
-    expect(end(path([alert("a", "3", 30.5, ["3-1"])], 11, false))).toBe("The defense alerted 500 ms before the attacker reached the goal.");
+  it("names the attacker's goal where the race says it was reached", () => {
+    const value = { ...path([alert("a", "1", 10.8, ["1-1"])], 12), attacker: { kind: "scripted" as const, description: "A script", goal: "Read the domain admin's password." } };
+    expect(end(value)).toBe("The defense alerted 11 s before the attacker reached the goal: Read the domain admin's password.");
   });
 
-  it("gives no time when the first test has no recorded start", () => {
-    const value = path([alert("a", "1", 10.8, ["1-1"])], undefined, false);
-    const timeline = buildTimeline(value);
-    expect(sentenceAt(value, timeline, timeline.duration)).toBe("The defense raised its first alert on test 1.");
+  it("counts the first alert's number, its place on the track and the goal from one moment, the first step's recorded start", () => {
+    // Test 1 starts at 10 s, and a sensor stamped its event at 9.9 s: the track and the clock still count from 10 s.
+    const value = recording({
+      when: "live",
+      steps: [step("1", 10, 20, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 1 } }), step("2", 30, 50)],
+      events: [event("1-1", "1", 9.9), event("2-1", "2", 30.5)],
+      alerts: [alert("a", "1", 9.9, ["1-1"], { raised: at(13) })],
+    });
+    const attack: Recording = { ...value, kind: "attack path", attacker: { ...value.attacker, goal: "Read the file." }, score: { ...value.score, first_alert_seconds: 3, goal_seconds: 40 } };
+    const timeline = buildTimeline(attack);
+    const facts = runFacts(attack, timeline);
+    const first = timeline.firstAlert;
+    if (!first) throw new Error("fixture");
+    expect(facts.start).toBe(timeOf(at(10)));
+    expect(firstAlertClock(attack, facts, first)?.seconds).toBeCloseTo(3, 6);
+    // Where the flag sits on the track, as seconds from its 00:00 start, is the number it gives.
+    expect((first.real - facts.start) / 1000).toBeCloseTo(3, 6);
+    expect(((facts.goal ?? 0) - facts.start) / 1000).toBeCloseTo(40, 6);
+    expect(sentenceAt(attack, timeline, timeline.duration)).toBe("The defense alerted 37 s before the attacker reached the goal: Read the file.");
   });
 });
 
@@ -176,10 +191,10 @@ describe("naming a step", () => {
     kind: "attack path",
   };
 
-  it("uses the step's place, not its order", () => {
+  it("names a test by its count among the tests and any other step by its role, never by its order or its place", () => {
     const [canary, first, second] = value.steps;
     if (!canary || !first || !second) throw new Error("fixture");
-    expect(stepLabel(value, canary)).toBe("step 1");
+    expect(stepLabel(value, canary)).toBe("the canary");
     expect(stepLabel(value, first)).toBe("test 1");
     expect(stepLabel(value, second)).toBe("test 2");
     const timeline = buildTimeline(value);

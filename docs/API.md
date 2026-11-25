@@ -504,10 +504,13 @@ no longer follow the format, which are left out, and `omitted_count` the
 imported files after the 200th, which are not read.
 
 `GET /api/v1/recordings/{recording_id}` returns
-`{"schema_version": "bluefire.recording-entry.v1", "summary": {...}, "recording": {...}}`
+`{"schema_version": "bluefire.recording-entry.v1", "summary": {...}, "sha256": "...", "recording": {...}}`
 with the whole recording as it was shipped or imported. An id is 1 to 64
 letters, digits, `-` or `_`; any other is `400 invalid_recording_id`, and an
-unknown one `404 recording_not_found`. This is the first file kept for the id.
+unknown one `404 recording_not_found`. This is the first file kept for the id,
+and `sha256` is the SHA-256 of that file, by which a comparison names it and
+under which the next route serves the same file. Another file kept beside it is
+reached only by its own SHA-256. A recording that is still running is replaced as it grows, so it has no `sha256`.
 
 `GET /api/v1/recordings/{recording_id}/files/{sha256}` returns one kept file of
 the id by the SHA-256 of the file, the first or another evaluation of the same
@@ -542,7 +545,15 @@ answered by the shipped file (`created: false`, `sha256` the shipped file's). A
 name the new file would take that is held by something else is `409
 recording_unreadable`. A recording that does not follow the format, or
 whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
-20 problems in plain words, and the message starts with the first. Imports into
+20 problems in plain words, and the message starts with the first. The Runs
+screen and `bluefire recordings import` both send a file as `recording_file`,
+and its bytes are read as strictly as a file: bytes that are not strict UTF-8
+JSON (a key twice in one object, `NaN` or `Infinity`, a byte order mark, bytes
+that are not UTF-8, more after the recording's object) are `422
+recording_invalid`, with the same reason whichever way the file came in. A file
+over 8 MiB is refused the same way, also when its body is over the route's
+limit: that one is answered from its `Content-Length` alone. A body that is not
+JSON is `400 invalid_json`. Imports into
 one runs directory, from the server or the command line, take one lock in turn;
 when it cannot be had within five seconds the import is
 `503 recordings_busy` and nothing is stored.

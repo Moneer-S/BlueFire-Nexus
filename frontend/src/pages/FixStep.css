@@ -1,0 +1,664 @@
+/* The page for fixing one step: the quiet line under the app's header, then
+   the live view's dark stage holding one column, as the page of a pair does.
+   It takes its palette, type, outcome words and match chips from live.css (.lv)
+   and its sections, rule cards and verdict lines from ComparedRuns.css (.cmp-). */
+
+.workbench-shell #main-content:has(> .fx) { max-width: none; padding: 0; }
+
+.fx {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - var(--topbar-height, 60px));
+  animation: page-in 220ms ease both;
+}
+.fx.is-message { justify-content: flex-start; }
+
+.lv.fx-view {
+  display: block;
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.fx-page { max-width: 1080px; }
+
+.fx-page code {
+  font-family: var(--lv-mono);
+  font-size: 0.9em;
+  color: var(--lv-text-soft);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- the lines and cards this page shares with the page of a pair ----------
+   The page of a pair now has a look of its own; this page keeps the claim,
+   sections, step cards and links it was drawn with, here and only for itself. */
+
+.cmp-page.fx-page { gap: 26px; padding: 30px var(--lv-gutter) 64px; }
+.cmp-page.fx-page a.fx-other { color: inherit; }
+.cmp-page.fx-page .fx-tried-what a { color: var(--lv-text); }
+
+.fx-page .cmp-claim { display: flex; flex-direction: column; gap: 12px; }
+
+.fx-page .cmp-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.fx-page .cmp-kicker span {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--lv-blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.35);
+}
+
+.fx-page .cmp-claim h1 {
+  margin: 0;
+  font-size: clamp(24px, 1.2vw + 14px, 34px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.012em;
+  color: var(--lv-text);
+}
+
+.fx-page .cmp-arrow { width: 15px; height: 15px; flex: none; color: var(--lv-muted); }
+
+.fx-page .cmp-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--lv-line);
+}
+
+.fx-page .cmp-sec > h2,
+.fx-page .cmp-sec > h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--lv-text-soft);
+}
+
+.fx-page .cmp-sec > h3 { margin-top: 6px; font-size: 11px; color: var(--lv-muted-strong); }
+
+.fx-page .cmp-sec > h2 span,
+.fx-page .cmp-sec > h3 span {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--lv-muted);
+}
+
+.fx-page .cmp-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+
+.fx-page .cmp-step {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(2, 9, 19, 0.45);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.fx-page .cmp-step.is-better { box-shadow: inset 0 0 0 1px rgba(40, 217, 176, 0.35); }
+.fx-page .cmp-step.is-worse { box-shadow: inset 0 0 0 1px rgba(255, 110, 121, 0.4); }
+.fx-page .cmp-step.is-no-verdict { box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.3); }
+
+.fx-page .cmp-step-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.fx-page .cmp-move { display: inline-flex; flex-direction: row; align-items: center; gap: 8px; min-width: auto; padding-top: 0; }
+.fx-page .cmp-move .lv-word { font-size: 11px; }
+.fx-page .cmp-move small { font-size: 11.5px; color: var(--lv-violet); }
+
+.fx-page .cmp-verdict { margin: 8px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--lv-muted-strong); }
+.fx-page .cmp-verdict code { font-family: var(--lv-mono); font-size: 12.5px; color: var(--lv-text-soft); }
+
+.fx-page .cmp-opens { display: flex; flex-wrap: wrap; gap: 10px; margin: 2px 0 0; }
+
+.cmp-page.fx-page .cmp-open {
+  align-self: flex-start;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 4px 11px;
+  border-radius: 6px;
+  color: var(--lv-blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.45);
+}
+
+.cmp-page.fx-page .cmp-open:hover { color: var(--lv-text); }
+.fx-page .cmp-open:focus-visible { outline: 2px solid var(--lv-blue-soft); outline-offset: 2px; }
+
+.fx-page .cmp-rule-file { font-family: var(--lv-mono); }
+.fx-page .cmp-rule-text pre { max-height: 15rem; }
+
+/* ---------- the step ---------- */
+
+/* The heading takes focus when the page opens, for a screen reader; it is no stop of the keyboard's, so it draws no ring. */
+.fx-step h1:focus { outline: none; }
+
+.cmp-kicker span.fx-tech {
+  color: var(--lv-muted-strong);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+}
+
+.fx-plain {
+  max-width: 52em;
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--lv-text-soft);
+}
+
+.fx-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin: 2px 0 0;
+}
+
+.fx-happened {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: 14px;
+  color: var(--lv-text-soft);
+}
+
+.fx-happened small,
+.fx-labword {
+  font-size: 13px;
+  color: var(--lv-muted);
+}
+
+.fx-labword b { font-weight: 600; color: var(--lv-violet); }
+
+/* ---------- what was recorded ---------- */
+
+/* How we know: the recording's own words and each sensor's settings, one quiet line until it is opened. */
+.fx-know {
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--lv-muted);
+}
+
+.fx-know summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--lv-blue-soft);
+}
+
+.fx-know dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  max-width: 70em;
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+
+.fx-know dl > div { display: contents; }
+.fx-know dt { color: var(--lv-muted); }
+.fx-know dd { margin: 0; color: var(--lv-text-soft); }
+.fx-know q { quotes: "\201C" "\201D"; }
+.fx-know code { font-size: 11.5px; overflow-wrap: anywhere; }
+
+.fx-sensors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.fx-sensor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(13, 34, 53, 0.9), rgba(8, 26, 42, 0.85));
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+/* A sensor with events of the step takes the whole row, so that its table has room; one without sits on a row of its own. */
+.fx-sensor.has-events { grid-column: 1 / -1; }
+
+.fx-sensor header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.fx-sensor header .lv-dot { align-self: center; }
+
+.fx-sensor h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--lv-text);
+}
+
+.fx-version {
+  font-family: var(--lv-mono);
+  font-size: 12px;
+  color: var(--lv-muted);
+}
+
+.fx-count {
+  margin-left: auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.fx-count.is-gap { color: var(--lv-red); }
+
+.fx-records {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--lv-muted-strong);
+}
+
+.fx-watches {
+  font-size: 12.5px;
+  color: var(--lv-muted-strong);
+}
+
+.fx-watches summary {
+  cursor: pointer;
+  color: var(--lv-blue-soft);
+}
+
+.fx-watches ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fx-watches ul ul { margin: 2px 0 4px 14px; }
+.fx-watches code { font-size: 11.5px; color: var(--lv-muted-strong); }
+.fx-watches .fx-key { color: var(--lv-text-soft); }
+
+.fx-events {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.fx-events th,
+.fx-events td {
+  padding: 5px 10px 5px 0;
+  border-top: 1px solid rgba(93, 151, 194, 0.12);
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.fx-events thead th {
+  border-top: 0;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.fx-time {
+  font-family: var(--lv-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--lv-muted);
+}
+
+.fx-kind { white-space: nowrap; color: var(--lv-muted-strong); }
+
+.fx-text { width: 100%; }
+.fx-text > code { font-size: 12.5px; color: var(--lv-text); }
+
+.fx-text small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--lv-muted);
+}
+
+.fx-text small code { font-size: 11.5px; color: var(--lv-muted-strong); }
+
+.fx-tied { font-size: 11.5px; color: var(--lv-muted); }
+
+.fx-more { align-self: flex-start; font-size: 12px; }
+
+.fx-others {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.fx-others h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--lv-muted-strong);
+}
+
+.fx-others h3 span {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--lv-muted);
+}
+
+.fx-others ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fx-other {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) 120px 80px;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.fx-other:hover { background: rgba(123, 202, 255, 0.06); }
+.fx-other .lv-ow { justify-self: start; }
+
+.fx-other-label {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--lv-muted);
+}
+
+.fx-other-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  color: var(--lv-text-soft);
+}
+
+.fx-other-events {
+  font-size: 12px;
+  text-align: right;
+  color: var(--lv-muted);
+}
+
+/* ---------- where to start ---------- */
+
+.fx-lead {
+  max-width: 62em;
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--lv-text-soft);
+}
+
+.fx-lead b { font-weight: 600; color: var(--lv-text); }
+
+.fx-why {
+  max-width: 62em;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--lv-muted-strong);
+}
+
+.fx-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fx-rules h3 {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--lv-muted-strong);
+}
+
+.fx-rules > ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fx-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(8, 26, 42, 0.7);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.fx-rule-line,
+.fx-rule-judged {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.fx-rule-line b { font-weight: 600; color: var(--lv-text); }
+.fx-rule-meta { font-size: 12.5px; color: var(--lv-muted); }
+
+.fx-declined {
+  max-width: 70em;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--lv-muted);
+}
+
+.fx-declined b { font-weight: 600; color: var(--lv-muted-strong); }
+
+/* ---------- the draft ---------- */
+
+.fx-draft-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lv-text-soft);
+}
+
+.fx-draft-text {
+  width: 100%;
+  min-height: 11rem;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 6px;
+  resize: vertical;
+  background: rgba(3, 14, 24, 0.75);
+  box-shadow: inset 0 0 0 1px var(--lv-line-strong);
+  font-family: var(--lv-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--lv-text);
+  color-scheme: dark;
+}
+
+.fx-draft-text:focus-visible { outline: 2px solid var(--lv-blue-soft); outline-offset: 2px; }
+
+.fx-kept {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--lv-muted-strong);
+}
+
+.fx-kept.is-problem { color: var(--lv-amber-soft); }
+
+.fx-file,
+.fx-note {
+  max-width: 70em;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--lv-muted);
+}
+
+.fx-note.is-problem { color: var(--lv-amber-soft); }
+
+/* ---------- the model's place ---------- */
+
+.fx-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 18px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: rgba(2, 9, 19, 0.35);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+  font-size: 13.5px;
+  color: var(--lv-muted-strong);
+}
+
+.fx-model p { margin: 0; }
+
+.fx-model a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--lv-blue-soft);
+  text-decoration: none;
+}
+
+.fx-model a svg { width: 13px; height: 13px; }
+.fx-model a:hover { color: var(--lv-text); }
+
+/* ---------- running it again ---------- */
+
+.fx-again ol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 62em;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--lv-text-soft);
+}
+
+.fx-again li::marker { color: var(--lv-muted); }
+
+/* ---------- what was already tried ---------- */
+
+.fx-tried-what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.fx-tried-what a {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--lv-text);
+  text-decoration: none;
+}
+
+.fx-tried-what a:hover { text-decoration: underline; text-decoration-color: var(--lv-line-strong); text-underline-offset: 3px; }
+.fx-tried-how { color: var(--lv-muted); }
+.fx-tried-what .recorded-run-origin.is-shipped { color: var(--lv-blue-soft); }
+.fx-tried-what .recorded-run-origin.is-imported { color: var(--lv-amber-soft); }
+
+.fx-where {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--lv-muted-strong);
+}
+
+.fx-tie { margin-left: 4px; font-size: 11.5px; color: var(--lv-muted); white-space: nowrap; }
+.fx-tie code { font-size: 11px; color: var(--lv-muted); }
+
+.fx-tried .cmp-verdict.fx-tried-verdict { margin-top: 6px; }
+.fx-tried .cmp-opens { margin-top: 8px; }
+
+/* The before and after keep to the right edge when a long title pushes them onto a line of their own. */
+.fx-tried .cmp-move { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+.fx-tried .cmp-move .lv-word { white-space: nowrap; }
+
+.fx-quoted {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--lv-muted);
+}
+
+.fx-quoted summary { cursor: pointer; color: var(--lv-blue-soft); }
+.fx-quoted p { max-width: 70em; margin: 6px 0 0; line-height: 1.55; }
+
+@media (max-width: 640px) {
+  .fx-other { grid-template-columns: minmax(0, 1fr) auto; }
+  .fx-other-label,
+  .fx-other-events { display: none; }
+  .fx-events thead { display: none; }
+  .fx-events tr { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; padding: 5px 0; border-top: 1px solid rgba(93, 151, 194, 0.12); }
+  .fx-events td { padding: 0; border: 0; }
+  .fx-events .fx-text { grid-column: 1 / -1; }
+  .fx-events .fx-tied { display: none; }
+  .fx-know dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .fx-know dd { margin-bottom: 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) { .fx { animation: none; } }

@@ -75,7 +75,7 @@ const ScrubberCells = memo(
           const state = index < current ? " is-past" : index === current ? " is-now" : "";
           const role = item.step.role === "test" ? "" : isCheck(item.step.role) ? " is-short is-check" : " is-short";
           const told = index < current || (index === current && revealed) ? ` is-${outcomeClass(outcomeAt(timeline, item, time))}` : "";
-          return <div key={item.step.id} className={`lv-cell${told}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))} (${item.step.role}): ${item.step.title}`} />;
+          return <div key={item.step.id} className={`lv-cell${told}${role}${state}`} style={{ left: `${(index / Math.max(1, count)) * 100}%` }} title={`${capital(stepLabel(recording, item.step))}: ${item.step.title}`} />;
         })}
       </div>
     );
@@ -106,6 +106,9 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
   const segment = timeline.segments[current];
   const longest = useMemo(() => Math.max(0, maxOf(timeline.gaps.map((gap) => (gap.realEnd - gap.realStart) / 1000))), [timeline]);
   const shortRoles = [...new Set(recording.steps.filter((step) => step.role !== "test").map((step) => (step.role === "hardened" || step.role === "variant" ? "reruns" : step.role)))];
+  // The legend in plain words: canary and control steps check the lab, reruns repeat a test.
+  const shortWords = [...new Set(shortRoles.map((role) => (role === "canary" || role === "control" ? "checks" : role === "reruns" ? "repeats" : role)))];
+  const shortList = shortWords.length > 1 ? `${shortWords.slice(0, -1).join(", ")} and ${shortWords[shortWords.length - 1] ?? ""}` : (shortWords[0] ?? "");
   const checks = recording.steps.some((step) => isCheck(step.role));
   const noEffect = recording.steps.some((step) => !isCheck(step.role) && (step.outcome === "no effect" || step.outcome === "inconclusive"));
   const head = evenPosition(timeline, time);
@@ -132,16 +135,21 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
     const target = timeline.segments[Math.min(count - 1, Math.max(0, index))];
     if (target) onSeek(target.start);
   };
+  // A move on never goes back: past the last step's start it goes to the end of the run.
+  const stepOn = (index: number) => {
+    const target = timeline.segments[index];
+    onSeek(target && target.start > time ? target.start : duration);
+  };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const index = Math.max(0, current);
     let handled = true;
     if (event.key === "ArrowRight" || event.key === "ArrowUp") {
       if (event.shiftKey) onSeek(Math.min(duration, time + 1));
-      else stepTo(index + 1);
+      else stepOn(index + 1);
     } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
       if (event.shiftKey) onSeek(Math.max(0, time - 1));
       else stepTo(segment && time - segment.start > 0.4 ? index : index - 1);
-    } else if (event.key === "PageUp") stepTo(index + 10);
+    } else if (event.key === "PageUp") stepOn(Math.min(count - 1, index + 10));
     else if (event.key === "PageDown") stepTo(index - 10);
     else if (event.key === "Home") onSeek(0);
     else if (event.key === "End") onSeek(duration);
@@ -161,7 +169,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(time)}
-        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count}, ${clockTime(real)} UTC` : "No steps"}
+        aria-valuetext={segment ? `${capital(stepLabel(recording, segment.step))}, ${revealed ? outcomeWords(outcomeAt(timeline, segment, time)) : "running"}: ${segment.step.title}, ${segment.index + 1} of ${count} steps, ${clockTime(real)} UTC` : "No steps"}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -209,9 +217,9 @@ export function Scrubber({ recording, timeline, time, real, revealed, onSeek }: 
         </span>
         <span className="lv-legend-sep" />
         {shortRoles.length > 0 ? (
-          <span title={checks ? "Canary and control steps check the lab itself and are drawn as outlines: solid when they alerted, dashed otherwise. None of these is in the score of tests." : "None of these is in the score of tests."}>
+          <span title={`Short marks, not tests: ${shortRoles.join(", ")}.${checks ? " Canary and control steps check the lab itself and are drawn as outlines: solid when they alerted, dashed otherwise." : ""}${shortRoles.includes("reruns") ? " Reruns repeat a test, on a hardened host or with other input arguments." : ""} None of these is in the score of tests.`}>
             <i className="is-short" />
-            short: {shortRoles.join(", ")}
+            short: {shortList}
           </span>
         ) : null}
         <span title={longest > 0 ? `Every step gets one bar. Silences between steps play as a short beat; the longest, ${elapsed(longest, 0)}, plays as ${PLAYBACK_RULE.beat} s.` : "Every step gets one bar."}>silences shortened</span>

@@ -68,6 +68,12 @@ function small(id: string): Value {
   };
 }
 
+/** Adds a third step, seen, after the two of `small`. */
+function third(value: Value): void {
+  (value.steps as Value[]).push({ ...part(value, "steps", 1), id: "3", order: 3, title: "Show the user", started: "2026-11-17T17:07:23.000Z", ended: "2026-11-17T17:07:23.500Z", first_event: "2026-11-17T17:07:23.100Z" });
+  (value.events as Value[]).push({ ...part(value, "events", 2), id: "3-1", step: "3", time: "2026-11-17T17:07:23.100Z", text: "id" });
+}
+
 function part(value: Value, ...path: (string | number)[]): Value {
   let at: unknown = value;
   for (const key of path) {
@@ -98,7 +104,7 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
     },
   },
   {
-    name: "a plan: hosts and sensors, and no step yet",
+    name: "a finished run with hosts and sensors and no step",
     answer: "kept and plays",
     make: (value) => {
       Object.assign(value, { steps: [], events: [], alerts: [], score: { steps: 0, took_effect: 0, alerted: 0, seen: 0, unseen: 0, stopped: 0 } });
@@ -240,6 +246,234 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
     answer: "kept while running",
     make: (value) => {
       delete part(value, "source").finished;
+    },
+  },
+  {
+    name: "what real recordings hold: events stamped a moment outside their step, and a live alert that names an event after its moment",
+    answer: "kept and plays",
+    make: (value) => {
+      value.kind = "attack path";
+      Object.assign(part(value, "attacker"), { goal: "Read the history file of another account." });
+      Object.assign(part(value, "network", "detectors", 0), { when: "live" });
+      Object.assign(part(value, "events", 0), { time: "2026-11-17T17:07:20.995Z" });
+      Object.assign(part(value, "events", 1), { time: "2026-11-17T17:07:21.700Z" });
+      Object.assign(part(value, "steps", 0), { first_event: "2026-11-17T17:07:20.995Z", first_alert: "2026-11-17T17:07:21.200Z" });
+      Object.assign(part(value, "alerts", 0), { time: "2026-11-17T17:07:20.995Z", raised: "2026-11-17T17:07:21.200Z", events: ["1-1", "1-2"] });
+      value.ordinary = { events: 40, matches: [{ rule: "Sudo Use", level: "high", count: 3 }] };
+      Object.assign(part(value, "score"), { false_alerts: 1, first_alert_seconds: 0.2, goal_seconds: 1.5 });
+    },
+  },
+  {
+    name: "a step that ends before it starts",
+    answer: "refused",
+    make: (value) => {
+      part(value, "steps", 0).ended = "2026-11-17T17:07:20.900Z";
+    },
+  },
+  {
+    name: "steps whose starts go back in time",
+    answer: "refused",
+    make: (value) => {
+      part(value, "steps", 1).started = "2026-11-17T17:07:20.500Z";
+    },
+  },
+  {
+    name: "a step that starts before the step before it has ended",
+    answer: "refused",
+    make: (value) => {
+      part(value, "steps", 1).started = "2026-11-17T17:07:21.400Z";
+    },
+  },
+  {
+    name: "an event of a step stamped inside the next step",
+    answer: "refused",
+    make: (value) => {
+      part(value, "events", 1).time = "2026-11-17T17:07:22.050Z";
+    },
+  },
+  {
+    name: "an alert whose moment is earlier than the first event it names",
+    answer: "refused",
+    make: (value) => {
+      part(value, "alerts", 0).time = "2026-11-17T17:07:21.050Z";
+      part(value, "steps", 0).first_alert = "2026-11-17T17:07:21.050Z";
+    },
+  },
+  {
+    name: "an alert on another host than the event it names",
+    answer: "refused",
+    make: (value) => {
+      (part(value, "network").hosts as Value[]).push({ id: "other", name: "other", role: "another host", kind: "host" });
+      part(value, "alerts", 0).host = "other";
+    },
+  },
+  {
+    name: "a number in an event's fields past 2^53, written as a float",
+    answer: "refused",
+    make: (value) => {
+      part(value, "events", 0).fields = { size: 1e300 };
+    },
+  },
+  {
+    name: "a number in an event's fields at 2^53",
+    answer: "kept and plays",
+    make: (value) => {
+      part(value, "events", 0).fields = { size: 2 ** 53, ratio: -0.5 };
+    },
+  },
+  {
+    name: "direction marks and overrides in a step's command, output and plain sentence, which are free text",
+    answer: "kept and plays",
+    make: (value) => {
+      Object.assign(part(value, "steps", 0), { command: "cp x /tmp/\u202Etxt.exe\u202C", output: "\u2067done\u2069", plain: "Copies a file whose name reads backwards\u200F." });
+    },
+  },
+  {
+    name: "an attack path that begins with a canary",
+    answer: "refused",
+    make: (value) => {
+      value.kind = "attack path";
+      Object.assign(part(value, "attacker"), { goal: "Read the history file of another account." });
+      part(value, "steps", 0).role = "canary";
+      Object.assign(part(value, "score"), { steps: 1, took_effect: 1, alerted: 0 });
+    },
+  },
+  {
+    name: "an attack path whose first step has no start",
+    answer: "refused",
+    make: (value) => {
+      value.kind = "attack path";
+      Object.assign(part(value, "attacker"), { goal: "Read the history file of another account." });
+      delete part(value, "steps", 0).started;
+    },
+  },
+  {
+    name: "a goal time and no goal",
+    answer: "refused",
+    make: (value) => {
+      value.kind = "attack path";
+      Object.assign(part(value, "score"), { goal_seconds: 1.5 });
+    },
+  },
+  {
+    name: "a goal on a test list",
+    answer: "refused",
+    make: (value) => {
+      Object.assign(part(value, "attacker"), { goal: "Read the history file of another account." });
+    },
+  },
+  {
+    name: "false alerts without ordinary activity",
+    answer: "refused",
+    make: (value) => {
+      part(value, "score").false_alerts = 7;
+    },
+  },
+  {
+    name: "one rule listed twice in ordinary activity",
+    answer: "refused",
+    make: (value) => {
+      value.ordinary = { events: 100, matches: [{ rule: "Sudo Use", level: "high", count: 1 }, { rule: "Sudo Use", level: "high", count: 1 }] };
+      part(value, "score").false_alerts = 1;
+    },
+  },
+  {
+    name: "a rule that matched more ordinary events than there were",
+    answer: "refused",
+    make: (value) => {
+      value.ordinary = { events: 0, matches: [{ rule: "Sudo Use", level: "high", count: 1000000 }] };
+      part(value, "score").false_alerts = 1;
+    },
+  },
+  {
+    name: "a rerun compared with itself",
+    answer: "refused",
+    make: (value) => {
+      Object.assign(part(value, "steps", 1), { role: "hardened", compared_with: "2" });
+      Object.assign(part(value, "score"), { steps: 1, took_effect: 1, seen: 0 });
+    },
+  },
+  {
+    name: "a repository without its owner",
+    answer: "refused",
+    make: (value) => {
+      part(value, "source").repository = "example";
+    },
+  },
+  {
+    name: "a C1 control in a step's title",
+    answer: "refused",
+    make: (value) => {
+      part(value, "steps", 0).title = "Clear\u0085history";
+    },
+  },
+  {
+    name: "a direction override in a host's name",
+    answer: "refused",
+    make: (value) => {
+      part(value, "network", "hosts", 0).name = "runner\u202e";
+    },
+  },
+  {
+    name: "a direction isolate in a rule's title",
+    answer: "refused",
+    make: (value) => {
+      part(value, "alerts", 0, "rule").title = "History\u2066 File";
+    },
+  },
+  {
+    name: "a line separator in an event's text",
+    answer: "refused",
+    make: (value) => {
+      part(value, "events", 0).text = "rm\u2028history";
+    },
+  },
+  {
+    name: "a control character in a key",
+    answer: "refused",
+    make: (value) => {
+      part(value, "events", 0).fields = { "a\u0085b": "x" };
+    },
+  },
+  {
+    name: "a NUL in a step's command, a text the other control rules leave free",
+    answer: "refused",
+    make: (value) => {
+      part(value, "steps", 0).command = "rm\u0000x";
+    },
+  },
+  {
+    name: "compared_with on a step of role test",
+    answer: "refused",
+    make: (value) => {
+      part(value, "steps", 1).compared_with = "1";
+    },
+  },
+  {
+    name: "a rerun compared with a later step",
+    answer: "refused",
+    make: (value) => {
+      third(value);
+      Object.assign(part(value, "steps", 1), { role: "variant", compared_with: "3" });
+    },
+  },
+  {
+    name: "a rerun compared with another rerun",
+    answer: "refused",
+    make: (value) => {
+      third(value);
+      Object.assign(part(value, "steps", 1), { role: "variant", compared_with: "1" });
+      Object.assign(part(value, "steps", 2), { role: "variant", compared_with: "2" });
+      Object.assign(part(value, "score"), { steps: 1, took_effect: 1, seen: 0 });
+    },
+  },
+  {
+    name: "an attack path with a goal time and no step",
+    answer: "refused",
+    make: (value) => {
+      value.kind = "attack path";
+      Object.assign(part(value, "attacker"), { goal: "Read the history file of another account." });
+      Object.assign(value, { steps: [], events: [], alerts: [], score: { steps: 0, took_effect: 0, alerted: 0, seen: 0, unseen: 0, stopped: 0, goal_seconds: 5 } });
     },
   },
   {

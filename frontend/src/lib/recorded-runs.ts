@@ -2,22 +2,31 @@
 // the Runs screen lists them and the recorded run page plays them.
 
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
+import type { Recording } from "../live/recording";
 import { count, day, plural, span } from "../live/format";
 import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
-/** Newest first, by when the run started; the service lists shipped recordings before imported ones. */
-export function newestFirst(recordings: readonly RecordingSummary[]): RecordingSummary[] {
-  return [...recordings].sort((a, b) => Date.parse(b.source.started) - Date.parse(a.source.started));
+/** How often a recording that is still running is asked for again, by every page that shows one. */
+export const RUNNING_POLL_MS = 4_000;
+
+/**
+ * The runs shipped with BlueFire first, then the imported ones, whatever their
+ * dates, each newest first by when the run started: an imported copy never
+ * takes a shipped run's place.
+ */
+export function inListOrder(recordings: readonly RecordingSummary[]): RecordingSummary[] {
+  const rank = (summary: RecordingSummary) => (summary.origin.kind === "shipped" ? 0 : 1);
+  return [...recordings].sort((a, b) => rank(a) - rank(b) || Date.parse(b.source.started) - Date.parse(a.source.started));
 }
 
 /**
- * The recordings the Runs screen lists on their own, newest first: a recording
+ * The recordings the Runs screen lists on their own, in list order: a recording
  * that is one side of a listed pair is listed with its pair instead, so that two
  * near-identical runs of one pair do not read as two unrelated runs.
  */
 export function ownRuns(recordings: readonly RecordingSummary[], pairs: readonly DeltaSummary[]): RecordingSummary[] {
   const paired = new Set(pairs.flatMap((pair) => [pair.before.id, pair.after.id]));
-  return newestFirst(recordings).filter((summary) => !paired.has(summary.id));
+  return inListOrder(recordings).filter((summary) => !paired.has(summary.id));
 }
 
 /** When the later of a pair's two runs started, from the recordings the service keeps. */
@@ -26,14 +35,20 @@ function pairStarted(pair: DeltaSummary): number {
 }
 
 /**
- * The newest thing the Runs screen lists: a recorded run of its own, or a pair
- * of runs when the pair's later run started after every run listed on its own.
+ * The newest thing the Runs screen lists: the first recorded run it lists on its
+ * own, or a pair of runs when the pair's later run started after that run. What
+ * was shipped with BlueFire goes before what was imported, whatever the dates,
+ * so an imported pair never takes a shipped run's place, nor an imported run a
+ * shipped pair's.
  */
 export function newestListed(recordings: readonly RecordingSummary[], pairs: readonly DeltaSummary[]): { run: RecordingSummary } | { pair: DeltaSummary } | null {
+  const rank = (origin: Pick<RecordingOrigin, "kind">) => (origin.kind === "shipped" ? 0 : 1);
   const [run] = ownRuns(recordings, pairs);
-  const [pair] = [...pairs].sort((a, b) => pairStarted(b) - pairStarted(a));
-  if (pair && (!run || pairStarted(pair) > Date.parse(run.source.started))) return { pair };
-  return run ? { run } : null;
+  const [pair] = [...pairs].sort((a, b) => rank(a.origin) - rank(b.origin) || pairStarted(b) - pairStarted(a));
+  if (!pair) return run ? { run } : null;
+  if (!run) return { pair };
+  const byOrigin = rank(pair.origin) - rank(run.origin);
+  return byOrigin < 0 || (byOrigin === 0 && pairStarted(pair) > Date.parse(run.source.started)) ? { pair } : { run };
 }
 
 /** "Test list" or "Attack path". */
@@ -55,9 +70,9 @@ function onEnvironment(environment: string): string {
   return `on ${/^[aeiou]/i.test(first) ? "an" : "a"} ${environment}`;
 }
 
-/** The origin in a word or three: "Shipped with BlueFire" or "Imported". */
+/** The origin in a few words: "Shipped with BlueFire" or "Imported, not verified by BlueFire". */
 export function originWords(origin: Pick<RecordingOrigin, "kind">): string {
-  return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported";
+  return origin.kind === "shipped" ? "Shipped with BlueFire" : "Imported, not verified by BlueFire";
 }
 
 /**
@@ -133,6 +148,16 @@ export function momentFromSearch(query: URLSearchParams): NonNullable<LiveViewPr
   const select = query.get("select");
   if (select) initial.select = select;
   return initial;
+}
+
+/**
+ * Whether the moment to open at names a step, or a step to choose, that the
+ * recording does not hold. The live view then opens at the start of the run, or
+ * on the whole run, and says so in a line under the title.
+ */
+export function namesMissingStep(recording: Pick<Recording, "steps">, initial: LiveViewProps["initial"]): boolean {
+  const held = new Set(recording.steps.map((step) => step.id));
+  return (initial?.step !== undefined && !held.has(initial.step)) || (initial?.select !== undefined && !held.has(initial.select));
 }
 
 /**

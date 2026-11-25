@@ -7,7 +7,8 @@ import type { Recording } from "./recording";
 import type { Timeline } from "./playback";
 import type { RunFacts } from "./moment";
 import { firstAlertClock } from "./moment";
-import { capital, day, elapsed, falseAlertsOf, plural, runLink, stepLabel } from "./format";
+import { capital, day, elapsed, ordinaryAlertEvents, plural, runLink, sharedUnseenWords, stepLabel, stepShortName } from "./format";
+import { FreeText } from "./FreeText";
 import { seenBreakdown } from "./analyse";
 
 interface RunSummaryProps {
@@ -31,8 +32,9 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
   // The rule of the flagged alert itself: the counting published match that fires first.
   const firstRule = first?.alert.rule.title;
   const firstClock = first ? firstAlertClock(recording, facts, first) : null;
-  const firstFalse = firstRule ? falseAlertsOf(recording, firstRule) : 0;
+  const firstFalse = firstRule ? ordinaryAlertEvents(recording, firstRule) : 0;
   const seen = useMemo(() => seenBreakdown(recording), [recording]);
+  const unseenBasis = useMemo(() => sharedUnseenWords(recording), [recording]);
   const unseen = useMemo(() => recording.steps.filter((step) => step.role === "test" && step.outcome === "unseen"), [recording]);
   const hardened = useMemo(() => {
     const steps = recording.steps.filter((step) => step.role === "hardened");
@@ -49,7 +51,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
         <em>{score.alerted}</em> of {plural(score.steps, "test")} alerted
       </h3>
       <p className="lv-sum-lead">
-        {[`${score.seen} ${score.seen === 1 ? "was" : "were"} recorded with no alert`, score.unseen > 0 ? `${score.unseen} left nothing a sensor recorded` : "", score.took_effect < score.steps ? `${score.steps - score.took_effect} did not take effect` : ""].filter(Boolean).join(", ")}
+        {[`${score.seen} ${score.seen === 1 ? "was" : "were"} recorded with no alert`, score.unseen > 0 ? `${score.unseen} ${score.unseen === 1 ? "was" : "were"} unseen` : "", score.took_effect < score.steps ? `${score.steps - score.took_effect} did not take effect` : ""].filter(Boolean).join(", ")}
         {hardened.total > 0 ? `; ${hardened.stopped} of ${plural(hardened.total, "hardened rerun")} ${hardened.stopped === 1 ? "was" : "were"} stopped` : ""}.
       </p>
       {unseen.length > 0 ? (
@@ -63,10 +65,12 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
               </button>
             </span>
           ))}
-          . Open it to start fixing.
+          {unseenBasis ? `: ${unseenBasis}` : ""}. Open {unseen.length === 1 ? "it" : "one"} to start fixing.
         </p>
       ) : null}
-      <p className="lv-dt-plain lv-sum-quiet">{recording.attacker.description}</p>
+      <p className="lv-dt-plain lv-sum-quiet">
+        <FreeText text={recording.attacker.description} />
+      </p>
 
       {/* The score itself is in the header and the headline; this panel says what lies behind it. */}
       <dl className="lv-dt-facts">
@@ -78,7 +82,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
           <>
             <dt>Seen, no alert</dt>
             <dd>
-              {[seen.review > 0 ? `${seen.review} with a published rule for review` : "", seen.launcher > 0 ? `${seen.launcher} matched on the launcher line only` : "", seen.none > 0 ? `${seen.none} matched by no published rule` : ""].filter(Boolean).join(", ")}
+              {[seen.review > 0 ? `${seen.review} with a published rule for review` : "", seen.info > 0 ? `${seen.info} with only informational matches` : "", seen.launcher > 0 ? `${seen.launcher} matched on the launcher line only` : "", seen.none > 0 ? `${seen.none} matched by no published rule` : ""].filter(Boolean).join(", ")}
             </dd>
           </>
         ) : null}
@@ -102,7 +106,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
                     <span key={item.id}>
                       {index > 0 ? ", " : ""}
                       <button type="button" className="lv-link-button" onClick={() => onSelect(item.id)}>
-                        {stepLabel(recording, item)}
+                        {stepShortName(recording, item)}
                       </button>
                     </span>
                   ))}
@@ -123,17 +127,20 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
               <small>
                 {capital(plural(first.testsBefore, "other test"))} had started when it fired.
                 {firstFalse > 0 ? ` The same rule also alerted on ${plural(firstFalse, "event")} of ordinary activity.` : ""}
-                {other ? ` The ${other.step.role}, ${stepLabel(recording, other.step)}, alerted at ${elapsed((other.real - facts.start) / 1000)} into the run${other.step.role === "canary" ? ", as expected: it is built to be caught" : ""}.` : ""}
+                {other ? ` ${capital(stepLabel(recording, other.step))} alerted at ${elapsed((other.real - facts.start) / 1000)} into the run${other.step.role === "canary" ? ", as expected: it is built to be caught" : ""}.` : ""}
               </small>
             </>
           ) : (
             "no test raised an alert"
           )}
         </dd>
-        {score.goal_seconds !== undefined ? (
+        {recording.kind === "attack path" && recording.attacker.goal !== null ? (
           <>
             <dt>Goal</dt>
-            <dd>reached {elapsed(score.goal_seconds)} after the first step</dd>
+            <dd>
+              <FreeText text={recording.attacker.goal} />
+              <small>{score.goal_seconds !== undefined ? `Reached ${elapsed(score.goal_seconds)} after the first step.` : "The recording does not say it was reached."}</small>
+            </dd>
           </>
         ) : null}
         <dt>Length</dt>
@@ -149,7 +156,9 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
           </summary>
           <ul className="lv-sum-notes">
             {recording.notes.map((note) => (
-              <li key={note}>{note}</li>
+              <li key={note}>
+                <FreeText text={note} />
+              </li>
             ))}
           </ul>
         </details>

@@ -6,19 +6,23 @@ description: >-
   (O_TRUNC), which empties it in place. A shell's own redirect does this
   (> file, echo > file, cat /dev/null > file) and starts no program. Current
   shells do not save their history that way: bash 4.4 and later (readline
-  7.0 and later), tcsh and busybox ash append with O_APPEND and rewrite the
-  file as a new one renamed over the old one, ksh93 appends and trims with
-  ftruncate, and zsh appends or renames a new file over it. Older bash and
-  zsh with HIST_SAVE_BY_COPY unset do truncate in place, and are false
-  positives. auditd's system call record holds the open's flags and not the
-  file's name, and its path record the name and not the flags, so the rule
-  takes the file from the audit key of the watch on history files,
-  shell-history in the lab's audit rules: with another key, put that key
-  here. Covers open, openat and creat on any architecture auditd names the
-  call for; not openat2, whose flags the record does not show, nor truncate
-  or ftruncate, nor a new file renamed over the history file, which is how
-  bash's history -c then history -w, sed -i and editors that save by rename
-  empty or rewrite it.
+  7.0 and later) and busybox ash append with O_APPEND and rewrite the file
+  as a new one renamed over the old one, tcsh always writes a new file and
+  renames it over the old one, ksh93 appends and trims with ftruncate, and
+  zsh appends or renames a new file over it. Older bash and zsh with
+  HIST_SAVE_BY_COPY unset do truncate in place, and are false positives, as
+  is any program that rewrites the file in place under its own name, such as
+  an editor that saves in place (nano does) or a copy onto the existing file
+  (cp backup ~/.bash_history). auditd's system call record holds the open's
+  flags and not the file's name, and its path record the name and not the
+  flags, so the rule takes the file from the audit key of the watch on
+  history files, shell-history in the lab's audit rules: with another key,
+  put that key here. Covers open, openat and creat on any architecture
+  auditd names the call for; not openat2, whose flags the record does not
+  show, nor truncate or ftruncate, nor removing the file (unlink or
+  unlinkat, as rm does), nor a new file renamed over the history file, which
+  is how bash's history -c then history -w, sed -i and editors that save by
+  rename empty or rewrite it.
 references:
   - https://attack.mitre.org/techniques/T1070/003/
   - https://man7.org/linux/man-pages/man2/open.2.html
@@ -49,5 +53,6 @@ falsepositives:
   - bash creating a missing history file the first time it saves (O_CREAT|O_TRUNC), once per account
   - bash before 4.4 trimming its history file on exit, or rewriting it (history -w, or on exit without histappend)
   - zsh with HIST_SAVE_BY_COPY unset, saving its history
+  - A program that rewrites the history file in place, such as an editor that saves in place (nano) or cp onto the existing file
   - Someone clearing their own history on purpose
 level: high

@@ -134,7 +134,7 @@ describe("the watch view's words and numbers", () => {
   const run = recording({
     steps: [
       step("1", 10, 10.2, { outcome: "alerted", visibility: { answer: "alert", basis: "rule", events: 1 } }),
-      step("2", 20, 21, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "none", events: 0 } }),
+      step("2", 20, 21, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "nothing of the test was recorded besides its launcher's start", events: 0 } }),
     ],
     events: [event("1-1", "1", 10.1)],
     alerts: [alert("a", "1", 10.1, ["1-1"])],
@@ -155,7 +155,7 @@ describe("the watch view's words and numbers", () => {
     const after = at(told + 0.05);
     expect(scoreOnScreen(timeline, before.frame, before.moment).unseen).toBe(0);
     expect(scoreOnScreen(timeline, after.frame, after.moment).unseen).toBe(1);
-    expect(whoIsWinning(run, after.frame, scoreOnScreen(timeline, after.frame, after.moment), runFacts(run, timeline))).toBe("1 of 2 tests so far got through without an alert, 1 not even recorded.");
+    expect(whoIsWinning(run, after.frame, scoreOnScreen(timeline, after.frame, after.moment), runFacts(run, timeline))).toBe("1 of 2 tests so far got through without an alert, 1 unseen.");
   });
 
   it("counts an alerted step when its alert reaches the rule engine, as the caption says it", () => {
@@ -236,6 +236,33 @@ describe("an alert raised live after its step ended", () => {
     expect(end.moment?.landed.map(({ alert: item }) => item.id)).toEqual(["a"]);
     expect(end.frame.late).toEqual([]);
     expect(end.score.alerted).toBe(1);
+  });
+
+  it("waits for an alert raised after its step's end that fires while the step's later event still plays, and never tells the step as seen", () => {
+    // Test 1 ends at 11 s, a sensor stamps an event at 11.8 s, and the alert is raised at 11.2 s.
+    const value = recording({
+      when: "live",
+      steps: [step("1", 10, 11, { outcome: "alerted", visibility: { answer: "alert", basis: "rule", events: 2 } }), step("2", 20, 21)],
+      events: [event("1-1", "1", 10.5), event("1-2", "1", 11.8), event("2-1", "2", 20.5)],
+      alerts: [alert("a", "1", 10.5, ["1-1"], { raised: atSecond(11.2) })],
+    });
+    const timeline = buildTimeline(value);
+    const first = timeline.segments[0];
+    const fire = timeline.fire.get("a");
+    if (!first || fire === undefined) throw new Error("fixture");
+    expect(fire).toBeLessThan(first.end);
+    for (let t = first.start; t < first.end; t += 0.01) {
+      const frame = frameAt(timeline, t);
+      const moment = momentOf(timeline, frame, value.alerts, stepMatches(value.alerts));
+      const score = scoreOnScreen(timeline, frame, moment);
+      expect(score.seen).toBe(0);
+      if (moment?.revealed) expect(moment.outcome).toBe("alerted");
+      expect(score.alerted).toBe(t >= fire && moment?.revealed ? 1 : 0);
+    }
+    const end = frameAt(timeline, first.end - 0.01);
+    const moment = momentOf(timeline, end, value.alerts, stepMatches(value.alerts));
+    expect(moment).toMatchObject({ revealed: true, outcome: "alerted", stood: "alerted" });
+    expect(scoreOnScreen(timeline, end, moment)).toMatchObject({ alerted: 1, seen: 0 });
   });
 
   it("shows an alert raised during a later step on that step's screen, and counts it only from then", () => {

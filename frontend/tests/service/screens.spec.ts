@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
 /** A small recording that follows the format: two steps of an attack path, one alerted and one seen. */
@@ -80,7 +82,7 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await expect(newestPair).toContainText("A new rule: Shell History File Truncated In Place");
   await expect(newestPair).toContainText("Shipped with BlueFire · Clear Bash history (echo) and Clear Bash history (cat dev/null), each also with changed input arguments: seen to alerted with the lab's rules");
   await expect(newestPair).toHaveAttribute("href", /^#\/runs\/compared\/[0-9a-f]{16}$/);
-  await expect(page.getByRole("link", { name: /^Watch the newest recorded run/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /^Watch the first recorded run on Runs/ })).toHaveCount(0);
   await expect(page.getByText("No experiment runs yet.")).toBeVisible();
 
   // What a fresh workspace holds: the packaged experiments, the recording that
@@ -115,6 +117,16 @@ test("the service serves the interface, and its main screens open on a fresh wor
   const refusal = page.getByRole("alert").filter({ hasText: "The recording was not imported" });
   await expect(refusal.getByText("The recording is not valid: score.alerted is 2, but the steps give 1.")).toBeVisible();
 
+  // The screen sends a file's own bytes: each of the small refused files is refused with the
+  // reason the command line and the import route give it (tests_platform/test_recordings.py).
+  const refusedFolder = join(resolve(process.cwd(), ".."), "tests_platform/fixtures/refused-recordings");
+  const reasons = (JSON.parse(readFileSync(join(refusedFolder, "reasons.json"), "utf-8")) as { files: Record<string, string> }).files;
+  for (const [name, reason] of Object.entries(reasons)) {
+    await page.getByLabel("Recording file to import").setInputFiles({ name, mimeType: "application/json", buffer: readFileSync(join(refusedFolder, name)) });
+    await expect(refusal, name).toContainText(`The recording is not valid: ${reason}`);
+  }
+  await expect(page).toHaveURL(/#\/runs$/);
+
   // A small valid one is imported, opens, and says what BlueFire could and could not check.
   // The CI run it names is shown as the file's claim, never as a link to the run that made it.
   const small = smallRecording();
@@ -122,15 +134,18 @@ test("the service serves the interface, and its main screens open on a fresh wor
   Object.assign(small.source, { repository: "example/lab", run_url: claimed });
   await page.getByLabel("Recording file to import").setInputFiles(file("small.json", small));
   await expect(page).toHaveURL(/#\/runs\/recorded\/small-attack-path/);
-  await expect(page.getByText("Imported", { exact: true })).toBeVisible();
+  await expect(page.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
   await expect(page.getByText(/^Imported\. BlueFire checked that this file follows the recording format.+It cannot confirm that the steps ran/)).toBeVisible();
   await expect(page.getByText(`The file names this CI run, which BlueFire cannot confirm: ${claimed}`, { exact: false })).toBeVisible();
-  await expect(page.getByRole("link", { name: "CI run (github.com)" })).toHaveCount(0);
+  await page.getByRole("button", { name: /^An imported run, not verified by BlueFire, recorded .+· details$/ }).click();
+  await expect(page.getByRole("heading", { name: "Where this recording comes from" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /CI run/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.getByRole("slider", { name: /^Timeline/ })).toBeVisible();
 
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const imported = recorded.getByRole("listitem").filter({ hasText: "Two steps toward a secrets file" });
-  await expect(imported.getByText("Imported", { exact: true })).toBeVisible();
+  await expect(imported.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
   await expect(imported.getByText("1 of 2 tests alerted, 1 seen, 0 unseen")).toBeVisible();
 
   // A recording still running says so, and its page asks the service again until it has finished.
@@ -157,21 +172,23 @@ test("the service serves the interface, and its main screens open on a fresh wor
   await page.waitForTimeout(9_000);
   expect(asked).toBe(settled);
 
-  // A run recorded after the pair, listed on its own, is what the Overview offers then.
+  // An imported run recorded after the shipped pair is listed after what was shipped, and the
+  // Overview still offers the shipped pair: an imported file never takes a shipped run's place.
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const later = JSON.parse(JSON.stringify({ ...smallRecording(), id: "small-later", title: "Two later steps toward a secrets file" }).replaceAll("2026-11-20", "2026-11-30"));
   await page.getByLabel("Recording file to import").setInputFiles(file("later.json", later));
   await expect(page).toHaveURL(/#\/runs\/recorded\/small-later/);
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  const titles = recorded.getByRole("listitem").getByRole("link");
+  await expect(titles.first()).toHaveText("60 published tests on one Linux host");
   await page.getByRole("link", { name: "Overview", exact: true }).first().click();
-  const newestRun = page.getByRole("link", { name: /^Watch the newest recorded run/ });
-  await expect(newestRun).toContainText("Two later steps toward a secrets file");
-  await expect(newestRun).toContainText("Imported · 1 of 2 tests alerted, 1 seen, 0 unseen");
-  await expect(newestRun).toHaveAttribute("href", "#/runs/recorded/small-later");
-  await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toHaveCount(0);
-  // It leads too, said to be an imported recording rather than a real run BlueFire shipped.
-  const recordedFirst = page.getByRole("region", { name: "Watch a recorded run" });
-  await expect(recordedFirst.getByText("Two later steps toward a secrets file", { exact: true })).toBeVisible();
-  await expect(recordedFirst.getByText("Imported", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /^See the newest change to the defense/ })).toContainText("Shipped with BlueFire");
+  await expect(page.getByRole("link", { name: /^Watch the first recorded run on Runs/ })).toHaveCount(0);
+  // The run that leads is still the real one shipped with BlueFire, never the later imported file.
+  const stillReal = page.getByRole("region", { name: "Watch a real run" });
+  await expect(stillReal.getByText("60 published tests on one Linux host", { exact: true })).toBeVisible();
+  await expect(stillReal.getByText("Two later steps toward a secrets file", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Watch a recorded run" })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Detection Lab", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Detection Lab", exact: true })).toBeVisible();

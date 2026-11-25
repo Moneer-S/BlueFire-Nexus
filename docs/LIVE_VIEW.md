@@ -17,10 +17,43 @@ goes, and the view says the run is still running.
 - **A match is not an alert.** An alert is a match of a published rule at level
   `high` or `critical` on an event of the step. A match below that level is
   shown for review, and a match on the shell command that carried the test only
-  is shown as a launcher match. Neither counts.
+  is shown as a launcher match. Neither counts. A match at level
+  `informational` is shown as "info" and is not counted for review, in the
+  table and in the run's summary alike.
+- **A step nobody saw is told in the recording's words.** Its `visibility`
+  says why it is unseen; for the lab's run, that nothing of the test was
+  recorded besides its launcher's start, the lab's own shell starting the
+  test's command, which an attacker's shell would not leave and which never
+  counts. The caption, the map, the log of what was recorded, the score's
+  tooltip, the lanes, the step's detail and its hint say that, not that no
+  sensor recorded anything; the race line only counts the test as unseen.
+- **Free text is shown as written, and never reorders the screen.** A step's
+  command, what it printed and its plain sentence, the notes and the attacker's
+  description and goal may hold a direction mark or override (a published test
+  of file names written right to left makes one). Each such character is shown
+  as its code in a small tag, "U+202E", and is not applied; in a tooltip or the
+  page's title it is written "[U+202E]".
 - **Rules written in this repository are drawn apart and not scored.** Their
-  matches are labelled "not scored" or "would alert", and the score never
-  counts them.
+  engine says "not counted in the score" under its name, their matches are
+  labelled "would alert", and the score never counts them.
+- **The head says what the run is, in one quiet line.** Under the title one
+  line says what the run is and when it was recorded: "A real run, recorded 23
+  Nov 2026 on a GitHub-hosted runner" for a run shipped with BlueFire or
+  recorded by the lab's own CI, "An imported run, not verified by BlueFire"
+  for an imported one, and "A run of unknown origin" for a page that does not
+  say where its recording comes from. Its "details" opens the rest: who
+  checked what, the link to the CI run that made it, the tool versions and the
+  recording's notes. While watching, the score's head says "tests alerted so
+  far", since its counts go up as the run plays; at the end of the run they are
+  the run's own. The hardened reruns are counted apart as "repeated tests
+  stopped", and the legend under the timeline calls their short marks, and
+  those of the canary and control steps, "short: checks and repeats"; its
+  tooltip names their roles and says that none of them is a test or in the
+  score of tests.
+- **The rules' time is said once.** Where the rules ran after the run, an
+  alert's time is the time of the event it matched. The race line says so
+  beside the first alert's time, "(the time of the event it matched)", and
+  analyse mode's lanes say it again under the axis.
 - **Silences are shortened, and the screen says so.** Every step gets one bar
   on the timeline, and the time between two steps plays as a short beat
   whatever its real length. The legend under the timeline says "silences
@@ -28,16 +61,40 @@ goes, and the view says the run is still running.
   last match fires near its end stays on screen, its clock held at the step's
   end, until that match's light has reached the rule engine and the step's
   outcome is told.
+- **A step plays its own stretch of the run, unmoved.** A step's bar plays
+  from its `started`, or its earliest event or match when a sensor stamped one
+  a moment before, to its `ended`, or its latest event or match. The format
+  has steps run forward with no overlap and no step's events inside another's
+  stretch, and the page refuses a file that breaks that, so no step is moved or
+  squeezed to fit, and the clock, the log, the analyse lanes and a step's
+  detail read the same times. "The step ended", wherever it is said or
+  counted, is the step's recorded `ended` (the end of its stretch when the
+  recording has none).
+- **A match fires at its moment.** Its moment is its `raised` time where the
+  rules ran live and its `time` where they ran after the run, the moment the
+  recording's `first_alert` and `first_alert_seconds` count. It fires then, as
+  soon as the earliest event it names has arrived; it does not wait for later
+  events it names, which arrive after it as events of a match already told.
 - **An alert raised after its step ended arrives late, and is shown when it
-  arrives.** Where the rules ran live, a match fires at its `raised` time.
+  arrives.** No real recording of a detector that ran live exists yet: the
+  view's handling of one, told here, is shown by tests on built examples
+  only. Where the rules ran live, a match fires at its `raised` time.
   While a step is on screen it is told as it stood at its end, so a step whose
   alert was not raised yet is told as seen (or unseen) with no alert by the end
   of the step. When a match of a step is raised after that step ended, on
   whatever is on screen then (a later step, or the silence after its own
   step), its rule engine lights, the log gets a line marked "raised late", and
   one line under the step names it and says how long after its step ended it
-  was raised. What is on screen holds, its clock stopped, until that line has
-  been there for three seconds. From that moment the score, the race line and
+  was raised. When several arrive together, that line counts and names every
+  one of them, the log names the earlier ones on a line of their own, and each
+  engine says how many more arrived on it, so nothing that the score counts
+  goes unnamed. A match raised after its step's `ended` that still fires while
+  that step's own stretch plays (a sensor stamped one of its events later
+  still) is late in the same way, and the step waits for it: it is told
+  alerted when that match fires, never first as seen. What is on screen
+  holds, its clock and the race's head stopped at that arrival's moment, until
+  that line has been there for three seconds; the rest of the silence then
+  plays. From that moment the score, the race line and
   that step's bar on the timeline count it as alerted, and not before; when it
   fires in the silence after its own step, while that step is still on screen,
   the step's verdict and its host's badge say alerted from then too, and its
@@ -57,41 +114,65 @@ goes, and the view says the run is still running.
   once the screen has told its outcome; at the end of the run it is the
   recording's `score`. False alerts, on ordinary activity outside every step,
   have no times in a recording, so watch mode shows them only at the end. In
-  analyse mode it is the whole run's score from the start. The time to the
-  first alert, wherever it is shown, is read from the alerts themselves: from
-  the first test's start to the moment that alert fires (its `raised` time
-  where the rules ran live), the same clock the race compares with the goal.
-  The goal falls `score.goal_seconds` after the earliest recorded start of a
-  step, as the format counts it, even where an event is stamped before its
-  step's start. When the first alert came before the goal, the race line
-  tells the goal only once that alert has been told, never the other way round.
-  A file whose `score.first_alert_seconds`, or a step's `first_alert`, says
-  otherwise is refused on import; the page shows what the alerts say.
+  analyse mode it is the whole run's score from the start. False alerts are
+  shown only with the ordinary activity they are counted from. The time to the
+  first alert on a test is read from the alerts themselves, up to the moment
+  that alert fires (its `raised` time where the rules ran live), and counted
+  as the screen counts it. For a test list it is a time "into the run", on the
+  same clock as the clock under the map and the race track: from the start of
+  the first step's stretch, its `started` or an event of it stamped a moment
+  before (in the shipped run, the canary's first event, 2 ms before its
+  start); the race track's 00:00 says so in its tooltip. For an attack path it
+  is counted from the first test's start, the same clock the race compares
+  with the goal.
+- **An attack path's race and its goal.** No real recording of an attack path
+  exists yet: the view's handling of one, told here, is shown by tests on
+  built examples only. An attack path begins with a test that has a recorded
+  start, and its race counts from that one moment: the first alert's number,
+  the goal, the race track's 00:00, the flags' places on it and the clock's
+  time into the run.
+  The goal falls `score.goal_seconds` after it, even where an event is stamped
+  before that start, and the race line and the run's summary name the
+  attacker's goal where they say it was reached. When the first alert came
+  before the goal, the race line tells the goal only once that alert has been
+  told, never the other way round. A file whose `score.first_alert_seconds`,
+  or a step's `first_alert`, says otherwise is refused on import; the page
+  shows what the alerts say.
 
 ## Two modes
 
 - **Watch** plays the run. The caption tells the current step in plain words,
   then its outcome: alerted, seen with no alert, unseen, stopped. A step that
-  got through without an alert has a "Fix this" button: it opens the step's
-  detail, which says where the gap is. Inside the app a note above the view
-  also says that BlueFire cannot make the change yet.
+  got through without an alert has a "Fix this" button. On the single replay
+  page it opens the step's detail, which says where the gap is. Inside the app
+  it opens the step's own page, the place where fixing it starts (see "Fix
+  this" in [USER_GUIDE.md](USER_GUIDE.md)), and its "Back to the run" returns
+  to the moment it was opened from.
 - **Analyse** shows the whole run on one axis, the table of every step with
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"
-  goes back to watch mode at that step.
+  goes back to watch mode at that step. The table opens on the tests, or on
+  every step when the recording has no test. Inside the app the detail of a
+  step that got through without an alert also has "Fix this", which opens the
+  same page.
+
+In a small window, or a large one zoomed in, the view grows with what it
+holds and the page scrolls; at phone width its bands stack. Nothing is cut
+off beyond reach. The app's page of a recorded run does the same at the same
+window sizes.
 
 ## Keys
 
 | Where | Key | Does |
 | --- | --- | --- |
 | Watch mode | Space | Plays or pauses, unless a button, link or the timeline has focus |
-| Timeline | Left, Right (or Down, Up) | One step back or on |
+| Timeline | Left, Right (or Down, Up) | One step back or on; on the last step, on goes to the end |
 | Timeline | Shift with an arrow | One second back or on |
-| Timeline | Page Down, Page Up | Ten steps back or on |
+| Timeline | Page Down, Page Up | Ten steps back or on; on never goes back |
 | Timeline | Home, End | The start or the end of the run |
 | Analyse: the lanes | Left, Right, Home, End | Moves between steps |
 | Analyse: the table | Up, Down, Home, End | Moves between rows |
-| Tool versions | Escape | Closes the panel |
+| Details under the title | Escape | Closes the panel |
 
 ## The page's address
 
@@ -101,10 +182,32 @@ The replay page reads where to start from its address, for example
 | Parameter | Value | Does |
 | --- | --- | --- |
 | `step` | a step's `id` | Opens at that step |
-| `at` | 0 to 2 | How far into that step, 0 its start and 1 its end; from 1 to 2, how far into the silence after it, where it is still on screen. 0.6 when left out. Read only with `step`. |
+| `at` | 0 to 2 | How far into that step, 0 its start and 1 its end. Above 1 and below 2, how far into the silence after it, where that step is still on screen; 2 or more is that silence's end, which is the next step's start. On the last step, which has no silence after it, anything above 1 is its end. 0.6 when left out. Read only with `step`. |
 | `paused` | `1` | Opens paused |
 | `mode` | `watch` or `analyse` | Opens in that mode; analyse opens paused |
 | `select` | a step's `id` | The step whose detail analyse mode opens on |
+
+A step's `id` is the recording's own, and a step's detail in analyse mode shows
+it, so that a link can be written by hand. On screen a step is named the same
+way everywhere: a test as "test N", its count among the tests in run order,
+as the score counts them, and any other step by its role and, for a rerun, by
+the test it reruns ("canary 1", "the control", "hardened rerun of test 12",
+"variant 2 of test 39"). Where room is short, the analyse table's first
+column writes a test as its number alone, and the lanes' time axis as "#28";
+an axis label of a rerun or a variant holds its time alone, with the name in
+its tooltip.
+Its place in the list of steps is shown only as progress ("42 of 91 steps"). In the shipped run, `?step=43` opens test 40.
+
+An address that names a step the recording does not hold gets one line under
+the title that says so, in both modes; the view then opens at the start of the
+run, or analyse mode on the whole run.
+
+Inside the app, at `#/runs/recorded/<id>`, the same parameters follow the
+viewer. A place in a silence counts the silence as it plays, its hold at a
+late arrival included, and is written in thousandths rounded up, so the
+address opens the same moment with the same late arrivals on screen. An
+address that names a step the recording does not hold keeps naming it, beside
+the line that says so, until the viewer moves from where the view opened.
 
 ## Making the page
 
@@ -125,14 +228,15 @@ each one the app keeps and refuses each one it refuses. The page is one file of
 under 1 MB plus the recording.
 It carries its own script, styles and font, and its content security policy
 lets it load nothing and connect nowhere: the page makes no request by itself.
-The one way out is the link to the CI run that made the recording, shown only
-for a GitHub Actions run at `https://github.com` (of the recording's own
-repository, when the recording names one), and followed only when someone
-clicks it. The text of a recording is always shown
+The one way out is the link to the CI run that made the recording, in the
+details under the title, shown only for a GitHub Actions run at
+`https://github.com` (of the recording's own repository, when the recording
+names one), and followed only when someone clicks it. The text of a recording is always shown
 as text, never read as markup.
 
 Beside the recording the command writes where it comes from, as the app lists
-it, and the page shows that note under the title at all times. A recording
+it, and the page shows that note in the details the line under the title
+opens; the line itself says in a few words what the run is. A recording
 shipped with BlueFire says so and names the CI run that made it. An imported
 recording says what BlueFire checked, that the file follows the format and its
 parts agree, and what it cannot confirm: that the steps ran, where and when,
@@ -163,22 +267,42 @@ with the two comparisons shipped with the app (`app-runs-pair.png`), the page
 of the pair of runs (`app-pair.png`) and the page of the run evaluated with two
 rule sets (`app-rule-pair.png`), each with both stages drawn, and the
 recorded run's page on the first alert, at 1920 by 1080 so that every rule
-title fits. It fails if a page prints an error,
-if the replay page asks for anything beyond its own file or the app for
-anything beyond the service, or if a picture would show a rule title cut short.
+title fits. Before that it opens the recorded run's page at 1440 by 900 too,
+on the first alert, and on the test with the longest command, whose command
+takes two lines under the host. It also makes `live-view-loop.gif`,
+a loop of the live view playing, 1000 pixels wide, at six tenths of the view's
+speed (`frontend/tests/pictures/loop.ts`). It starts on the moment of the
+first alert on a test, the picture `watch-first-alert.png`, held a second, so
+that a still or a link preview shows that moment. It goes on to the step after
+it, held two seconds, then plays the alerted test from the moment its step
+begins up to its first frame again, so it loops with no seam. Each frame is
+the page opened paused at one place of the recording, a step and how far into
+it as the address names it, so the same recording gives the same frames on any
+machine; [sharp](https://github.com/lovell/sharp) puts them together. It fails
+if a page prints an error, if the replay page asks for anything beyond its own
+file or the app for anything beyond the service, if a picture or the page at
+1440 by 900 would show a rule title cut short or a wrapped one reaching the
+next rule engine, if the host's label reaches below the map, if the race line
+of a watched moment is cut short, or if the lanes' time axis has no label past
+its middle. It also fails if the step after the first alert is not a test that
+no sensor recorded, because the caption under the loop in the
+[README](../README.md) says it is.
 
 The run keeps them for 90 days as the artifact `live-view-pictures`: the
-pictures, the page `replay.html` they show, and `SOURCE.txt`, which names the
+pictures, the loop, the page `replay.html` they show, and `SOURCE.txt`, which names the
 recording, the CI run that recorded it, each shipped pair and the CI run that
 made it, and the commit the pictures were made from.
 
-The picture of the live view in the [README](../README.md)
+The pictures of the [README](../README.md) in `docs/assets/front/`, the
+picture of [the run on the front page](#the-run-on-the-front-page)
 (`docs/assets/screenshots/live-view-first-alert.png`) and the page
 [`docs/live-view/replay.html`](live-view/replay.html) are files of that
-artifact, copied in unchanged; `docs/assets/screenshots/live-view-source.txt`
-names the run that made them and the recording they show. To renew them, take
+artifact, copied in unchanged; `docs/assets/front/SOURCE.txt` and
+`docs/assets/screenshots/live-view-source.txt` name the run that made them
+and the artifact file each one is, and the artifact's own `SOURCE.txt` names
+the recordings they show. To renew them, take
 the artifact `live-view-pictures` of a run of the app workflow on `main`, copy
-the files over the committed ones byte for byte, and update that note from the
+the files over the committed ones byte for byte, and update those notes from the
 artifact's `SOURCE.txt`. The page holds the recording, so when the recording
 changes, the page's entries in `.secrets.baseline` change with those of the
 recording.
@@ -189,3 +313,14 @@ does and sees on it: where the recording comes from, for a shipped, an imported
 and an unsaid origin, watching, playing and pausing, moving on the timeline by
 pointer and keyboard, the address, the unseen test and its fix hint, analyse
 mode, the score at the end, and that the page makes no request.
+
+## The run on the front page
+
+The loop at the top of the [README](../README.md) plays the recording shipped
+with BlueFire. These are its numbers and the CI run that made it.
+
+![The live view at the first alert on a test: the host, its two sensors, the rule engines, the events and the score](assets/screenshots/live-view-first-alert.png)
+
+Test 39 of 60 empties the shell history, and a published Sigma rule raises the first alert on a test of a real run. [The lab](../lab/README.md) ran 60 published Atomic Red Team tests on a GitHub-hosted runner, watched by Sysmon and auditd, with 188 published Sigma rules reading what they recorded. By the end all 60 had taken effect, 3 had raised an alert, and of 1 nothing was recorded besides its launcher's start, the lab's own launch of its command, which does not count ([CI run 45227119895](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895)). [The defender loop](../lab/README.md#the-defender-loop-so-far) follows that unseen test, before against after: a change to the defense got it seen, then a rule written in this repository alerted on it.
+
+Watch this run in the app: start it with [`docker compose up app`](INSTALLATION.md#look-at-the-current-source-with-docker), open the address it prints, then **Runs**. Or open `docs/live-view/replay.html` from a clone in any browser, with nothing installed: double-click it, or drag it onto a browser window.

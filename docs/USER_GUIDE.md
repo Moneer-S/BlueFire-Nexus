@@ -1,5 +1,7 @@
 # User guide
 
+How to use each screen of the app: starting it, building and running experiments, [watching recorded runs](#recorded-runs), comparing runs and working on detections.
+
 This guide covers normal local operation. Begin with Simulate. Use Execute only after reading [Runner deployment](RUNNER_DEPLOYMENT.md), [Runner profiles](RUNNER_PROFILES.md), and [Responsible use](RESPONSIBLE_USE.md). For exact command syntax and JSON request-file contracts, see the [command-line reference](CLI.md).
 
 ## Start the application
@@ -16,7 +18,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 
 | Area | Use it for |
 |---|---|
-| Overview | The newest recorded run to watch and the turns of the defender loop, then readiness, recent runs, evidence mix, and next actions |
+| Overview | The first recorded run on Runs to watch and the turns of the defender loop, then readiness, recent runs, evidence mix, and next actions |
 | Getting Started | Choose an objective, review its environment, or follow a scenario through durable review |
 | Scenarios | Browse the eight seeded versioned graphs and open the authoritative active definition for editing/running |
 | Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
@@ -153,11 +155,12 @@ Resolve a refusal by fixing the graph, environment, or least-privilege profileâ€
 
 A recording is one file that holds a run an engine outside the app really
 carried out: the steps, what the sensors recorded, which rules matched, and the
-score ([Recordings](RECORDING.md)). **Runs** lists the recorded runs first,
-newest first: each says what it is (a test list or an attack path), where and
-when it was recorded, whether it shipped with BlueFire or was imported, its
-score in words, and "Still running" while its engine is still sending it. The
-runs of experiments from Build follow under **Experiment runs**.
+score ([Recordings](RECORDING.md)). **Runs** lists the recorded runs first:
+those shipped with BlueFire, then the imported ones, whatever their dates, each
+newest first. Each says what it is (a test list or an attack path), where and
+when it was recorded, "Shipped with BlueFire" or "Imported, not verified by
+BlueFire", its score in words, and "Still running" while its engine is still
+sending it. The runs of experiments from Build follow under **Experiment runs**.
 
 Under **Before against after** come the changes to the defense that the lab
 compared, as the turns of one loop, in the order they were made and joined by
@@ -197,7 +200,8 @@ reason and every difference, and judges no step; a limited one says at the top
 why and what alone it credits, and lists the steps it does not credit apart
 ([Recordings](RECORDING.md#in-the-app)).
 
-The **Overview** leads with the newest run the Runs screen lists on its own:
+The **Overview** leads with the first run the Runs screen lists on its own (what
+was shipped with BlueFire comes before what was imported, whatever the dates):
 "Watch a real run" (or "Watch a recorded run" for an imported file), its title,
 its score in a line (with how many tests the lab's own rules would alert on,
 which the score does not count), and a play button, with the turns of the loop
@@ -207,16 +211,50 @@ comes first.
 
 Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.
 The address keeps the moment you are at (the step, the position in it, whether
-playback is paused, watch or analyse mode, and the chosen step), so a link or a
-reload opens the same place. While a recording is still running, the page asks
-the service for it again every few seconds and shows what has arrived. **Fix
-this** on a step opens its detail in analyse mode, where the hint says where
-the gap is: a sensor, or a rule. Making the change from there is not part of
-BlueFire yet.
+playback is paused, watch or analyse mode, and the chosen step), so a reload of
+the same tab opens the same place. A session belongs to its tab: the address
+opened in another tab or browser asks for a connection code first. To show
+someone else a moment, write the run as one page with
+`bluefire recordings page <id> --out <file>` ([CLI](CLI.md)), share that page,
+and add the same query to the page's address. An address that names a step the recording does
+not hold gets one line that says so, and keeps naming that step until you move
+from where the view opened. In a small window the view behaves as the single
+replay page does: it grows with what it holds, the page scrolls, and at phone
+width its bands stack. While a recording is still running, the page asks
+the service for it again every few seconds and shows what has arrived.
+
+**Fix this**, on a step that got through without an alert (in the caption while
+watching, or in the step's detail while analysing), opens the step's own page
+at `#/runs/recorded/<id>/fix/<step id>`, with **Back to the run** to the moment
+you came from. It reads the step's recording and the comparisons the service
+keeps, and nothing else. After the step and its outcome it says where to start,
+in a sentence or two: a sensor's settings for a step of which nothing that
+counts was recorded, a rule for one that was recorded with no alert. Then what
+was already tried: each comparison that moved the step, with its before and
+after, its price, and links to it and, from a before run, to the same step in
+the after run. Then the evidence: every event the recording holds of the step,
+by sensor; under **How we know**, the recording's own reason and the SHA-256 of
+each sensor's settings; for a step with no event, the other runs of the same
+technique; and the rules that matched it. Last come, for a rule, an empty draft
+kept in this browser only; the model's place, which says that nothing was sent;
+and what a rerun is (a pull request whose CI runs the list before and after).
+The change itself is a file in the repository: the app runs nothing, holds no
+token and asks no model.
+
+A comparison of other runs is listed only when both of its runs ran the same
+list as the step's run, by the list's title and kind, and it paired the step by
+stable ids. In a recording with stable step ids, it names the step by its id.
+In an older recording, such as the example shipped with the app, a step of role
+`test` that is the only one of its published test in the run is tied to the
+step a later run names `test:<first 8 characters of the GUID>`: the same test
+as the list gives it, with no input arguments. A rerun with changed arguments, a
+hardened rerun, or a test that ran with arguments is never tied that way. The
+line says it is another run of the same list, not this one.
 
 To import a recording, select **Import a recording** on **Runs** and choose its
-JSON file, or run `bluefire recordings import <file>`. A recording the service
-refuses is not stored, and each problem it found is listed. An imported
+JSON file, or run `bluefire recordings import <file>`. Either way the service
+reads the file's own bytes, so it refuses the same file for the same reason. A
+recording the service refuses is not stored, and each problem it found is listed. An imported
 recording opens at once, with the service's note above the view: what BlueFire
 checked, and what it cannot confirm. A CI run that an imported file names is
 shown there as text, never as a link to the run that made the recording.
@@ -355,4 +393,4 @@ BlueFire is local-first. Keep these limits visible when interpreting a successfu
 - Detection Lab provides bounded local Sigma/SQLite execution but no SIEM deployment connector, production SPL validation, or automatic public-corpus synchronization;
 - hashes establish bundle consistency, not a digital signature or producer identity.
 
-See the README's [current scope](../README.md#current-scope), [Threat model](THREAT_MODEL.md), and [Responsible use](RESPONSIBLE_USE.md) before broadening any lab.
+See the [current scope](SCOPE.md#current-scope), [Threat model](THREAT_MODEL.md), and [Responsible use](RESPONSIBLE_USE.md) before broadening any lab.

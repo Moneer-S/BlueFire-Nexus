@@ -38,24 +38,6 @@
 .recorded-run-claimed { color: var(--muted-strong); overflow-wrap: anywhere; }
 .recorded-run-note.is-problem { color: var(--amber-soft); }
 
-.recorded-run-fix {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 7px clamp(16px, 2vw, 32px);
-  border-bottom: 1px solid var(--line);
-  background: var(--ink-900);
-  color: var(--muted-strong);
-  font-size: var(--font-body-sm);
-}
-.recorded-run-fix p { flex: 1; margin: 0; line-height: 1.45; }
-.recorded-run-fix p:focus { outline: none; }
-.recorded-run-fix p:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; }
-.recorded-run-fix strong { color: var(--text-soft); font-weight: 600; }
-.recorded-run-fix button { flex: none; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: transparent; color: var(--muted-strong); font: inherit; cursor: pointer; }
-.recorded-run-fix button:hover { color: var(--text); }
-
 .recorded-run-view { flex: 1; min-height: 720px; }
 
 .recorded-run-message { display: grid; flex: 1; place-items: center; padding: 32px 24px; text-align: center; }
@@ -68,12 +50,12 @@
 @media (prefers-reduced-motion: reduce) { .recorded-run-running i { animation: none; } }
 
 /*
- * Below the app's header breakpoint the page scrolls. The live view is drawn
- * for a wide screen, so on a narrow one it keeps that width and its box
- * scrolls sideways instead of cutting it off.
+ * In a small window, or a large one zoomed in, the live view behaves as on the
+ * single replay page, at the same sizes (live.css): it grows with what it
+ * holds and the page scrolls, its bands stack at phone width, and only the
+ * network map keeps its width, scrolling sideways inside its band.
  */
-@media (max-width: 900px) {
-  .recorded-run { height: auto; }
-  .recorded-run-view { flex: none; height: max(92dvh, 820px); overflow-x: auto; overscroll-behavior-x: contain; }
-  .recorded-run-view > .lv { min-width: 960px; }
+@media (max-width: 1100px), (max-height: 700px) {
+  .recorded-run { height: auto; min-height: calc(100dvh - var(--topbar-height, 60px)); }
+  .recorded-run-view { flex: 1 0 auto; min-height: 0; }
 }

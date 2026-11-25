@@ -7,8 +7,9 @@ import type { Alert, Recording, RecordingEvent, Step } from "./recording";
 import { alertMoment, timeOf } from "./recording";
 import type { StepRow } from "./analyse";
 import { fixHint, ordinaryMatches, otherRuns } from "./analyse";
-import { capital, clockTime, comparedStep, count, elapsed, falseAlertsOf, howItWent, matchKind, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sensorWord, sentence, span, stepLabel, stepPlace, strongerKind } from "./format";
+import { belowAlertWords, capital, clockTime, comparedStep, count, elapsed, eventMarks, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plural, sensorShortName, sensorWord, sentence, span, stepLabel, stepShortName, unseenWords } from "./format";
 import type { MatchKind } from "./format";
+import { FreeText } from "./FreeText";
 import { refusalOf } from "./EventLog";
 import type { StyleVars } from "./motion";
 
@@ -18,8 +19,10 @@ interface StepDetailProps {
   colours: Map<string, string>;
   testNumber: number | undefined;
   testsTotal: number;
-  /** Real time (ms) of the first step's start, the origin of "into the run". */
+  /** Real time (ms) of the run's start, the origin of "into the run" (`RunFacts.start`). */
   origin: number;
+  /** What that origin is, in words (`RunFacts.startWords`). */
+  originWords?: string;
   onSelect: (stepId: string) => void;
   /** Left out where the step is shown outside its run's playback: there is no "Watch from here". */
   onWatch?: (stepId: string) => void;
@@ -43,17 +46,20 @@ function afterStart(what: string, ms: number): string {
   return `${what} at the start`;
 }
 
-const MARK_WORDS: Record<MatchKind, string> = { alert: "alert", lab: "would alert", review: "review", launcher: "" };
-
 function chip(alert: Alert): { words: string; className: string; title?: string } {
   if (alert.launcher_only === true) return { words: "launcher line", className: "is-launcher" };
   if (alert.counts && alert.rule.origin === "lab") return { words: `would alert · ${alert.rule.level}`, className: "is-lab", title: "A rule written in this repository at alert level. It is not in the score." };
   if (alert.counts) return { words: `alert · ${alert.rule.level}`, className: "is-alert" };
   if (alert.rule.origin === "lab") return { words: `lab · ${alert.rule.level}`, className: "is-lab" };
+  if (alert.rule.level === "informational") return { words: "info", className: "is-review", title: "Informational: nobody reviews it." };
   return { words: `review · ${alert.rule.level}`, className: "is-review" };
 }
 
-/** For a match raised live after its step ended: "Raised 2.9 s after the step ended." Null for any other. */
+/**
+ * For a match raised live after its step ended: "Raised 2.9 s after the step
+ * ended." Null for any other. `ended` is the step's end as playback reads it,
+ * so exactly the matches the watch view brings as late arrivals say so here.
+ */
 function raisedAfter(alert: Alert, ended: number | null): string | null {
   if (alert.raised === undefined || ended === null) return null;
   const late = timeOf(alert.raised) - ended;
@@ -67,7 +73,7 @@ function MatchGroup({ recording, title, alerts, ended }: { recording: Recording;
       <h5>{title}</h5>
       {alerts.map((alert) => {
         const look = chip(alert);
-        const ordinary = alert.counts && alert.rule.origin === "pinned" ? falseAlertsOf(recording, alert.rule.title) : 0;
+        const ordinary = alert.counts && alert.rule.origin === "pinned" ? ordinaryAlertEvents(recording, alert.rule.title) : 0;
         // How noisy a rule for review is on ordinary activity: what a defender weighs before raising it to alert.
         const noise = !alert.counts && alert.rule.origin === "pinned" && alert.launcher_only !== true ? ordinaryMatches(recording, alert.rule.title) : null;
         const late = raisedAfter(alert, ended);
@@ -89,7 +95,7 @@ function MatchGroup({ recording, title, alerts, ended }: { recording: Recording;
               ) : null}
             </span>
             {late ? <span className="lv-dt-mnote">{late}</span> : null}
-            {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: false alerts.</span> : null}
+            {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: one false alert.</span> : null}
           </div>
         );
       })}
@@ -141,17 +147,16 @@ function Verdict({ step, row }: { step: Step; row: StepRow }) {
     );
   }
   if (step.outcome === "seen") {
-    const review = new Set(m.review.map((alert) => alert.rule.id)).size;
     return (
       <>
-        {plural(row.recorded ?? row.events.length, "event")} recorded, {review > 0 ? `${plural(review, "rule")} matched for review` : "no rule matched"}, none at alert level.
+        {plural(row.recorded ?? row.events.length, "event")} recorded, {belowAlertWords(m.review)}, none at alert level.
       </>
     );
   }
   if (step.outcome === "unseen") {
     return (
       <>
-        It <em className="lv-red">took effect</em>, and no sensor recorded it.
+        It <em className="lv-red">took effect</em>, and {unseenWords(step)}.
       </>
     );
   }
@@ -165,7 +170,7 @@ function Verdict({ step, row }: { step: Step; row: StepRow }) {
   return <>{sentence(step.happened.basis)}.</>;
 }
 
-function EventLines({ recording, events, marks, colours, refusal }: { recording: Recording; events: RecordingEvent[]; marks: Map<string, MatchKind>; colours: Map<string, string>; refusal: RecordingEvent | undefined }) {
+function EventLines({ recording, events, marks, colours, refusal }: { recording: Recording; events: RecordingEvent[]; marks: Map<string, { kind: MatchKind; word: string }>; colours: Map<string, string>; refusal: RecordingEvent | undefined }) {
   const [all, setAll] = useState(false);
   const shown = all ? events : events.slice(0, FIRST_EVENTS);
   return (
@@ -177,7 +182,7 @@ function EventLines({ recording, events, marks, colours, refusal }: { recording:
           const text = event.text || event.image || "";
           const sensor = recording.network.sensors.find((item) => item.id === event.sensor);
           return (
-            <div key={event.id} role="listitem" className={`lv-dt-line${mark ? ` is-${mark}` : ""}${refused ? " is-refused" : ""}`} style={{ "--rgb": colours.get(event.sensor) ?? "123,202,255" } as StyleVars}>
+            <div key={event.id} role="listitem" className={`lv-dt-line${mark ? ` is-${mark.kind}` : ""}${refused ? " is-refused" : ""}`} style={{ "--rgb": colours.get(event.sensor) ?? "123,202,255" } as StyleVars}>
               <span className="lv-dt-time">{clockTime(timeOf(event.time))}</span>
               <span className="lv-dt-sensor" title={sensor?.name ?? event.sensor}>
                 <i className="lv-dot" />
@@ -188,7 +193,7 @@ function EventLines({ recording, events, marks, colours, refusal }: { recording:
                 {text}
               </span>
               <span className="lv-dt-mark" title={`Tied to the step by ${event.tied_by}`}>
-                {refused ? "refused" : mark ? MARK_WORDS[mark] : event.tied_by}
+                {refused ? "refused" : mark ? mark.word : event.tied_by}
               </span>
             </div>
           );
@@ -203,7 +208,7 @@ function EventLines({ recording, events, marks, colours, refusal }: { recording:
   );
 }
 
-export function StepDetail({ recording, row, colours, testNumber, testsTotal, origin, onSelect, onWatch, onFix, onClose, takeFocus }: StepDetailProps) {
+export function StepDetail({ recording, row, colours, testNumber, testsTotal, origin, originWords = "the start of the run", onSelect, onWatch, onFix, onClose, takeFocus }: StepDetailProps) {
   const article = useRef<HTMLElement | null>(null);
   // The detail is mounted again for every step, so this runs once per chosen step.
   useEffect(() => {
@@ -214,11 +219,7 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
   const compared = comparedStep(recording, step);
   const others = otherRuns(recording, step);
   const hint = fixHint(recording, step, m);
-  const marks = new Map<string, MatchKind>();
-  for (const alert of [...m.alert, ...m.labAlert, ...m.review, ...m.labReview]) {
-    const kind = matchKind(alert);
-    for (const id of alert.events) marks.set(id, strongerKind(marks.get(id) ?? null, kind));
-  }
+  const marks = eventMarks([...m.alert, ...m.labAlert, ...m.review, ...m.labReview]);
   const refusal = step.outcome === "stopped" ? refusalOf(row.events) : undefined;
   const refusalSensor = refusal ? recording.network.sensors.find((item) => item.id === refusal.sensor) : undefined;
   const started = step.started === undefined ? null : timeOf(step.started);
@@ -229,7 +230,7 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
   const host = recording.network.hosts.find((item) => item.id === step.host);
   const from = step.from === undefined ? undefined : recording.network.hosts.find((item) => item.id === step.from);
   const labWord = step.outcome_with_lab_rules !== undefined && step.outcome_with_lab_rules !== step.outcome ? step.outcome_with_lab_rules : null;
-  const role = step.role === "test" && testNumber !== undefined ? `Test ${testNumber} of ${testsTotal}` : compared ? `${roleWords(step.role)} of ${stepLabel(recording, compared)}` : roleWords(step.role);
+  const role = step.role === "test" && testNumber !== undefined ? `Test ${testNumber} of ${testsTotal}` : capital(stepLabel(recording, step));
   const anyMatch = m.alert.length + m.labAlert.length + m.review.length + m.labReview.length + m.launcher.length > 0;
   const recorded = row.recorded;
 
@@ -242,11 +243,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         <div className="lv-dt-others">
           {others.map((other) => (
             <button key={other.id} type="button" onClick={() => onSelect(other.id)}>
-              <span className="lv-dt-on">{stepLabel(recording, other)}</span>
-              <span className="lv-dt-ot">
-                {other.title}
-                {other.role === "test" ? null : <span className="lv-role-tag">{other.compared_with === step.id ? `${other.role} of this step` : other.role}</span>}
-              </span>
+              {/* Its name says its role, and for a rerun the test it reruns. */}
+              <span className="lv-dt-on">{stepShortName(recording, other)}</span>
+              <span className="lv-dt-ot">{other.title}</span>
               <span className={`lv-ow is-${outcomeClass(other.outcome)}`}>{outcomeWords(other.outcome)}</span>
             </button>
           ))}
@@ -262,7 +261,10 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         <div className="lv-dt-kicker">
           <span className={`lv-dt-role${step.role === "test" ? "" : " is-quiet"}`}>{role}</span>
           <span>
-            {stepPlace(recording, step)} of {recording.steps.length}
+            {row.index + 1} of {plural(recording.steps.length, "step")}
+          </span>
+          <span className="lv-dt-id" title={`The step's id in the recording. A link to it ends ?step=${encodeURIComponent(step.id)}`}>
+            id <span className="lv-mono">{step.id}</span>
           </span>
         </div>
         {onWatch || onClose ? (
@@ -289,7 +291,11 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         {step.technique.name ? <span className="lv-dt-tname">{step.technique.name}</span> : null}
         {step.technique.tactic ? <span>{step.technique.tactic}</span> : null}
       </div>
-      {step.plain ? <p className="lv-dt-plain">{step.plain}</p> : null}
+      {step.plain ? (
+        <p className="lv-dt-plain">
+          <FreeText text={step.plain} />
+        </p>
+      ) : null}
 
       <div className={`lv-dt-verdict is-${outcomeClass(step.outcome)}`}>
         <span className={`lv-word is-${outcomeClass(step.outcome)}`}>{step.outcome}</span>
@@ -380,7 +386,7 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
                 {ended !== null ? <> to {clockTime(ended)}</> : null} UTC
                 <small>
                   {ended !== null ? `${span(ended - started)}, ` : ""}
-                  <span title={`Counted from the first event of the first step, ${clockTime(origin)} UTC`}>{elapsed((started - origin) / 1000)} into the run</span>
+                  <span title={`Counted from ${originWords}, ${clockTime(origin)} UTC`}>{elapsed((started - origin) / 1000)} into the run</span>
                   {Number.isFinite(firstAlert) ? `, ${afterStart("first alert", firstAlert - started)}` : ""}
                   {!Number.isFinite(firstAlert) && Number.isFinite(firstLabAlert) && step.first_alert_with_lab_rules ? `, ${afterStart("a lab rule's first alert", firstLabAlert - started)}` : ""}
                 </small>
@@ -408,7 +414,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
           <h4>
             Command {step.test ? <span className="lv-mono" title="The published test's id">{step.test.guid}</span> : null}
           </h4>
-          <pre className="lv-dt-pre">{step.command}</pre>
+          <pre className="lv-dt-pre">
+            <FreeText text={step.command} />
+          </pre>
         </section>
       ) : null}
 
@@ -420,11 +428,12 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         </h4>
         {anyMatch ? (
           <>
-            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={ended} />
-            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} ended={ended} />
-            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review} ended={ended} />
-            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} ended={ended} />
-            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={ended} />
+            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={row.end} />
+            <MatchGroup recording={recording} title="Rules written in this repository at alert level: not in the score" alerts={m.labAlert} ended={row.end} />
+            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
+            <MatchGroup recording={recording} title="Published rules at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
+            <MatchGroup recording={recording} title="Rules written in this repository below alert level" alerts={m.labReview} ended={row.end} />
+            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
           </>
         ) : (
           <p className="lv-dt-empty">No rule matched.</p>
@@ -443,7 +452,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
       {step.output ? (
         <details className="lv-dt-sec lv-dt-output">
           <summary>What it printed</summary>
-          <pre className="lv-dt-pre">{step.output}</pre>
+          <pre className="lv-dt-pre">
+            <FreeText text={step.output} />
+          </pre>
         </details>
       ) : null}
 

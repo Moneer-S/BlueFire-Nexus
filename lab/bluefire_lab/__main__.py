@@ -120,7 +120,7 @@ def main(arguments: list[str] | None = None) -> int:
         "--hold",
         type=float,
         default=0,
-        help="seconds to keep the sealed range up where the path will run, before the seal is checked again",
+        help="seconds to keep the sealed range up after the path, before the seal is checked again",
     )
     bringing.add_argument(
         "--plant",

@@ -283,6 +283,16 @@ export function sideWhere(side: DeltaSide): string {
   return parts.length ? parts.join(", ") : "not recorded";
 }
 
+/** The steps the change moved: a verdict the delta gives, or, with no verdict, every step that differs. */
+export function movedSteps(delta: Pick<Delta, "steps">): DeltaStep[] {
+  return delta.steps.filter((step) => step.result === "better" || step.result === "worse" || step.result === "changed" || step.result === "no verdict");
+}
+
+/** The field whose outcome the step's chips show: the published rules', unless the change is judged only with the lab's rules. */
+export function chipField(delta: Pick<Delta, "judged">): "outcome" | "outcome_with_lab_rules" {
+  return delta.judged.length > 0 && !delta.judged.includes("outcome") && delta.judged.includes("outcome_with_lab_rules") ? "outcome_with_lab_rules" : "outcome";
+}
+
 /** A result the delta credits to the declared change; any other step that differs is not a gain or a loss. */
 export function isCredited(result: DeltaResult): boolean {
   return result === "better" || result === "worse" || result === "changed";

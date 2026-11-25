@@ -3,7 +3,8 @@
 
 import { memo, useLayoutEffect, useRef } from "react";
 import type { Alert, Outcome, Recording, Step } from "./recording";
-import { capital, comparedStep, falseAlertsOf, howItWent, outcomeClass, outcomeWords, plural, roleWords, sensorShortName, sentence, stepLabel } from "./format";
+import { belowAlertWords, capital, comparedStep, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plainMarks, plural, sensorShortName, sentence, stepLabel, unseenWords } from "./format";
+import { FreeText } from "./FreeText";
 import type { StepMoment } from "./moment";
 import { refusalOf } from "./EventLog";
 import { fixHint, groupMatches } from "./analyse";
@@ -29,14 +30,16 @@ interface StepCaptionProps {
  * is not repeated here: the attacker's counter at the top says it.
  */
 function Kicker({ recording, step }: { recording: Recording; step: Step }) {
-  const compared = comparedStep(recording, step);
-  const role = compared ? `${roleWords(step.role)} of ${stepLabel(recording, compared)}` : roleWords(step.role);
   const hint = step.role === "canary" ? "a step the defenses are known to catch" : step.role === "control" ? "a step that must raise no alert" : "";
+  // A step that is not a test says first what it is, by its name; a test's name is in the chip at the end.
+  const progress = `${recording.steps.indexOf(step) + 1} of ${recording.steps.length} steps`;
   return (
     <div className="lv-kicker">
       {step.role === "test" ? null : (
         <>
-          <span className="lv-role">{role}</span>
+          <span className="lv-role" title={progress}>
+            {capital(stepLabel(recording, step))}
+          </span>
           {hint ? <span className="lv-kicker-hint">{hint}</span> : null}
           <i className="lv-sep" />
         </>
@@ -45,9 +48,11 @@ function Kicker({ recording, step }: { recording: Recording; step: Step }) {
         {step.technique.id}
       </span>
       <span className="lv-title">{step.title}</span>
-      <span className="lv-step-chip" title={`Its place in the run: ${recording.steps.indexOf(step) + 1} of ${recording.steps.length} steps`}>
-        {stepLabel(recording, step)}
-      </span>
+      {step.role === "test" ? (
+        <span className="lv-step-chip" title={progress}>
+          {stepLabel(recording, step)}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -59,12 +64,7 @@ function Kicker({ recording, step }: { recording: Recording; step: Step }) {
  */
 function noAlertYet(step: Step, stood: Outcome, total: number): string | null {
   if (stood === step.outcome) return null;
-  return stood === "seen" ? `${plural(step.visibility.events ?? total, "event")} recorded, no alert by the end of the step.` : "No sensor recorded it, and no alert by the end of the step.";
-}
-
-/** How many published rules matched the step below alert level, of the matches `heard` so far. */
-function reviewRules(heard: readonly Alert[]): number {
-  return new Set(heard.filter((alert) => !alert.counts && alert.launcher_only !== true && alert.rule.origin === "pinned").map((alert) => alert.rule.id)).size;
+  return stood === "seen" ? `${plural(step.visibility.events ?? total, "event")} recorded, no alert by the end of the step.` : `${capital(unseenWords(step))}, and no alert by the end of the step.`;
 }
 
 /**
@@ -85,15 +85,14 @@ function why(step: Step, stood: Outcome, first: Alert | null, heard: readonly Al
     );
   }
   if (step.outcome === "seen") {
-    const review = reviewRules(heard);
     const events = step.visibility.events ?? total;
     return (
       <>
-        {plural(events, "event")} recorded, {review > 0 ? `${plural(review, "rule")} matched for review` : "no rule matched"}, none at alert level.
+        {plural(events, "event")} recorded, {belowAlertWords(heard)}, none at alert level.
       </>
     );
   }
-  if (step.outcome === "unseen") return <>No sensor recorded it.</>;
+  if (step.outcome === "unseen") return <>{capital(unseenWords(step))}.</>;
   if (step.outcome === "stopped" && step.defense) {
     return (
       <>
@@ -111,11 +110,8 @@ function whyText(step: Step, stood: Outcome, first: Alert | null, heard: readonl
   if (step.outcome === "alerted") {
     return first ? `${first.rule.title} (${first.rule.level}) matched an event of this step.` : `${sentence(step.visibility.basis)}.`;
   }
-  if (step.outcome === "seen") {
-    const review = reviewRules(heard);
-    return `${plural(step.visibility.events ?? total, "event")} recorded, ${review > 0 ? `${plural(review, "rule")} matched for review` : "no rule matched"}, none at alert level.`;
-  }
-  if (step.outcome === "unseen") return "No sensor recorded it.";
+  if (step.outcome === "seen") return `${plural(step.visibility.events ?? total, "event")} recorded, ${belowAlertWords(heard)}, none at alert level.`;
+  if (step.outcome === "unseen") return `${capital(unseenWords(step))}.`;
   if (step.outcome === "stopped" && step.defense) return `Hardening change: ${step.defense.title}.`;
   return `${sentence(step.happened.basis)}.`;
 }
@@ -174,7 +170,7 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
   const step = moment?.step;
   const outcome = moment?.outcome;
   // One live region for the whole life of the caption: a region that is added already filled is often not read.
-  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, moment.named, moment.heard, total)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${step.plain ?? step.title}`;
+  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, moment.named, moment.heard, total)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${plainMarks(step.plain ?? step.title)}`;
   const live = (
     <div className="lv-sr" aria-live="polite" aria-atomic="true">
       {announcement}
@@ -201,7 +197,7 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
   // The alerts the caption names, picked once in playback's firing order, so the sentence, its notes and its spoken text agree.
   const labAlert = step.outcome !== "alerted" && step.outcome_with_lab_rules === "alerted" ? moment.namedLab : null;
   const first = outcome === "alerted" ? moment.named : null;
-  const falseAlerts = first ? falseAlertsOf(recording, first.rule.title) : 0;
+  const falseAlerts = first ? ordinaryAlertEvents(recording, first.rule.title) : 0;
   return (
     <section
       className="lv-caption"
@@ -219,7 +215,9 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
       {/* Only the told step rises in again; the verdict below keeps its elements, so a focused button is not lost. */}
       <div className="lv-caption-in" key={step.id}>
         <Kicker recording={recording} step={step} />
-        <div className={`lv-plain${long ? " is-long" : ""}`}>{step.plain ?? step.title}</div>
+        <div className={`lv-plain${long ? " is-long" : ""}`}>
+          <FreeText text={step.plain ?? step.title} />
+        </div>
       </div>
       <div className="lv-caption-out">
         <div className={`lv-verdict${moment.revealed ? "" : " is-hidden"}`}>
