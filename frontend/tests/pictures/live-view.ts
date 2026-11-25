@@ -4,22 +4,31 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
-import { loopFrames, takeFrames, writeLoop } from "./loop";
-import type { LoopPlan } from "./loop";
+import type { Locator, Page } from "@playwright/test";
+import { loopFrames, placeAfterFirstAlert, takeFrames, writeLoop } from "./loop";
+import type { LoopPlan, Place } from "./loop";
 
-// Takes the pictures of the live view that the README shows, and the loop of it
-// playing (see loop.ts), and keeps the
-// single replay page they were taken of, from the recording shipped with the
-// app and the real service. CI runs it and keeps the folder as an artifact:
+// Takes the pictures that the README and the documents show, from the two
+// recordings shipped with the app and the real service, and keeps the single
+// replay page of each recording they were taken of. CI runs it and keeps the
+// folder as an artifact:
 //
 //   BLUEFIRE_PICTURES=<new folder> pnpm pictures
 //
-// The moments are found by the steps' outcomes in the recording, so another
-// recording of the same kind gives the same pictures of its own run. The script
-// fails if a page prints an error, if the replay page asks for anything beyond
-// its own file or the app for anything beyond the service, or if a moment does
-// not show what the picture is meant to show.
+// The run on one Linux machine gives the pictures of the live view on one host
+// and its page, replay.html; the attack path through a network gives the loop
+// at the top of the README (see loop.ts), the pictures of the path and its
+// page, attack-path.html; the app gives its own screens.
+//
+// The moments are found by what the steps are in the recording (their outcomes,
+// their hosts, the first alert, the goal), so another recording of the same
+// kind gives the same pictures of its own run. The script fails if a page
+// prints an error, if a replay page asks for anything beyond its own file or
+// the app for anything beyond the service, if a moment does not show what the
+// picture is meant to show, or if a recording no longer bears out what the
+// README says of it. Each picture is taken once the page is at rest: two
+// pictures taken one after the other are the same, and the app's top bar says
+// the service is connected.
 
 interface Step {
   id: string;
@@ -28,19 +37,38 @@ interface Step {
   title: string;
   outcome: string;
   command?: string;
+  host?: string;
+  from?: string | null;
+  technique?: { id: string };
+}
+
+interface ShippedAlert {
+  step: string;
+  detector: string;
+  rule: { title: string; level?: string; origin?: string };
+  launcher_only?: boolean;
 }
 
 interface Shipped {
   id: string;
   title: string;
-  source: { run_url?: string };
+  source: { run_url?: string; tools?: { name: string; role?: string }[] };
   steps: Step[];
-  alerts: { step: string; detector: string; rule: { title: string }; launcher_only?: boolean }[];
+  alerts: ShippedAlert[];
+}
+
+interface ShippedPath extends Shipped {
+  kind: string;
+  network: { hosts: { id: string; role: string; kind: string }[] };
+  attacker: { goal?: string };
+  score: { first_alert_seconds: number | null; goal_seconds: number | null };
 }
 
 const repository = resolve(process.cwd(), "..");
 const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
+const PATH_RECORDING = "bluefire/data/recordings/lab-range-one-path.json";
+const path: ShippedPath = JSON.parse(readFileSync(join(repository, PATH_RECORDING), "utf-8"));
 const PAIR = "bluefire/data/recordings/deltas/lab-pair-history-watch.json";
 const pairRun: string = (JSON.parse(readFileSync(join(repository, PAIR), "utf-8")) as { after: { run_url?: string } }).after.run_url ?? "not named in the comparison";
 const RULE_PAIR = "bluefire/data/recordings/deltas/lab-rule-history-truncated.json";
@@ -49,13 +77,17 @@ const FILES = [
   "SOURCE.txt",
   "analyse-unseen.png",
   "analyse.png",
+  "app-analyse.png",
   "app-overview.png",
   "app-pair.png",
   "app-recorded-run.png",
   "app-rule-pair.png",
   "app-runs-pair.png",
   "app-runs.png",
+  "attack-path.html",
   "live-view-loop.gif",
+  "path-goal-wide.png",
+  "path-no-alert.png",
   "replay.html",
   "watch-first-alert.png",
   "watch-seen.png",
@@ -66,17 +98,21 @@ const FILES = [
 // Late in a step: its outcome is told and every rule match has reached its engine.
 const LATE = 0.95;
 
+function inOrder(recording: Shipped): Step[] {
+  return [...recording.steps].sort((one, other) => one.order - other.order);
+}
+
 /** The steps that pass the test, in the run's order. */
-function every(what: string, passes: (step: Step) => boolean): Step[] {
-  const found = [...shipped.steps].sort((one, other) => one.order - other.order).filter(passes);
-  if (found.length === 0) throw new Error(`The recording has no ${what}.`);
+function every(what: string, passes: (step: Step) => boolean, recording: Shipped = shipped): Step[] {
+  const found = inOrder(recording).filter(passes);
+  if (found.length === 0) throw new Error(`${recording.title}: the recording has no ${what}.`);
   return found;
 }
 
 /** The first step in the run's order that passes the test. */
-function first(what: string, passes: (step: Step) => boolean): Step {
-  const [found] = every(what, passes);
-  if (!found) throw new Error(`The recording has no ${what}.`);
+function first(what: string, passes: (step: Step) => boolean, recording: Shipped = shipped): Step {
+  const [found] = every(what, passes, recording);
+  if (!found) throw new Error(`${recording.title}: the recording has no ${what}.`);
   return found;
 }
 
@@ -90,20 +126,62 @@ function launcherLine(step: Step): boolean {
 }
 
 const firstAlert = first("test that alerted", (step) => step.role === "test" && step.outcome === "alerted");
-const afterFirstAlert = first("step after the first alert on a test", (step) => step.order > firstAlert.order);
-// The README's caption under the loop says that the test after the first alert is one no sensor recorded.
-if (afterFirstAlert.role !== "test" || afterFirstAlert.outcome !== "unseen") {
-  throw new Error(
-    `The step after the first alert, "${afterFirstAlert.title}", is a ${afterFirstAlert.role} with the outcome ${afterFirstAlert.outcome}, not an unseen test. ` +
-      'The caption under the loop in README.md ("a published rule raises its first alert, then the next test does its work and neither sensor records it") ' +
-      "would be untrue of this recording: change the caption, or the loop's plan, with the recording.",
-  );
-}
 const unseen = first("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
 // Seen with no alert, while a rule written in this repository would have alerted: the gap and its fix in one picture.
 // The first of these whose rule titles fit the picture whole.
 const seen = every("test seen with no alert", (step) => step.role === "test" && step.outcome === "seen" && matchedBy(step, "pinned") && matchedBy(step, "lab") && !launcherLine(step));
 const stopped = first("hardened rerun that was stopped", (step) => step.role === "hardened" && step.outcome === "stopped" && !launcherLine(step));
+
+// The attack path, and what the README says of it. Each sentence is checked here, so a later recording that no
+// longer bears it out fails with the sentence to change.
+const CAPTION =
+  'The caption under the loop in README.md ("Wazuh, an open-source security monitor, alerted on the password guessing on the web server a minute in. ' +
+  "About eleven minutes later the build server's signing secret was copied to inet, the stand-in internet, with no alert.\")";
+const NO_ALERT_SECTION =
+  'The section "Read what no rule alerted on" of README.md ("Every step after the password guessing was recorded, and no rule alerted on any of them. ' +
+  'Pictured: step 9 of the same run, where two stock rules matched below alert level and the screen names the one to start from.")';
+function untrue(sentence: string, reason: string): never {
+  throw new Error(`${sentence} is untrue of ${PATH_RECORDING}: ${reason}. Change it with the recording, and the loop's plan or the picture if they no longer show it.`);
+}
+const pathSteps = inOrder(path);
+const pathFirst = first("step", () => true, path);
+const pathLast = every("step", () => true, path).reverse()[0] ?? pathFirst;
+function pathHost(id: string | null | undefined): { id: string; role: string; kind: string } | undefined {
+  return path.network.hosts.find((host) => host.id === id);
+}
+/** A match of one of the published rules the recording names (not one written in this repository). */
+function stock(alert: ShippedAlert): boolean {
+  return alert.rule.origin === "pinned" && !alert.launcher_only;
+}
+const BELOW_ALERT = new Set(["low", "medium"]);
+const webServer = pathHost(pathFirst.host);
+const buildServer = path.network.hosts.find((host) => /build server/i.test(host.role));
+const internet = path.network.hosts.find((host) => host.kind === "internet");
+if (path.kind !== "attack path") untrue(CAPTION, `it is a recording of kind "${path.kind}", not an attack path`);
+if (pathFirst.outcome !== "alerted") untrue(CAPTION, `its first step, "${pathFirst.title}", is ${pathFirst.outcome}, not alerted`);
+if (!(pathFirst.technique?.id ?? "").startsWith("T1110")) untrue(CAPTION, `its first step, "${pathFirst.title}", is ${pathFirst.technique?.id ?? "no technique"}, not password guessing (T1110)`);
+if (!webServer || !/^web\b/i.test(webServer.role)) untrue(CAPTION, `its first step ran on ${pathFirst.host ?? "no host"}, whose role is not the web server's`);
+if (!path.alerts.some((alert) => alert.step === pathFirst.id && stock(alert) && (alert.rule.level === "high" || alert.rule.level === "critical"))) untrue(CAPTION, "no published rule alerted on its first step");
+if (!(path.source.tools ?? []).some((tool) => tool.role === "rules" && tool.name.startsWith("Wazuh"))) untrue(CAPTION, "its published rules are not Wazuh's");
+const firstAlertSeconds = path.score.first_alert_seconds;
+const goalSeconds = path.score.goal_seconds;
+if (firstAlertSeconds === null || Math.round(firstAlertSeconds / 60) !== 1) untrue(CAPTION, `its first alert came ${firstAlertSeconds ?? "never"} s in, not a minute in`);
+if (goalSeconds === null) untrue(CAPTION, "the attacker did not reach its goal");
+if (Math.round((goalSeconds - firstAlertSeconds) / 60) !== 11) untrue(CAPTION, `the goal was reached ${Math.round(goalSeconds - firstAlertSeconds)} s after the first alert, not about eleven minutes`);
+if (!buildServer || !/signing secret/i.test(path.attacker.goal ?? "") || !(path.attacker.goal ?? "").startsWith(`${buildServer.id}'s`)) untrue(CAPTION, `its goal is "${path.attacker.goal ?? ""}", not the build server's signing secret`);
+if (!internet || pathLast.host !== internet.id || !(path.attacker.goal ?? "").endsWith(internet.id)) untrue(CAPTION, `its last step ran on ${pathLast.host ?? "no host"}, not the stand-in internet the goal names`);
+if (internet.id !== "inet") untrue(CAPTION, `its stand-in internet is called "${internet.id}", not inet`);
+const afterGuessing = pathSteps.slice(1).filter((step) => step.outcome !== "seen");
+if (afterGuessing.length > 0) untrue(NO_ALERT_SECTION, `these steps after the first are not seen with no alert: ${afterGuessing.map((step) => `"${step.title}" (${step.outcome})`).join(", ")}`);
+// The step that logs in to the build server from the web server and copies files back: of the steps from the web server
+// to the build server, the last that a published rule matched below alert level, which "Fix this" starts from.
+const copies = pathSteps.filter((step) => step.from === webServer.id && step.host === buildServer.id && path.alerts.some((alert) => alert.step === step.id && stock(alert) && BELOW_ALERT.has(alert.rule.level ?? "")));
+const copy = copies[copies.length - 1];
+if (!copy) untrue(NO_ALERT_SECTION, `no step from ${webServer.id} to ${buildServer.id} was matched by a published rule below alert level`);
+if (pathSteps.indexOf(copy) !== 8) untrue(NO_ALERT_SECTION, `the login to ${buildServer.id} that copies files back is step ${pathSteps.indexOf(copy) + 1}, not step 9`);
+// "Below alert level" is a match at low or medium level, which the app marks for review; informational matches are not counted.
+const copyReview = new Set(path.alerts.filter((alert) => alert.step === copy.id && stock(alert) && BELOW_ALERT.has(alert.rule.level ?? "")).map((alert) => alert.rule.title));
+if (copyReview.size !== 2) untrue(NO_ALERT_SECTION, `step 9 was matched below alert level by ${copyReview.size} published rules, not two`);
 
 /** Every error the page prints, and every request it makes beyond what it may reach. */
 function watch(page: Page, allowed: (url: string) => boolean) {
@@ -123,8 +201,7 @@ function watch(page: Page, allowed: (url: string) => boolean) {
  * Waits for the fonts and for every animation and transition to end, then for
  * the page to stand still: no animation runs, and nothing on it moves over two
  * frames. An entrance animation that starts after a first look found none, as a
- * page that has just loaded can start one, is waited for too, so the same page
- * gives the same picture on every run.
+ * page that has just loaded can start one, is waited for too.
  */
 async function settle(page: Page): Promise<void> {
   await page.evaluate(() => document.fonts.ready.then(() => true));
@@ -149,9 +226,47 @@ async function settle(page: Page): Promise<void> {
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
 
-async function picture(page: Page, folder: string, name: string): Promise<void> {
-  await settle(page);
-  await page.screenshot({ path: join(folder, name) });
+/** Inside the app: the top bar says the service is connected, which it says only while its last check is fresh. */
+async function expectConnected(page: Page): Promise<void> {
+  // The shell checks the service every 15 seconds and calls a check older than 30 "unchecked".
+  await expect(page.getByRole("img", { name: "Local service connected", exact: true }), "the app's top bar does not say Connected").toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /^Check(ing)? connection$/ })).toHaveCount(0);
+}
+
+/**
+ * Takes a picture once the page is at rest, and writes it: settled (see above), and two pictures taken one after the
+ * other the same, so nothing on screen was still changing, whatever changed it (an entrance, a colour fading, an
+ * answer from the service). Inside the app the top bar also says Connected, before the pictures and after them.
+ */
+async function picture(page: Page, folder: string, name: string, part?: Locator): Promise<void> {
+  const app = page.url().startsWith("http");
+  const take = () => (part ? part.screenshot() : page.screenshot());
+  const tried: number[] = [];
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (app) await expectConnected(page);
+    await settle(page);
+    if (app) {
+      await page.evaluate((whole) => {
+        // A screen opened from a scrolled one can keep a few pixels of the old scroll; a visitor's page starts at its top.
+        // Instant: the app's own style scrolls smoothly, and a smooth scroll can still be a pixel short when checked.
+        if (whole) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        // The app's entrance, ended, holds its last frame with the page on a layer of its own, which can be drawn a
+        // shade apart from the same page without it: let it go, and the page stands as its own style draws it.
+        for (const item of document.getAnimations()) if (item instanceof CSSAnimation && item.animationName === "page-in" && item.playState === "finished") item.cancel();
+      }, !part);
+      await settle(page);
+      if (!part) expect(await page.evaluate(() => window.scrollY), `${name}: the page is not at its top`).toBe(0);
+    }
+    const one = await take();
+    const other = await take();
+    if (app) await expectConnected(page);
+    if (one.equals(other)) {
+      writeFileSync(join(folder, name), one);
+      return;
+    }
+    tried.push(attempt);
+  }
+  throw new Error(`${name}: the page did not come to rest: ${tried.length} pairs of pictures taken one after the other differed.`);
 }
 
 /**
@@ -198,7 +313,7 @@ async function expectWholeRows(page: Page, name: string, chosen?: string): Promi
  * timeline no longer says it is running and every engine that matched shows a
  * match. Gives the titles of the match lines on screen that are cut short.
  */
-async function expectMoment(page: Page, step: Step): Promise<string[]> {
+async function expectMoment(page: Page, step: Step, recording: Shipped = shipped): Promise<string[]> {
   await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(step.title);
   const where = page.getByRole("slider", { name: /^Timeline/ });
@@ -206,7 +321,7 @@ async function expectMoment(page: Page, step: Step): Promise<string[]> {
   await expect(where).not.toHaveAttribute("aria-valuetext", /, running: /);
   // Every rule engine that matched the step shows a match of its own (each lists a few and counts the rest).
   // A match line in an engine carries its rule's title as its tooltip, which the step's caption does not.
-  const matches = shipped.alerts.filter((alert) => alert.step === step.id && !alert.launcher_only);
+  const matches = recording.alerts.filter((alert) => alert.step === step.id && !alert.launcher_only);
   await settle(page);
   const cut: string[] = [];
   for (const detector of new Set(matches.map((alert) => alert.detector))) {
@@ -223,8 +338,8 @@ async function expectMoment(page: Page, step: Step): Promise<string[]> {
 }
 
 /** Each match line on screen holds its rule's whole title, and a title that wraps does not reach the next engine's label. */
-async function expectWholeMoment(page: Page, step: Step): Promise<void> {
-  expect(await expectMoment(page, step), "match lines cut short").toEqual([]);
+async function expectWholeMoment(page: Page, step: Step, recording: Shipped = shipped): Promise<void> {
+  expect(await expectMoment(page, step, recording), "match lines cut short").toEqual([]);
   const overlaps = await page.evaluate(() => {
     const labels = [...document.querySelectorAll(".lv-engine-label")].map((label) => ({ top: label.getBoundingClientRect().top, bottom: label.querySelector(".lv-matches")?.getBoundingClientRect().bottom ?? label.getBoundingClientRect().bottom })).sort((one, other) => one.top - other.top);
     return labels.slice(1).map((label, index) => (labels[index]?.bottom ?? 0) - label.top).filter((overlap) => overlap > 0);
@@ -273,24 +388,40 @@ async function expectLabelledAxis(page: Page): Promise<void> {
   expect(where, "the last label of the lanes' time axis lies this far along it").toBeGreaterThan(0.5);
 }
 
-test("pictures of the live view, in the replay page and in the app", async ({ page }) => {
+/** The path at its goal: the last step told, the goal marked reached, the race line whole. */
+async function expectGoal(page: Page, name: string): Promise<void> {
+  await expectMoment(page, pathLast, path);
+  await expect(page.getByText(/goal reached/i).filter({ visible: true }).first(),`${name}: the goal is not marked reached`).toBeVisible();
+  await expect(page.getByText(/The attacker reached its goal/), `${name}: the race line does not say the attacker reached its goal`).toBeVisible();
+  await expectWholeRaceLine(page, name);
+}
+
+/** The single replay page of a recording, as the command line writes it. */
+function writePage(recording: Shipped, out: string): void {
+  const workspace = mkdtempSync(join(tmpdir(), "bluefire-pictures-"));
+  try {
+    const made = spawnSync(process.env.BLUEFIRE_PYTHON ?? "python3", ["-m", "bluefire.cli", "--runs-dir", workspace, "recordings", "page", recording.id, "--out", out], { cwd: repository, encoding: "utf-8" });
+    if (made.status !== 0) throw new Error(`bluefire recordings page ${recording.id} exited with ${made.status}:\n${made.stdout}\n${made.stderr}`);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+}
+
+test("pictures of the live view, in the replay pages and in the app", async ({ page }) => {
   const folder = process.env.BLUEFIRE_PICTURES ?? "";
   if (!folder) throw new Error("Set BLUEFIRE_PICTURES to the folder the pictures go to.");
   mkdirSync(folder, { recursive: true });
   expect(readdirSync(folder), `${folder} must be empty: it is kept as it is`).toEqual([]);
 
-  // The page, as the command line makes it.
-  const workspace = mkdtempSync(join(tmpdir(), "bluefire-pictures-"));
+  // The pages, as the command line makes them.
   const replay = join(folder, "replay.html");
-  try {
-    const made = spawnSync(process.env.BLUEFIRE_PYTHON ?? "python3", ["-m", "bluefire.cli", "--runs-dir", workspace, "recordings", "page", shipped.id, "--out", replay], { cwd: repository, encoding: "utf-8" });
-    if (made.status !== 0) throw new Error(`bluefire recordings page exited with ${made.status}:\n${made.stdout}\n${made.stderr}`);
-  } finally {
-    rmSync(workspace, { recursive: true, force: true });
-  }
+  writePage(shipped, replay);
+  const attackPath = join(folder, "attack-path.html");
+  writePage(path, attackPath);
 
-  // The page may reach its own file only; the app, later, the service that serves it.
+  // A page may reach its own file only; the app, later, the service that serves it.
   const own = pathToFileURL(replay).href;
+  const pathOwn = pathToFileURL(attackPath).href;
   const address = process.env.BLUEFIRE_SERVICE_URL ?? "";
   const service = `${new URL(address).origin}/`;
   let reachable = own;
@@ -299,6 +430,11 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
     await page.goto(`${own}?${query}`);
     await expect(page.getByRole("heading", { level: 1, name: shipped.title })).toBeVisible();
   };
+  const openPath = async (query: string) => {
+    await page.goto(`${pathOwn}?${query}`);
+    await expect(page.getByRole("heading", { level: 1, name: path.title })).toBeVisible();
+  };
+  const at = (place: Place) => `step=${encodeURIComponent(place.step)}&at=${place.at}&paused=1`;
 
   await page.setViewportSize({ width: 1440, height: 900 });
   const watched: [string, Step[]][] = [
@@ -359,19 +495,41 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "wide-first-alert.png");
 
-  // Inside the app: the Overview, which leads with the real run and the turns of the loop.
+  // The attack path in its own page. "Read what no rule alerted on" in the README: late in the step that logs in to
+  // the build server and copies files back, seen, the published rules that matched it below alert level whole,
+  // "Fix this" beside it and the hint that says which rule to start from.
+  reachable = pathOwn;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openPath(at({ step: copy.id, at: LATE }));
+  await expectWholeMoment(page, copy, path);
+  const told = page.getByRole("region", { name: "The step", exact: true });
+  await expect(told.getByRole("button", { name: "Fix this", exact: true }), `${NO_ALERT_SECTION}: the step it shows has no Fix this`).toBeVisible();
+  await expect(told, `${NO_ALERT_SECTION}: the step it shows is not told as seen with two rules matched for review`).toContainText(/2 rules matched for review, none at alert level/);
+  await expect(told, `${NO_ALERT_SECTION}: the step's hint does not start from a rule that matched it`).toContainText(/start from the rule/);
+  await expectWholeRaceLine(page, "path-no-alert.png");
+  await picture(page, folder, "path-no-alert.png");
+  // The path at its goal, at 1920 by 1080, for the documents.
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await openPath(at({ step: pathLast.id, at: 1 }));
+  await expectGoal(page, "path-goal-wide.png");
+  await picture(page, folder, "path-goal-wide.png");
+
+  // Inside the app: the Overview, which leads with the attack path and the turns of the loop.
   await page.setViewportSize({ width: 1440, height: 900 });
   reachable = service;
   await page.goto(address);
-  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "A run recorded in CI" }).getByRole("list", { name: "The changes to the defense, in order" }).getByRole("link")).toHaveCount(2);
+  await expectConnected(page);
+  const leading = page.getByRole("region", { name: "A run recorded in CI" });
+  await expect(leading).toContainText(path.title);
+  await expect(leading.getByRole("list", { name: "The changes to the defense, in order" }).getByRole("link")).toHaveCount(2);
   await picture(page, folder, "app-overview.png");
 
-  // The Runs screen with the recorded run, and the run's page on its first alert.
+  // The Runs screen with the recorded runs, and the run's page on its first alert.
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   const recorded = page.getByRole("region", { name: "Recorded runs" });
   const link = recorded.getByRole("link", { name: shipped.title, exact: true });
   await expect(link).toBeVisible();
+  await expect(recorded.getByRole("link", { name: path.title, exact: true })).toBeVisible();
   await picture(page, folder, "app-runs.png");
 
   // The pair of runs shipped with the app: its part of the Runs screen alone, and its own page.
@@ -379,8 +537,7 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   const pair = pairs.getByRole("link", { name: "Clear Bash history (echo) went from unseen to seen.", exact: true });
   await pairs.scrollIntoViewIfNeeded();
   await expect(pair).toBeVisible();
-  await settle(page);
-  await pairs.screenshot({ path: join(folder, "app-runs-pair.png") });
+  await picture(page, folder, "app-runs-pair.png", pairs);
   await pair.click();
   await expect(page).toHaveURL(/#\/runs\/compared\/[0-9a-f]{16}$/);
   await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
@@ -399,12 +556,29 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await page.getByRole("link", { name: "Runs", exact: true }).first().click();
   await expect(link).toBeVisible();
 
-  const path = await link.getAttribute("href");
-  if (!path?.startsWith("#/")) throw new Error(`The recorded run's link is ${path}.`);
+  // "Find what nobody saw" in the README: open the run on one Linux machine, press Analyse, and click the first row of
+  // the table, which is the test no sensor recorded: its detail opens beside the table. At 1920 by 1080, where the
+  // table beside the app's rail has the room of the replay page's at 1440 by 900.
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await link.click();
+  await page.getByRole("button", { name: "Analyse", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const rows = page.locator(".lv-table tbody tr[data-step]");
+  await expect(rows.first(), `The section "Find what nobody saw" of README.md says that pressing Analyse lists first the test no sensor recorded, "${unseen.title}"`).toHaveAttribute("data-step", unseen.id);
+  await rows.first().locator(".lv-row-button").click();
+  await expect(page.getByRole("article").getByRole("heading", { name: unseen.title, exact: true })).toBeVisible();
+  await expectWholeRows(page, "app-analyse.png");
+  await picture(page, folder, "app-analyse.png");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
+  await expect(link).toBeVisible();
+
+  const runPath = await link.getAttribute("href");
+  if (!runPath?.startsWith("#/")) throw new Error(`The recorded run's link is ${runPath}.`);
   const moment = (step: Step) =>
     page.evaluate((hash) => {
       window.location.hash = hash;
-    }, `${path.slice(1)}?step=${step.id}&at=${LATE}&paused=1`);
+    }, `${runPath.slice(1)}?step=${step.id}&at=${LATE}&paused=1`);
   // At 1440 by 900 too, where the live view shares the width with the app's own rail: every rule title
   // of the first alert is whole, wrapped where it is long, and the host's label is not cut by the band
   // below the map when the step's command takes two lines, as the longest command of a test does.
@@ -420,41 +594,61 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "app-recorded-run.png");
 
-  // The loop for the top of the README, back in the replay page. It comes last because its frames
+  // The loop for the top of the README, in the attack path's page. It comes last because its frames
   // take minutes, and the app above has to be opened while the address the service printed is
-  // still good. Its first frame, which a still or a link preview shows, is the moment of
-  // watch-first-alert.png, held a second. It goes on to the step after it, held there, then plays
-  // the alerted test from the moment it begins up to that first frame again, so it closes with no
-  // seam. Six tenths of the view's speed, so the lights can be followed.
+  // still good. Its first frame, which a still or a link preview shows, is the path at its goal:
+  // every hop drawn, the first alert's mark on the web server, the goal reached, both marks on the
+  // clock, held 2.5 s. Then the first step from its start until its alert has been told, played
+  // four times as fast as the view since it is a long step, held 1.5 s; then the step that copies
+  // files back from the build server, twice as fast, to late in it, seen with no alert, held 1.5 s;
+  // then the last step from its start to its end, which is the first frame again, so the loop closes
+  // with no seam. About 13 seconds in all.
   // Leave the app first, so that nothing of it is still asking the service when only the page's own file may be reached.
   await page.goto("about:blank");
   await page.setViewportSize({ width: 1440, height: 900 });
-  reachable = own;
-  const alertMoment = { step: firstAlert.id, at: LATE };
+  reachable = pathOwn;
+  const goal = { step: pathLast.id, at: 1 };
+  const alertTold = placeAfterFirstAlert(path, 1);
+  const copyLate = { step: copy.id, at: LATE };
+  // Each held place shows what the README says of it before any frame is taken.
+  await openPath(at(goal));
+  await expectGoal(page, "the loop's first frame");
+  await openPath(at(alertTold));
+  await expect(page.getByRole("region", { name: "The step", exact: true }).locator(".lv-word"), `${CAPTION}: the loop's frame of the first alert does not tell the first step alerted`).toHaveText("alerted");
+  await expect(page.getByText(/^The defense raised its first alert/), "the loop's frame of the first alert has no first alert on the race line").toBeVisible();
+  await openPath(at(copyLate));
+  await expect(page.getByRole("region", { name: "The step", exact: true }).getByRole("button", { name: "Fix this", exact: true })).toBeVisible();
   const loop: LoopPlan = {
     stretches: [
-      { from: alertMoment, to: { step: afterFirstAlert.id, at: 1 }, holdFirst: 1000, holdLast: 2000 },
-      { from: { step: firstAlert.id, at: 0 }, to: alertMoment },
+      { from: goal, holdFirst: 2500 },
+      { from: { step: pathFirst.id, at: 0 }, to: alertTold, holdLast: 1500, pace: 4 },
+      { from: { step: copy.id, at: 0 }, to: copyLate, holdLast: 1500, pace: 2 },
+      { from: { step: pathLast.id, at: 0 }, to: goal },
     ],
     fps: 10,
-    pace: 0.6,
+    pace: 1,
   };
-  const frames = loopFrames(shipped, loop);
-  const pictures = await takeFrames(page, open, frames);
-  // The last frame is the alerted test just before the loop's first frame.
-  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(firstAlert.title);
+  const frames = loopFrames(path, loop);
+  const pictures = await takeFrames(page, openPath, frames);
+  // The last frame is the last step just before the loop's first frame.
+  await expect(page.getByRole("region", { name: "The step", exact: true })).toContainText(pathLast.title);
   await writeLoop(pictures, frames, 1000, join(folder, "live-view-loop.gif"));
 
   writeFileSync(
     join(folder, "SOURCE.txt"),
     [
-      "Pictures of the live view and its single replay page, made from the recording shipped with BlueFire,",
-      "and of the Overview, the Runs screen and the pages of the pair of runs and the run evaluated twice shipped with it.",
-      `Recording: ${shipped.id} (${RECORDING})`,
-      `Recorded in the CI run: ${shipped.source.run_url ?? "not named in the recording"}`,
+      "Pictures of the live view and the single replay pages, made from the two recordings shipped with BlueFire,",
+      "and of the Overview, the Runs screen, the run on one Linux machine and the pages of the pair of runs and the run",
+      "evaluated twice shipped with it.",
+      `Run on one Linux machine: ${shipped.id} (${RECORDING}), recorded in the CI run ${shipped.source.run_url ?? "not named in the recording"}`,
+      `Attack path: ${path.id} (${PATH_RECORDING}), recorded in the CI run ${path.source.run_url ?? "not named in the recording"}`,
       `Pair: ${PAIR} (made in the CI run ${pairRun})`,
       `Run evaluated twice: ${RULE_PAIR} (made in the CI run ${rulePairRun})`,
       `Made from the commit: ${process.env.GITHUB_SHA ?? "not known: made outside CI"}`,
+      "",
+      "Of the run on one Linux machine: replay.html, watch-*.png, analyse.png, analyse-unseen.png, wide-first-alert.png.",
+      "Of the attack path: attack-path.html, live-view-loop.gif, path-no-alert.png, path-goal-wide.png.",
+      "Of the app: app-*.png.",
       "",
     ].join("\n"),
   );

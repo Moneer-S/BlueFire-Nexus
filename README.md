@@ -4,36 +4,44 @@
 
 <h1 align="center">BlueFire Nexus</h1>
 
-<p align="center"><strong>Watch attacks that ran on a real machine, step by step, next to what its defenses saw.</strong><br>
-For each step you see whether a sensor recorded it and whether a rule raised an alert. Change a defense, run it again, and see the difference.</p>
+<p align="center"><strong>Watch an attack move through a real network, step by step, next to what its defenses saw.</strong><br>
+Each step is drawn on a map and marked alerted, seen (recorded, no alert) or unseen (not recorded).</p>
 
-![The live view playing a recorded run on one Linux machine: a published rule has raised the first alert, the next test takes effect with nothing recorded and is marked unseen, then the alerted test plays from its start, its events travelling through two sensors to the rule engines](docs/assets/front/live-view-loop.gif)
+![The live view playing a recorded attack path on a map of seven hosts. It opens at the end of the path, every hop drawn and the goal marked reached, then plays the password guessing until Wazuh alerts, the login to the build server until it is told seen with no alert, and the upload to the goal again](docs/assets/front/live-view-loop.gif)
 
-<p align="center">Recorded on a throwaway Linux machine: a published rule raises its first alert, then the next test does its work and neither sensor records it.</p>
+<p align="center">Wazuh, an open-source security monitor, alerted on the password guessing on the web server a minute in. About eleven minutes later the build server's signing secret was copied to inet, the stand-in internet, with no alert.</p>
 
-## See it in a minute
+## Open the recording
 
-Download [`docs/live-view/replay.html`](docs/live-view/replay.html) and open it. It plays in any browser, offline, with nothing installed, and you can send it to anyone.
+Download [`docs/live-view/attack-path.html`](docs/live-view/attack-path.html) and open it in a browser; it holds this recording and works offline.
 
-Or run `docker compose up app`, open the address it prints, then **Runs**: the app opens with the recorded runs and attacks nothing on your machine.
+Or run `docker compose up app`, open the address it prints, then **Runs** in the menu: the app replays the recorded runs and attacks nothing on your machine.
+
+The network is seven containers built from one spec file, on networks with no route out, and it was recorded on a GitHub-hosted runner. Each step runs a test from Atomic Red Team, a public library of attack tests. [How the network is built and run](lab/README.md#range-one-its-hosts) names each host and gives the command that runs the path in Docker.
 
 ## What you can do with it
 
+### Read what no rule alerted on
+
+Every step after the password guessing was recorded, and no rule alerted on any of them. Pictured: step 9 of the same run, where two stock rules matched below alert level and the screen names the one to start from.
+
+![The live view late in the step that logs in to the build server with the key it found and copies files back: the hop from the web server to the build server lit, the step told seen with two rules matched for review and none at alert level, Fix this beside it, and a hint to start from the rule "Integrity checksum changed"](docs/assets/front/path-no-alert.png)
+
 ### Change a defense, see before and after
 
-Change a sensor's settings or a rule in a pull request, and the lab's CI shows what it moved. Here a change to the settings of auditd got the test nobody saw recorded.
+On the Runs screen, **Before against after** holds two changes to the defense of a run on one Linux machine. New auditd settings took "Clear Bash history (echo)" from unseen to seen, then a rule drafted from its event took 4 steps from seen to alerted.
 
-![Before against after in the app: one change to the settings of auditd, and the test nobody saw moved from unseen to seen, with the event it now records](docs/assets/front/app-pair.png)
+![The two changes on the Runs screen, in the order they were made: new auditd settings, after which Clear Bash history (echo) went from unseen to seen, then a new rule, after which 4 steps went from seen to alerted](docs/assets/front/app-runs-pair.png)
 
 ### Find what nobody saw
 
-The same run, all of it, in a table. The test no sensor recorded comes first, and beside it what happened and where to start fixing it.
+Open that run and press **Analyse**: the table lists first the one test no sensor recorded, "Clear Bash history (echo)". Click it: the panel beside the table says what happened and where to start.
 
-![Analyse mode: every test of the run in a table with what recorded it and what alerted, the unseen test first and selected, and beside it what happened and where to start](docs/assets/front/analyse-unseen.png)
+![Analyse mode of the run on one Linux machine: every test in a table with what recorded it and what alerted, the unseen test first and chosen, and beside the table its detail, which says it took effect with nothing recorded and to start with a sensor](docs/assets/front/analyse-unseen.png)
 
 ### See what hardening stopped
 
-Some tests run a second time with one hardening change made. Each shows whether the change stopped it, next to what the same test did without it.
+Some of those tests ran a second time on a hardened machine. Each rerun is marked stopped or not, with the hardening change named, next to what the same test did without it.
 
 ![The live view on a test run again on a hardened machine: marked stopped, with the hardening change named, next to what the same test did without it](docs/assets/front/watch-stopped.png)
 

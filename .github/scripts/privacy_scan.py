@@ -79,6 +79,10 @@ ACCEPTED_PATHS = {
     "bluefire/data/recordings/lab-range-one-path.json": (
         RANGE_ONE_WEB_HOME, RANGE_ONE_WEB_KEY, RANGE_ONE_WEB_KNOWN_HOSTS,
     ),  # fmt: skip
+    # The path's single page holds that recording.
+    "docs/live-view/attack-path.html": (
+        RANGE_ONE_WEB_HOME, RANGE_ONE_WEB_KEY, RANGE_ONE_WEB_KNOWN_HOSTS,
+    ),  # fmt: skip
     "lab/range/range-one.yaml": (RANGE_ONE_WEB_HOME, RANGE_ONE_CI_FILES),
     "lab/tests/test_range_path.py": (RANGE_ONE_WEB_HOME,),
     "lab/tests/fixtures/range/activity/archive.ndjson": (RANGE_ONE_OPS_HOME,),

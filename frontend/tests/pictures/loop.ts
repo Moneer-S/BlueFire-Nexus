@@ -16,14 +16,20 @@ export interface Place {
   at: number;
 }
 
-/** One stretch of playback, from one place to a later one, with the time its first and last frames stay. */
+/**
+ * One stretch of playback, from one place to a later one, with the time its
+ * first and last frames stay. Without `to` it is one still frame of `from`,
+ * shown for `holdFirst`.
+ */
 export interface Stretch {
   from: Place;
-  to: Place;
+  to?: Place;
   /** Milliseconds the stretch's first frame stays; a frame's own time when left out. */
   holdFirst?: number;
   /** Milliseconds the stretch's last frame stays; a frame's own time when left out. */
   holdLast?: number;
+  /** The stretch's own pace, in place of the plan's: a long step can be played faster than a short one. */
+  pace?: number;
 }
 
 export interface LoopPlan {
@@ -80,20 +86,39 @@ export function loopFrames(recordingJson: unknown, plan: LoopPlan): Frame[] {
   const frames: Frame[] = [];
   for (const stretch of plan.stretches) {
     const start = timeOf(timeline, stretch.from);
-    const end = timeOf(timeline, stretch.to);
+    const { to } = stretch;
+    if (!to) {
+      frames.push({ place: stretch.from, delay: stretch.holdFirst ?? own });
+      continue;
+    }
+    const end = timeOf(timeline, to);
     if (!(end > start)) throw new Error(`A stretch must end after it starts (${stretch.from.step} at ${stretch.from.at}).`);
-    const count = Math.max(1, Math.round(((end - start) / plan.pace) * plan.fps));
+    const count = Math.max(1, Math.round(((end - start) / (stretch.pace ?? plan.pace)) * plan.fps));
     for (let index = 0; index <= count; index += 1) {
       // The ends are the plan's own places, so that a held frame shows exactly the place it names.
-      const place = index === 0 ? stretch.from : index === count ? stretch.to : placeAt(timeline, start + ((end - start) * index) / count);
+      const place = index === 0 ? stretch.from : index === count ? to : placeAt(timeline, start + ((end - start) * index) / count);
       const delay = index === 0 ? (stretch.holdFirst ?? own) : index === count ? (stretch.holdLast ?? own) : own;
       frames.push({ place, delay });
     }
   }
   const [opening] = plan.stretches;
   const closing = plan.stretches[plan.stretches.length - 1];
-  if (opening && closing && samePlace(opening.from, closing.to)) frames.pop();
+  if (opening && closing && plan.stretches.length > 1 && samePlace(opening.from, closing.to ?? closing.from)) frames.pop();
   return frames;
+}
+
+/**
+ * The place a given number of screen seconds after the run's first alert on a
+ * step of role `test` has fired: its rule engine lit, the step told as alerted.
+ * Where the alert was raised after its step ended, that is in the silence
+ * after the step, while the step is still on screen.
+ */
+export function placeAfterFirstAlert(recordingJson: unknown, seconds: number): Place {
+  const timeline = buildTimeline(readRecording(recordingJson));
+  if (!timeline.firstAlert) throw new Error("The recording has no alert on a test.");
+  const place = placeAt(timeline, timeline.firstAlert.at + seconds);
+  if (place.step !== timeline.firstAlert.step.id) throw new Error(`${seconds} s after the first alert, the step on screen is ${place.step}, not ${timeline.firstAlert.step.id}.`);
+  return place;
 }
 
 /**
