@@ -1945,6 +1945,27 @@ def create_server(
     )
 
 
+def _read_shipped_recordings(service: PlatformService) -> None:
+    """Start reading the shipped recordings on a thread of their own, without waiting.
+
+    A request that needs them meanwhile waits for this reading. When it fails, that
+    request reads them again and answers the error, as it would without this start.
+    """
+
+    read = getattr(service, "read_shipped_recordings", None)
+    if not callable(read):
+        return
+
+    def run() -> None:
+        try:
+            read()
+        except Exception:
+            # Not lost: the request that needs them reads them again and answers it.
+            pass
+
+    threading.Thread(target=run, name="bluefire-shipped-recordings", daemon=True).start()
+
+
 def serve(
     service: PlatformService,
     *,
@@ -1967,6 +1988,7 @@ def serve(
             ui_root=ui_root,
             max_request_body=max_request_body,
         )
+        _read_shipped_recordings(service)
         if on_ready is not None:
             on_ready(server)
         server.serve_forever()
