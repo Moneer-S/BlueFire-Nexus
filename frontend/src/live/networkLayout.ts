@@ -192,6 +192,12 @@ export interface NetworkLayout {
   sensors: SensorNode[];
   detectors: DetectorNode[];
   links: LinkLine[];
+  /**
+   * The links never drawn while nothing crosses them: a sensed host's link to
+   * the defense host its sensors' lines join at. A step may still cross one,
+   * and the attack's path draws it then.
+   */
+  pathLinks: LinkLine[];
   /** The networks told once, each an outline round its hosts where it is drawn. Empty for one host. */
   zones: Zone[];
   /** On a network with a defense host, the defense's own side: null otherwise. */
@@ -334,7 +340,7 @@ export function travelPath(layout: NetworkLayout, sensorId: string, detectorId: 
 
 /** The drawn link between two hosts, either way round, with its curve running from `from` to `to`. Null when none is drawn. */
 export function linkBetween(layout: NetworkLayout, from: string, to: string): { line: LinkLine; curve: Curve } | null {
-  for (const item of layout.links) {
+  for (const item of [...layout.links, ...layout.pathLinks]) {
     if (item.from.host.id === from && item.to.host.id === to) return { line: item, curve: item.curve };
     if (item.from.host.id === to && item.to.host.id === from) return { line: item, curve: [item.curve[3], item.curve[2], item.curve[1], item.curve[0]] };
   }
@@ -739,6 +745,7 @@ export function layoutNetwork(network: Network, width: number, height: number, s
     sensors,
     detectors,
     links,
+    pathLinks: [],
     zones: [],
     defenseSide: null,
     junction,
@@ -1814,6 +1821,16 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
     linkPoints.push(points);
     for (const point of points) used.add(cell(point));
   }
+  // A sensed host's link to the defense is left to its sensors' lines, but a step may cross it: the attack's path draws it then, straight.
+  const drawnPairs = new Set(links.map((item) => [item.from.host.id, item.to.host.id].sort().join("\n")));
+  const pathLinks: LinkLine[] = [];
+  for (const link of drawnLinks(network, (link) => !(link.to === joinsAt && sensed.has(link.from)))) {
+    const from = hosts.get(link.from);
+    const to = hosts.get(link.to);
+    if (!from || !to || drawnPairs.has([link.from, link.to].sort().join("\n"))) continue;
+    const curve = linkCurve(from, to, 0);
+    pathLinks.push({ link, from, to, curve, label: pointOn(curve, 0.5), told: false, zone: null });
+  }
   const allLinkPoints = linkPoints.flat();
   // A zone's links are drawn only where the attack's path runs: a sensor's words keep off them, but less than off a line always drawn.
   const linePoints = [...linkPoints.filter((_, index) => links[index]?.zone === null).flat(), ...wirePoints];
@@ -2321,6 +2338,7 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
     sensors,
     detectors,
     links,
+    pathLinks,
     zones,
     defenseSide,
     junction,

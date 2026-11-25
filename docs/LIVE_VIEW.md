@@ -186,8 +186,10 @@ for one network by hand.
   link runs through it, on the side its line to the defense leaves from, so the
   line never runs back across its host. A pair of hosts linked both ways gets
   one line with both labels. A sensed host's link to the defense server where
-  the sensors' lines join is drawn by those lines rather than a second line;
-  any other link to the defense, from it or to another defense host, is drawn.
+  the sensors' lines join is drawn by those lines rather than a second line,
+  until a step crosses it: the attack's path then draws it, with its arrow and
+  its step's number. Any other link to the defense, from it or to another
+  defense host, is drawn.
   Two hosts of one column are linked by a curve to one side, and a link that
   would run through a host or a name bends around it. A link's label sits where
   no other line runs under it, when its link has such a place.

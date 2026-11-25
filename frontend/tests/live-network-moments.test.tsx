@@ -137,3 +137,22 @@ describe("a step that stays on its host", () => {
     crosses.unmount();
   });
 });
+
+describe("a step from a sensed host against the defense host", () => {
+  it("draws its hop with its arrow and number, though that link is not drawn while nothing crosses it", () => {
+    // Build's link to the manager is told by build's sensor's line; a fourth step crosses it.
+    const base = path();
+    const value: Recording = { ...base, steps: [...base.steps, step("4", 40, 41, { host: "manager", from: "build", visibility: { answer: "telemetry only", basis: "events", events: 0 } })] };
+    const before = open(value, "3", (start, end) => (start + end) / 2);
+    const idle = before.container.querySelectorAll(".lv-link").length;
+    before.unmount();
+    const { container, unmount } = open(value, "4", (start, end) => start + (end - start) * 0.3);
+    expect(container.querySelectorAll(".lv-link.is-used")).toHaveLength(1);
+    expect(container.querySelector(".lv-link.is-used")?.getAttribute("marker-end")).toMatch(/^url\(#.+-used\)$/);
+    expect(container.querySelector(".lv-hop-number.is-current")?.textContent).toBe("4");
+    // The hop of test 3 is still drawn behind it, and nothing else is added to the map's lines.
+    expect(texts(container, ".lv-hop-number")).toEqual(expect.arrayContaining(["1", "3", "4"]));
+    expect(container.querySelectorAll(".lv-link")).toHaveLength(idle + 1);
+    unmount();
+  });
+});
