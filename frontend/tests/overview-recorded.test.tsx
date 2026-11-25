@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
@@ -31,8 +31,9 @@ function pairOf(before: RecordingSummary, after: RecordingSummary, id: string): 
   } as DeltaSummary;
 }
 
-function mount(recordings: RecordingSummary[], deltas: DeltaSummary[]) {
-  vi.spyOn(api, "recordings").mockResolvedValue({ recordings, unreadable_count: 0, omitted_count: 0 });
+function mount(recordings: RecordingSummary[], deltas: DeltaSummary[], answer?: ReturnType<typeof api.recordings>) {
+  if (answer) vi.spyOn(api, "recordings").mockReturnValue(answer);
+  else vi.spyOn(api, "recordings").mockResolvedValue({ recordings, unreadable_count: 0, omitted_count: 0 });
   vi.spyOn(api, "recordingDeltas").mockResolvedValue({ deltas, unreadable_count: 0, omitted_count: 0 });
   vi.spyOn(api, "catalog").mockResolvedValue(structuredClone(demoCatalog));
   vi.spyOn(api, "runs").mockResolvedValue({ runs: [], unavailable_run_count: 0 });
@@ -56,6 +57,19 @@ describe("what the Overview offers of the recorded runs", () => {
     const real = screen.getByRole("region", { name: "A run recorded in CI" });
     expect(real).toHaveTextContent("60 published tests on one Linux host");
     expect(screen.getByRole("link", { name: "Play the run: 60 published tests on one Linux host" })).toHaveAttribute("href", "/runs/recorded/lab-run-1");
+  });
+
+  it("holds the real run's place above the workspace while the recordings are asked for", async () => {
+    let answer: (value: Awaited<ReturnType<typeof api.recordings>>) => void = () => undefined;
+    mount([shipped], [], new Promise((resolve) => { answer = resolve; }));
+    const waiting = await screen.findByRole("region", { name: "Recorded runs" });
+    expect(waiting).toHaveAttribute("aria-busy", "true");
+    expect(waiting).toHaveTextContent(/^Loading recorded runs$/);
+    const workspace = await screen.findByRole("heading", { name: /^(Example plan|Working draft)$/ });
+    expect(waiting.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => { answer({ recordings: [shipped], unreadable_count: 0, omitted_count: 0 }); await Promise.resolve(); });
+    expect(await screen.findByRole("region", { name: "A run recorded in CI" })).toHaveTextContent("60 published tests on one Linux host");
+    expect(screen.queryByRole("region", { name: "Recorded runs" })).not.toBeInTheDocument();
   });
 
   it("offers the newer of an imported run and an imported pair when nothing is shipped", async () => {

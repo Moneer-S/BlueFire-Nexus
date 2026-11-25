@@ -65,8 +65,8 @@ export function Callout({ tone = "info", title, children }: PropsWithChildren<{ 
   return <div className={`callout callout-${tone}`} role={tone === "danger" ? "alert" : "status"}><Icon aria-hidden="true" /><div><strong>{title}</strong><div>{children}</div></div></div>;
 }
 
-export function LoadingState({ label = "Loading workspace" }: { label?: string }) {
-  return <div className="loading-state" role="status"><LoaderCircle className="spin" aria-hidden="true" /><strong>{label}</strong><span>Loading your workspace…</span></div>;
+export function LoadingState({ label = "Loading workspace", detail = "Loading your workspace…" }: { label?: string; detail?: string }) {
+  return <div className="loading-state" role="status"><LoaderCircle className="spin" aria-hidden="true" /><strong>{label}</strong>{detail ? <span>{detail}</span> : null}</div>;
 }
 
 export function EmptyState({ icon, title, description, action }: { icon?: ReactNode; title: string; description: string; action?: ReactNode }) {

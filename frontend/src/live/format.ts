@@ -259,7 +259,7 @@ export function matchKind(alert: Alert): MatchKind {
 
 const KIND_RANK: Record<MatchKind, number> = { alert: 3, lab: 2, review: 1, launcher: 0 };
 
-const MARK_WORDS: Record<MatchKind, string> = { alert: "alert", lab: "would alert", review: "review", launcher: "" };
+export const MARK_WORDS: Readonly<Record<MatchKind, string>> = { alert: "alert", lab: "lab alert", review: "review", launcher: "" };
 
 /**
  * The mark some matches give a line: the strongest kind among them, and its

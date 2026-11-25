@@ -198,6 +198,11 @@ describe("the page for fixing a step", () => {
     expect(rm).toHaveTextContent("test 4");
     expect(rm).toHaveTextContent("alerted");
     expect(rm).toHaveAttribute("href", "/runs/recorded/rec-1?step=4&at=0&paused=1&mode=analyse&select=4");
+    // A test the published rules only saw and the lab's own rules alerted on reads both, as the step's own line does.
+    const truncate = within(recorded).getByRole("link", { name: /Clear Bash history \(truncate\)/ });
+    expect(truncate).toHaveTextContent("seen, no alert");
+    expect(truncate).toHaveTextContent("with the lab's rules: alerted, not in the score");
+    expect(rm).not.toHaveTextContent("with the lab's rules");
 
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("region", { name: "A draft" })).toBeNull();
@@ -229,7 +234,8 @@ describe("the page for fixing a step", () => {
     expect(screen.getByText("Kept in this browser only. The file in the repository is what runs.")).toBeVisible();
     // What a rule file needs to be picked up, in one line the editor points to: the folder of its kind, not anywhere.
     expect(draft).toHaveAccessibleDescription(/in the folder of its kind under lab\/rules\/linux\/: .*auditd\/ for auditd/);
-    expect(draft).toHaveAccessibleDescription(/A run accepts it only if it alerts on every rerun of a test with changed arguments and on nothing in ordinary activity/);
+    // Every condition the lab applies before a run accepts a rule.
+    expect(draft).toHaveAccessibleDescription(/A run accepts it only if it is at level high or critical, it alerts on at least one published test, every test it alerts on has a rerun with changed input arguments that took effect, it alerts on every such rerun, and it matches no event of ordinary activity\./);
   });
 
   it("offers no draft while the recording is still running, since a draft is kept for one finished file", async () => {
@@ -277,13 +283,14 @@ describe("the page for fixing a step", () => {
   it("for a step a rule of the lab's own alerted on, shows that rule with how the run judged it and its text, and offers no draft", async () => {
     mount("3");
     const start = await screen.findByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("One of the lab's own rules raised an alert on it: it is caught. The score counts published rules only, and none of those alerted, so the score leaves it out.");
+    expect(start).toHaveTextContent("One of the lab's own rules alerted on it, which the score does not count. The score counts published rules only, and none of those alerted.");
     const matched = screen.getByRole("region", { name: "Rules that matched it" });
+    expect(matched).toHaveTextContent("The rule that raised the lab alert");
     // Where the run loaded the rule from, as the recording says; not a claim about the repository today.
     expect(matched).toHaveTextContent("The run loaded it from commit ffffffff.");
     expect(matched).not.toHaveTextContent(/in the repository already/);
     const rule = within(matched).getByRole("article", { name: "Shell History File Truncated In Place" });
-    expect(rule).toHaveTextContent("would alert · high");
+    expect(rule).toHaveTextContent("lab alert · high");
     expect(rule).toHaveTextContent("accepted");
     expect(rule).toHaveTextContent("lab/rules/linux/auditd/truncated.yml");
     expect(within(rule).getByLabelText("The text of the rule Shell History File Truncated In Place")).toHaveTextContent("title: Shell History File Truncated In Place level: high");
@@ -332,14 +339,15 @@ describe("the page for fixing a step", () => {
     const tried = await screen.findByRole("region", { name: /^What was already tried/ });
     const [watch, elsewhere] = await within(tried).findAllByRole("listitem");
     if (!watch || !elsewhere) throw new Error("Both comparisons should be listed.");
-    expect(watch).toHaveTextContent("The settings of sensor auditd");
+    // The change by the name the turn has on the Runs screen and its own page.
+    expect(watch).toHaveTextContent("New auditd settings");
     expect(watch).toHaveTextContent("This run is the one before the change.");
     expect(watch).toHaveTextContent("Imported");
     expect(within(watch).getByText("price: 2 ordinary events before, 2 after")).toHaveClass("cmp-price");
     expect(within(watch).getByRole("link", { name: "Open the comparison at this step" })).toHaveAttribute("href", "/runs/compared/0000000000000001?step=1");
     expect(within(watch).getByRole("link", { name: "Open the same step in the after run" })).toHaveAttribute("href", `/runs/recorded/rec-2/${OTHER_SHA}?step=1&at=0&paused=1&mode=analyse&select=1`);
     // A comparison of other runs, tied by the step's stable id, and said to be of another run.
-    expect(elsewhere).toHaveTextContent("Another run of the same list, not this one, with the same published test. Step 1");
+    expect(elsewhere).toHaveTextContent("Another run of the same list, not this one, with the same published test. Tied by the step's id 1");
     expect(within(elsewhere).queryByRole("link", { name: "Open the same step in the after run" })).toBeNull();
     // The price's lead on the step's line, and the comparison's own words, with what the price quotes, one click away.
     expect(within(elsewhere).getByText("price: 1 rule more")).toHaveClass("cmp-price");
@@ -378,7 +386,7 @@ describe("the page for fixing a step", () => {
     expect(lines).toHaveLength(1);
     const [line] = lines;
     if (!line) throw new Error("The plain test's comparison should be listed.");
-    expect(line).toHaveTextContent("Another run of the same list, not this one, with the same published test as the list runs it. Published test cbf506a5");
+    expect(line).toHaveTextContent("Another run of the same list, not this one, with the same published test as the list runs it. Tied by the published test's id cbf506a5");
     expect(within(line).getByText("cbf506a5")).toHaveAttribute("title", ECHO_GUID);
     expect(within(line).getByRole("link", { name: "Open the comparison at this step" })).toHaveAttribute("href", "/runs/compared/0000000000000003?step=test%3Acbf506a5");
     expect(tried).not.toHaveTextContent("older than the ids");

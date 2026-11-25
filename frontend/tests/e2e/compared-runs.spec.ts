@@ -75,14 +75,14 @@ test("the second turn reads as one run evaluated twice: a row puts its step on t
   await expect(page.getByRole("heading", { level: 1, name: RULE })).toBeVisible();
   await expect(page.getByText("One run, its telemetry read with two rule sets, 24 Nov 2026.", { exact: true })).toBeInViewport();
   for (const name of ["What it cost", "What else moved", "What comes next"]) await expect(page.getByRole("region", { name })).toBeInViewport();
-  await expect(page.getByText("Only the rules of detector lab differed.", { exact: true })).toBeInViewport();
+  await expect(page.getByText("Only the lab's rules differed.", { exact: true })).toBeInViewport();
   const move = page.getByRole("region", { name: "What the change did" });
   // Four rows, one of them on the stages.
   await expect(move.getByRole("button", { name: /^Clear Bash history/ })).toHaveCount(4);
   await expect(move.getByRole("button", { pressed: true })).toHaveCount(1);
   await move.getByRole("button", { name: /^Clear Bash history \(cat dev\/null\)\s*with other arguments/ }).click();
   await expect(page).toHaveURL(/\?step=variant/);
-  await expect(page.getByRole("group", { name: "Clear Bash history (cat dev/null), before and after" }).getByRole("article", { name: /^After/ })).toContainText("The new rule raised an alert");
+  await expect(page.getByRole("group", { name: "Clear Bash history (cat dev/null), before and after" }).getByRole("article", { name: /^After/ })).toContainText("The new rule alerted, which the score does not count");
   await expect(page.getByLabel("The text of the rule Shell History File Truncated In Place")).toContainText("title: Shell History File Truncated In Place");
   await expect(page.getByRole("region", { name: "What made the difference" }).getByText("/home/bluefire-lab/.sh_history")).toBeVisible();
   const pagePart = await new AxeBuilder({ page }).include(".compared").analyze();

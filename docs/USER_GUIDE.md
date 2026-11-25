@@ -164,7 +164,9 @@ sending it. The runs of experiments from Build follow under **Experiment runs**.
 
 Under **Before against after** come the changes to the defense that the lab
 compared, as the turns of one loop, in the order they were made and joined by
-arrows. Each turn is named by what it did: the step by its title when one step
+arrows: those shipped with BlueFire first, then any you imported, marked as
+imported wherever a turn is named. A comparison that declares no change is
+listed under them with no number and is not a turn. Each turn is named by what it did: the step by its title when one step
 moved ("Clear Bash history (echo) went from unseen to seen."), a count in
 figures when several moved the same way ("4 steps went from seen to
 alerted."), with their names under it. Then come its marks before and after, a
@@ -186,17 +188,20 @@ with the tests named, and the basis of the verdict (one pair of runs, or one
 run read with two rule sets). Beside the move, two stages draw the moved step
 before and after in the live view's look: the host, its sensors, the rule
 engines and what each recorded or matched, with what read the same on both
-drawn dim. When several steps moved, each has a row, and a row puts its step on
+drawn dim; the after stage offers **Fix this** when the step still raised no
+alert. When several steps moved, each has a row, and a row puts its step on
 the stages (the address keeps it, `?step=<id>`). Under them come what it cost
 (false alerts on ordinary activity before and after, or "Not counted" and why),
 what else moved (every step of the run before and after, the moved ones
-marked), what comes next (the next turn, or **Fix this**), and one line on why
+marked), what comes next (the next turn, or the tests that still raised no
+alert), and one line on why
 the comparison is fair. That line opens **How we know**: the runs before and
 after with the one change highlighted, their commits, CI runs and files'
 SHA-256, what was the same, the control, and each step that differs in the
 comparison's own words with its price. Below come what made the difference (the
 event the sensor now records, or the rule with its text and the events its
-alerts rest on), every published test of the technique with its mark, and
+alerts rest on), the published tests of the technique that ran, each once with
+its mark, the canary's among them, and
 links to play either run. A refused comparison says "No verdict." with every
 reason and every difference, and judges no step; a limited one says at the top
 why and what alone it credits, and lists the steps it does not credit apart
@@ -205,9 +210,9 @@ why and what alone it credits, and lists the steps it does not credit apart
 The **Overview** leads with the first run the Runs screen lists on its own (what
 was shipped with BlueFire comes before what was imported, whatever the dates):
 "A run recorded in CI" (or "An imported run" for an imported file), its title,
-its score in a line (with how many tests the lab's own rules would alert on,
+its score in a line (with how many tests alerted with the lab's own rules too,
 which the score does not count), and **Play the run**, with the turns of the loop
-under it. The
+under it. While the recordings load, their place is held. The
 workspace's own blocks follow. With nothing recorded or compared, the workspace
 comes first.
 

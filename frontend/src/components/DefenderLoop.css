@@ -26,6 +26,11 @@
 .dl-turn.is-rule { border-top-color: var(--violet); }
 .dl-turn.is-refused,
 .dl-turn.is-limited { border-top-color: var(--amber-soft); }
+.dl-turn.is-outside { border-top-color: var(--line-strong); }
+
+/* Comparisons outside the loop: no arrow between them. */
+.dl.is-outside .dl-turn::before,
+.dl.is-outside .dl-turn::after { content: none; }
 
 /* The arrow from one turn to the next, in the gap between them. */
 .dl-turn + .dl-turn::before {

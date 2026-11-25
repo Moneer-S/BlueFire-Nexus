@@ -70,6 +70,9 @@
 .cmp-loop-turn.is-todo .cmp-loop-n { color: var(--lv-muted); background: none; border: 1px dashed var(--lv-muted); }
 .cmp-page a.cmp-loop-turn:hover { color: var(--lv-text); box-shadow: inset 0 0 0 1px var(--lv-blue-soft); }
 .cmp-loop-turn:focus-visible { outline: 2px solid var(--lv-blue-soft); outline-offset: 2px; }
+.cmp-loop-origin,
+.cmp-go-origin { font-size: 11px; font-weight: 600; color: var(--lv-amber-soft); }
+.cmp-go-origin { margin-left: 2px; }
 
 /* ---------- the answer ---------- */
 

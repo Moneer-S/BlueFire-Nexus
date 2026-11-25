@@ -120,9 +120,24 @@ export function recordedRunPath(id: string, sha256?: string): string {
   return `/runs/recorded/${encodeURIComponent(id)}${sha256 ? `/${sha256}` : ""}`;
 }
 
-/** The pairs as the Runs screen lists them: in the order they happened, by when the later of their runs started. */
+/**
+ * The pairs as the Runs screen lists them: those shipped with BlueFire first,
+ * then the imported ones, whatever their dates, each part in the order it
+ * happened, by when the later of its runs started. An imported comparison
+ * never takes a shipped turn's place.
+ */
 export function pairsInOrder(pairs: readonly DeltaSummary[]): DeltaSummary[] {
-  return [...pairs].sort((a, b) => pairStarted(a) - pairStarted(b));
+  const rank = (pair: DeltaSummary) => (pair.origin.kind === "shipped" ? 0 : 1);
+  return [...pairs].sort((a, b) => rank(a) - rank(b) || pairStarted(a) - pairStarted(b));
+}
+
+/**
+ * The turns of the defender loop: the pairs in list order that declare a
+ * change. A comparison that declares none is listed and opened as a
+ * comparison, outside the loop, and is never a turn.
+ */
+export function loopTurns(pairs: readonly DeltaSummary[]): DeltaSummary[] {
+  return pairsInOrder(pairs).filter((pair) => pair.declared_change !== null);
 }
 
 /**

@@ -138,6 +138,11 @@
 
 /* The real run first, in the live view's own dark look whatever the app's theme, and the loop's turns under it. */
 .overview-real { display: grid; gap: 14px; }
+/* While the recordings load: about the room the real run and the loop take, so the workspace does not jump. */
+.overview-real.is-loading { min-height: 500px; place-items: center; border: 1px solid var(--line); border-radius: 12px; }
+@container overview (max-width: 520px) {
+  .overview-real.is-loading { min-height: 940px; }
+}
 .overview-watch {
   position: relative;
   isolation: isolate;

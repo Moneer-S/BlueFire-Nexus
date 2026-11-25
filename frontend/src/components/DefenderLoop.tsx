@@ -31,19 +31,21 @@ function resultLine(pair: DeltaSummary): { text: string; warn: boolean } {
   return { text: `${count(c.same)} of ${plural(c.paired, "step")} the same`, warn: false };
 }
 
-function Turn({ pair, number, compact }: { pair: DeltaSummary; number: number; compact: boolean }) {
+function Turn({ pair, number, compact }: { pair: DeltaSummary; number: number | null; compact: boolean }) {
   const moved = pair.moved ?? [];
   const [first] = moved;
   const total = creditedCount(pair.counts);
   const uniform = first !== undefined && moved.every((step) => step.before.outcome_with_lab_rules === first.before.outcome_with_lab_rules && step.after.outcome_with_lab_rules === first.after.outcome_with_lab_rules);
-  const kind = pair.declared_change?.startsWith("sensors:") ? "is-sensor" : "is-rule";
+  const kind = number === null ? "is-outside" : pair.declared_change?.startsWith("sensors:") ? "is-sensor" : "is-rule";
   const price = pair.comparable ? listedPrice(moved) : null;
   const result = resultLine(pair);
   const which = whichWords(pair);
   const variants = moved.some((step) => step.role === "variant");
   const oneRun = isOneRun(pair);
   return <li className={`dl-turn ${kind}${pair.comparable ? "" : " is-refused"}${pair.limit ? " is-limited" : ""}`}>
-    <p className="dl-top"><span className="dl-n" aria-hidden="true">{number}</span><span className="dl-name"><span className="sr-only">Turn {number}: </span>{turnName(pair)}</span></p>
+    <p className="dl-top">{number === null
+      ? <span className="dl-name">{turnName(pair)}</span>
+      : <><span className="dl-n" aria-hidden="true">{number}</span><span className="dl-name"><span className="sr-only">Turn {number}: </span>{turnName(pair)}</span></>}</p>
     {which ? <p className="dl-which">{which}</p> : null}
     {pair.comparable && first && uniform ? <p className="dl-marks">
       <span className="sr-only">Before </span><SideMark side={first.before} />
@@ -74,4 +76,11 @@ export function DefenderLoop({ pairs, compact = false, label }: { pairs: readonl
   return <ol className={`dl${compact ? " is-compact" : ""}`} aria-label={label}>
     {pairs.map((pair, index) => <Turn key={pair.id} pair={pair} number={index + 1} compact={compact} />)}
   </ol>;
+}
+
+/** Comparisons that declare no change, as cards like the turns' but with no number and no arrow: they are not turns of the loop. */
+export function OtherComparisons({ pairs, label }: { pairs: readonly DeltaSummary[]; label: string }) {
+  return <ul className="dl is-outside" aria-label={label}>
+    {pairs.map((pair) => <Turn key={pair.id} pair={pair} number={null} compact={false} />)}
+  </ul>;
 }

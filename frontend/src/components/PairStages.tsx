@@ -10,7 +10,7 @@ import { Link } from "react-router-dom";
 import type { DeltaStepSide } from "../lib/api";
 import { alertedByLabOnly, MARK_FIELD } from "../lib/recording-pairs";
 import { sameOnBoth, stageSentence, type StageEngine, type StageSide } from "../lib/pair-stage";
-import { outcomeClass, outcomeWords, plural } from "../live/format";
+import { MARK_WORDS, outcomeClass, outcomeWords, plural } from "../live/format";
 import type { Outcome } from "../live/recording";
 import "./PairStages.css";
 
@@ -82,7 +82,7 @@ function engineLine(engine: StageEngine): ReactNode {
   if (!first) return <span className="pst-none">no rule matched</span>;
   const more = engine.matches.length - 1;
   return <>
-    <span className={`pst-chip is-${first.state}`}>{first.state === "review" ? "review" : "alert"} · {first.level}</span>
+    <span className={`pst-chip is-${first.state}`}>{MARK_WORDS[first.state]} · {first.level}</span>
     <span className="pst-rule">{first.title}</span>
     {more > 0 ? <span className="pst-none">and {more} more</span> : null}
   </>;
@@ -188,7 +188,7 @@ export function Stages({ before, after, words, runs, links, newRules, judged, fo
   const still = all ? { sensors: new Set<string>(), engines: new Set<string>() } : same;
   const named = [
     ...after.sensors.filter((sensor) => still.sensors.has(sensor.id)).map((sensor) => `${sensor.name}, ${plural(sensor.events, "event")}`),
-    ...after.engines.filter((engine) => still.engines.has(engine.id)).map((engine) => `${engine.name}, ${engine.matches.length ? `${engine.matches[0]?.state === "review" ? "a match below alert level" : "an alert"}` : "no rule matched"}`),
+    ...after.engines.filter((engine) => still.engines.has(engine.id)).map((engine) => `${engine.name}, ${engine.matches.length ? `${engine.matches[0]?.state === "review" ? "a match below alert level" : engine.matches[0]?.state === "lab" ? `a ${MARK_WORDS.lab}` : "an alert"}` : "no rule matched"}`),
   ];
   return <div className={`pst${judged ? "" : " is-unjudged"}`}>
     <div className="pst-pair">

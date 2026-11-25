@@ -7,8 +7,8 @@ import { ArrowRight, FileUp, Radio, RotateCcw } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError, type RecordingSummary } from "../lib/api";
-import { originWords, ownRuns, pairsInOrder, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
-import { DefenderLoop } from "./DefenderLoop";
+import { loopTurns, originWords, ownRuns, pairsInOrder, recordedRaceWords, recordedRunPath, recordedScoreWords, recordedWhere, recordingKindWords } from "../lib/recorded-runs";
+import { DefenderLoop, OtherComparisons } from "./DefenderLoop";
 import { Button, ErrorState, LoadingState, Panel } from "./Primitives";
 
 /** The problems a refused import names, in the service's own words. */
@@ -74,6 +74,8 @@ export function RecordedRuns() {
   // two near-identical rows of one list would read as two unrelated runs.
   // The pairs in the order they happened, so that the list tells the defender's loop as it went.
   const pairList = pairsInOrder(pairs.data?.deltas ?? []);
+  const turns = loopTurns(pairList);
+  const outside = pairList.filter((pair) => pair.declared_change === null);
   const all = recordings.data && !pairs.isPending ? recordings.data.recordings : undefined;
   const list = all ? ownRuns(all, pairList) : undefined;
   const inPairs = (all?.length ?? 0) - (list?.length ?? 0);
@@ -106,8 +108,15 @@ export function RecordedRuns() {
     {inPairs > 0 ? <p className="recorded-pairs-note">{inPairs === 1 ? "1 more recorded run is listed with its" : `${inPairs} more recorded runs are listed with their`} {pairList.length === 1 ? "pair" : "pairs"} under Before against after.</p> : null}
     {pairList.length > 0 ? <section className="recorded-pairs" aria-labelledby="recorded-pairs-heading">
       <h3 id="recorded-pairs-heading">Before against after</h3>
-      <p>Each turn is one change to the defense, in the order it was made, with what it moved.</p>
-      <DefenderLoop pairs={pairList} label="The changes to the defense, in order" />
+      {turns.length > 0 ? <>
+        <p>Each turn is one change to the defense, in the order it was made, with what it moved.</p>
+        <DefenderLoop pairs={turns} label="The changes to the defense, in order" />
+      </> : null}
+      {outside.length > 0 ? <>
+        <h4 className="recorded-pairs-outside">Comparisons that declare no change</h4>
+        <p>{outside.length === 1 ? "It is not a turn of the loop: with nothing declared, a step that differs is run variation." : "They are not turns of the loop: with nothing declared, a step that differs is run variation."}</p>
+        <OtherComparisons pairs={outside} label="Comparisons that declare no change" />
+      </> : null}
     </section> : null}
     {pairs.data && pairs.data.unreadable_count > 0 ? <p className="workspace-note" role="status">{pairs.data.unreadable_count} imported {pairs.data.unreadable_count === 1 ? "comparison is" : "comparisons are"} not listed: a comparison is shown only while it can be read and both its recordings are still the files it names.</p> : null}
   </Panel>;

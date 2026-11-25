@@ -108,10 +108,10 @@ test("Fix this while watching opens the step's page, which says what the recordi
   await expect(page.getByRole("textbox")).toHaveCount(0);
   // The shipped example is older than stable step ids: the two shipped comparisons are tied to its test by the published test's id, as other runs of the same list.
   const tried = page.getByRole("region", { name: /^What was already tried/ });
-  const watchLine = tried.getByRole("listitem").filter({ hasText: "The settings of sensor auditd" });
+  const watchLine = tried.getByRole("listitem").filter({ hasText: "New auditd settings" });
   const ruleLine = tried.getByRole("listitem").filter({ hasText: "A new rule: Shell History File Truncated In Place" });
   for (const line of [watchLine, ruleLine]) {
-    await expect(line).toContainText("Another run of the same list, not this one, with the same published test as the list runs it. Published test cbf506a5");
+    await expect(line).toContainText("Another run of the same list, not this one, with the same published test as the list runs it. Tied by the published test's id cbf506a5");
     await expect(line.getByRole("link", { name: "Open the comparison at this step" })).toHaveAttribute("href", /\/runs\/compared\/[0-9a-f]+\?step=test%3Acbf506a5$/);
   }
   await expect(watchLine).toBeInViewport({ ratio: 1 });

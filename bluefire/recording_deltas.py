@@ -229,6 +229,14 @@ def _audit_keys(check: _Checker, value: Any, limited: bool) -> None:
                                    "can carry the change's own mark is asked only on two runners "
                                    "that differed.")  # fmt: skip
                 continue
+            if "mark" not in fields:
+                # An earlier version of the lab's compare wrote audit keys with no mark.
+                check.fail(f"{where}.mark", "is missing: an earlier version of the lab's compare "
+                           "wrote this comparison, before an audit key said whether it can carry "
+                           "the change's own mark. Write both recordings again from their runs' "
+                           "folders with bluefire-lab recording and compare them again, or run "
+                           "the pair again.")  # fmt: skip
+                continue
             check.flag(fields, "mark", where, required=True)
             mark = fields.get("mark")
             if mark is False:
