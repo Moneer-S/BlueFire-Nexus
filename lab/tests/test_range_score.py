@@ -689,19 +689,26 @@ def test_a_program_start_snoopy_logged_is_the_engines_by_its_tag_alone(tmp_path:
     assert labels[1]["origin"] == "engine"
 
 
-def test_the_recordings_title_counts_steps_and_the_published_tests_they_run(tmp_path: Path) -> None:
+def test_the_recordings_title_says_what_it_is_and_its_description_counts_the_published_tests(
+    tmp_path: Path,
+) -> None:
     folder = small_run(tmp_path)
     scored(folder)
-    assert json.loads((folder / recording.FILE).read_text())["title"] == (
-        "2 steps of 2 published tests in range-one"
+    made = json.loads((folder / recording.FILE).read_text())
+    hosts = len(made["network"]["hosts"])
+    assert hosts > 1
+    assert made["title"] == f"An attack path of 2 steps through a network of {hosts} hosts"
+    assert made["attacker"]["description"].endswith(
+        "The engine ran the path's 2 steps in turn inside the sealed range range-one, through docker exec as "
+        "the step's account. The steps ran 2 published tests."
     )
 
-    # The same published test run twice, as the port scan is against two hosts.
+    # The same published test run twice, as the port scan is against two hosts: still two steps, one test.
     rewrite(folder, lambda m: m["path"]["steps"][1].update(guid=m["path"]["steps"][0]["guid"]))
     scored(folder)
-    assert json.loads((folder / recording.FILE).read_text())["title"] == (
-        "2 steps of 1 published test in range-one"
-    )
+    made = json.loads((folder / recording.FILE).read_text())
+    assert made["title"] == f"An attack path of 2 steps through a network of {hosts} hosts"
+    assert made["attacker"]["description"].endswith("The steps ran 1 published test.")
 
 
 def test_the_recording_of_an_invalid_run_does_not_say_the_tests_ran_inside_the_sealed_range(
