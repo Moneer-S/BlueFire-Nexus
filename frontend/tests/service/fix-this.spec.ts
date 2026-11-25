@@ -77,8 +77,8 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
 
   // The watch's own page, at the step.
   await watchLine.getByRole("link", { name: "Open the comparison at this step" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
-  await expect(page.getByRole("region", { name: `${TEST}, before and after` }).getByRole("article")).toHaveCount(2);
+  await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
+  await expect(page.getByRole("group", { name: `${TEST}, before and after` }).getByRole("article")).toHaveCount(2);
   await page.goBack();
   await expect(page).toHaveURL(fixing);
 
@@ -99,8 +99,8 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
 
   // The rule's comparison, where the ids tie the runs, and on its after recording the test alerted with the rule that alerted.
   await afterTried.getByRole("listitem").filter({ hasText: `A new rule: ${RULE}` }).getByRole("link", { name: "Open the comparison at this step" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: `A new rule: ${RULE}` })).toBeVisible();
-  await page.getByRole("region", { name: "The run" }).getByRole("link", { name: /Open with the rules after/ }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
+  await page.getByRole("group", { name: `${TEST}, before and after` }).getByRole("link", { name: "Play it with the rules after" }).click();
   await page.getByRole("button", { name: "Analyse", exact: true }).click();
   // The test comes before its run with changed input arguments, which has the same title.
   await page.getByRole("button", { name: TEST, exact: true }).first().click();
@@ -136,12 +136,15 @@ test("Fix this on the example shipped with the app reaches both shipped comparis
   await expect(watchLine).toBeInViewport({ ratio: 1 });
   // The watch's page opens at the same test, now recorded.
   await watchLine.getByRole("link", { name: "Open the comparison at this step" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
-  await expect(page.getByRole("region", { name: `${TEST}, before and after` })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
+  await expect(page.getByRole("group", { name: `${TEST}, before and after` }).getByRole("article", { name: /^After/ })).toContainText("auditd recorded 1 event.");
   await page.goBack();
   // The rule's page opens at the same test, alerted with the lab's rules.
   await page.getByRole("region", { name: /^What was already tried/ }).getByRole("listitem").filter({ hasText: `A new rule: ${RULE}` }).getByRole("link", { name: "Open the comparison at this step" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: `A new rule: ${RULE}` })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
   await expect(page).toHaveURL(/\?step=test%3Acbf506a5$/);
+  // Of the four steps it moved, the one chosen is the test as published, and the stages draw it.
+  await expect(page.getByRole("region", { name: "What the change did" }).getByRole("button", { pressed: true })).toContainText(/^Clear Bash history \(echo\)\s*as published/);
+  await expect(page.getByRole("group", { name: `${TEST}, before and after` }).getByRole("article", { name: /^After/ })).toContainText("The new rule raised an alert");
   expect(problems).toEqual([]);
 });

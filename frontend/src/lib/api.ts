@@ -257,6 +257,8 @@ export interface DeltaMoved {
   result: DeltaResult;
   before: DeltaStepSide;
   after: DeltaStepSide;
+  /** The step's price as the delta words it, when it has one. */
+  price?: string;
 }
 
 /** The fields of a step that a delta compares. */
@@ -471,7 +473,8 @@ function isMovedOrNone(value: unknown): boolean {
   return Array.isArray(value) && value.every((item) => {
     const step = jsonObject(item);
     return step !== null && typeof step.id === "string" && typeof step.title === "string" && typeof step.role === "string"
-      && typeof step.technique === "string" && typeof step.result === "string" && isStepSide(step.before) && isStepSide(step.after);
+      && typeof step.technique === "string" && typeof step.result === "string" && isStepSide(step.before) && isStepSide(step.after)
+      && (step.price === undefined || typeof step.price === "string");
   });
 }
 

@@ -937,6 +937,11 @@ def test_the_shipped_run_evaluated_twice_is_listed_and_both_its_files_are_return
         ("Clear Bash history (echo)", "variant", "better"),
         ("Clear Bash history (cat dev/null)", "variant", "better"),
     ]
+    # Each with its price, in the delta's own words, so that a list never shows a gain alone.
+    assert [step["price"] for step in entry["moved"]] == [
+        step["price"] for step in delta["steps"] if step["result"] == "better"
+    ]
+    assert all(step["price"].startswith("price not counted: ") for step in entry["moved"])
     for side, path, (status, _, body) in zip(("before", "after"), (RULE_BASE, RULE_HEAD), files, strict=True):
         assert status == 200
         whole = json_body(body)

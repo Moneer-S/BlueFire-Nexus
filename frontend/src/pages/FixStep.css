@@ -30,6 +30,131 @@
   overflow-wrap: anywhere;
 }
 
+/* ---------- the lines and cards this page shares with the page of a pair ----------
+   The page of a pair now has a look of its own; this page keeps the claim,
+   sections, step cards and links it was drawn with, here and only for itself. */
+
+.cmp-page.fx-page { gap: 26px; padding: 30px var(--lv-gutter) 64px; }
+.cmp-page.fx-page a.fx-other { color: inherit; }
+.cmp-page.fx-page .fx-tried-what a { color: var(--lv-text); }
+
+.fx-page .cmp-claim { display: flex; flex-direction: column; gap: 12px; }
+
+.fx-page .cmp-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.fx-page .cmp-kicker span {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--lv-blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.35);
+}
+
+.fx-page .cmp-claim h1 {
+  margin: 0;
+  font-size: clamp(24px, 1.2vw + 14px, 34px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.012em;
+  color: var(--lv-text);
+}
+
+.fx-page .cmp-arrow { width: 15px; height: 15px; flex: none; color: var(--lv-muted); }
+
+.fx-page .cmp-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--lv-line);
+}
+
+.fx-page .cmp-sec > h2,
+.fx-page .cmp-sec > h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--lv-text-soft);
+}
+
+.fx-page .cmp-sec > h3 { margin-top: 6px; font-size: 11px; color: var(--lv-muted-strong); }
+
+.fx-page .cmp-sec > h2 span,
+.fx-page .cmp-sec > h3 span {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--lv-muted);
+}
+
+.fx-page .cmp-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+
+.fx-page .cmp-step {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(2, 9, 19, 0.45);
+  box-shadow: inset 0 0 0 1px var(--lv-line);
+}
+
+.fx-page .cmp-step.is-better { box-shadow: inset 0 0 0 1px rgba(40, 217, 176, 0.35); }
+.fx-page .cmp-step.is-worse { box-shadow: inset 0 0 0 1px rgba(255, 110, 121, 0.4); }
+.fx-page .cmp-step.is-no-verdict { box-shadow: inset 0 0 0 1px rgba(255, 210, 125, 0.3); }
+
+.fx-page .cmp-step-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.fx-page .cmp-move { display: inline-flex; flex-direction: row; align-items: center; gap: 8px; min-width: auto; padding-top: 0; }
+.fx-page .cmp-move .lv-word { font-size: 11px; }
+.fx-page .cmp-move small { font-size: 11.5px; color: var(--lv-violet); }
+
+.fx-page .cmp-verdict { margin: 8px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--lv-muted-strong); }
+.fx-page .cmp-verdict code { font-family: var(--lv-mono); font-size: 12.5px; color: var(--lv-text-soft); }
+
+.fx-page .cmp-opens { display: flex; flex-wrap: wrap; gap: 10px; margin: 2px 0 0; }
+
+.cmp-page.fx-page .cmp-open {
+  align-self: flex-start;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 4px 11px;
+  border-radius: 6px;
+  color: var(--lv-blue-soft);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.45);
+}
+
+.cmp-page.fx-page .cmp-open:hover { color: var(--lv-text); }
+.fx-page .cmp-open:focus-visible { outline: 2px solid var(--lv-blue-soft); outline-offset: 2px; }
+
+.fx-page .cmp-rule-file { font-family: var(--lv-mono); }
+.fx-page .cmp-rule-text pre { max-height: 15rem; }
+
 /* ---------- the step ---------- */
 
 /* The heading takes focus when the page opens, for a screen reader; it is no stop of the keyboard's, so it draws no ring. */

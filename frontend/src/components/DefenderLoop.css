@@ -1,0 +1,91 @@
+/* The turns of the defender loop: one card per change to the defense, in the
+   order they were made, joined by arrows. On the Runs screen and the Overview,
+   in the app's own palette. */
+
+.dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 16px 44px;
+  margin: 0;
+  padding: 14px 18px 18px;
+  list-style: none;
+}
+
+.dl-turn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 16px 14px;
+  border: 1px solid var(--line-strong);
+  border-top: 3px solid var(--blue);
+  border-radius: 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 90%, transparent), color-mix(in srgb, var(--surface) 60%, transparent));
+}
+.dl-turn.is-rule { border-top-color: var(--violet); }
+.dl-turn.is-refused,
+.dl-turn.is-limited { border-top-color: var(--amber-soft); }
+
+/* The arrow from one turn to the next, in the gap between them. */
+.dl-turn + .dl-turn::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -38px;
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--blue-soft);
+}
+.dl-turn + .dl-turn::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 6px);
+  left: -14px;
+  border-left: 10px solid var(--blue-soft);
+  border-top: 7.5px solid transparent;
+  border-bottom: 7.5px solid transparent;
+}
+
+.dl-top { display: flex; align-items: center; gap: 10px; margin: 0; }
+.dl-n { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border-radius: 50%; font-size: 12px; font-weight: 700; color: #fff; background: var(--blue); }
+.dl-turn.is-rule .dl-n { background: #7a63e0; }
+.dl-name { font-size: .92rem; font-weight: 650; color: var(--text); }
+.dl-which { margin: -4px 0 0 34px; font-size: .76rem; color: var(--muted); overflow-wrap: anywhere; }
+.dl-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 0; }
+.dl-marks small { font-size: .74rem; color: var(--violet); }
+.dl-arrow { width: 14px; height: 14px; color: var(--muted); }
+.dl-thumbs { display: flex; align-items: center; gap: 6px; margin: 2px 0 0; }
+.dl-thumb-arrow { width: 18px; height: 2px; background: var(--muted); position: relative; }
+.dl-thumb-arrow::after { content: ""; position: absolute; right: -2px; top: -3.5px; border-left: 6px solid var(--muted); border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent; }
+.dl-turn h4 { margin: 6px 0 0; font-size: 1rem; font-weight: 600; line-height: 1.35; }
+.dl-link { color: var(--text); text-decoration: none; }
+.dl-link:hover { text-decoration: underline; }
+.dl-link:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; border-radius: 2px; }
+.dl-moved { margin: 0; font-size: .82rem; color: var(--muted-strong); overflow-wrap: anywhere; }
+.dl-method { margin: 0; font-size: .76rem; color: var(--muted); }
+.dl-method > span + span::before { content: "\00b7"; margin: 0 7px; color: var(--line-strong); }
+.dl-price { margin: 0; font-size: .78rem; line-height: 1.45; color: var(--text-soft); }
+.dl-price-key { margin-right: 6px; font-size: .66rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--amber-soft); }
+.dl-result { margin: 0; font-size: .76rem; color: var(--muted); }
+.dl-result.is-warn { color: var(--amber-soft); }
+.dl-result code { color: inherit; font-size: .95em; }
+.dl-links { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: auto 0 0; padding-top: 8px; font-size: .8rem; }
+.dl-links a { color: var(--blue-soft); text-decoration: none; }
+.dl-links a:hover { text-decoration: underline; }
+.dl-links a:focus-visible { outline: 2px solid var(--blue-soft); outline-offset: 2px; border-radius: 2px; }
+.dl-open { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid color-mix(in srgb, var(--blue-soft) 55%, transparent); border-radius: 999px; font-weight: 600; }
+.dl-open svg { width: 14px; height: 14px; }
+
+.dl.is-compact { padding: 0; gap: 12px 40px; }
+.dl.is-compact .dl-turn { padding: 12px 14px; }
+.dl.is-compact .dl-turn h4 { font-size: .94rem; }
+
+/* Stacked: the arrow points down. */
+@media (max-width: 760px) {
+  .dl { grid-template-columns: minmax(0, 1fr); gap: 34px; }
+  .dl.is-compact { gap: 30px; }
+  .dl-turn + .dl-turn::before { top: -28px; left: 30px; width: 3px; height: 16px; }
+  .dl-turn + .dl-turn::after { top: -14px; left: 24px; border-left: 7.5px solid transparent; border-right: 7.5px solid transparent; border-top: 10px solid var(--blue-soft); border-bottom: 0; }
+}

@@ -6,13 +6,17 @@ import { describe, expect, it, vi } from "vitest";
 import ruleDeltaText from "../../bluefire/data/recordings/deltas/lab-rule-history-truncated.json?raw";
 import ruleBaseText from "../../bluefire/data/recordings/lab-rule-history-truncated-base.json?raw";
 import ruleHeadText from "../../bluefire/data/recordings/lab-rule-history-truncated-head.json?raw";
+import sensorDeltaText from "../../bluefire/data/recordings/deltas/lab-pair-history-watch.json?raw";
+import sensorBeforeText from "../../bluefire/data/recordings/lab-pair-history-watch-before.json?raw";
+import sensorAfterText from "../../bluefire/data/recordings/lab-pair-history-watch-after.json?raw";
 import { api, readDelta, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
-import { codeSpans, movedWords, pairChangeWords, pairResultWords, raceWords, variationWords, verdictParts } from "../src/lib/recording-pairs";
+import { codeSpans, listedPrice, movedWords, pairChangeWords, pairHeadline, pairResultWords, raceWords, titlesWords, turnName, variationWords, verdictParts } from "../src/lib/recording-pairs";
 import { ComparedRunsPage } from "../src/pages/ComparedRuns";
-import { event, recording, step } from "./live-fixture";
+import { alert, event, recording, step } from "./live-fixture";
 
-// Small deltas in the shape `bluefire-lab compare` writes them. The page draws
-// what each one says; none of these is a result.
+// Small deltas in the shape `bluefire-lab compare` writes them, and the two real
+// comparisons shipped with the app. The page draws what each one says; none of
+// the small ones is a result.
 
 // Two digests that differ in their first 12 digits, which the page shows.
 const DIGEST_BEFORE = `7da98ea7a3c0${"0".repeat(52)}`;
@@ -75,7 +79,7 @@ function sensorDelta(): Delta {
 const RUN = "https://github.com/example/lab/actions/runs/3";
 const UNKNOWN_PRICE = "price not known: each run counted its ordinary activity on its own runner, and the two runners differed, so what differs between the counts is not the change's price (each run's own, published rules that alerted on ordinary activity: 2 before, 2 after; ordinary events: 8858 before, 8779 after)";
 const RUNNERS_SAID = "the image of host `target`, the kernel of host `target`";
-const CREDITS = "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key whose every rule in that run watches a path that no rule of the other run, as written, could have recorded (none there watches that path, any other path the event names, a folder above one or a path under one, and none without a path records the same kind of event, a program start being one kind and a read, a write or a change of attributes the other; paths are compared as written, so a second name that a link gives a file is not found out), and the other run holds nothing of it";
+const CREDITS = "only a step that carries the change's own mark: every event the recordings hold of it is of an audit key whose every rule in that run watches a path that no rule of the other run, as written, could have recorded, and the other run holds nothing of it";
 const RESTS = "it rests on 1 event of the audit key `shell-history`, whose every rule in the after run watches a path that no rule of the before run, as written, could have recorded, the only events either run holds of the step";
 const HOME_RULE = "the before run's rule `-a always,exit -F path=/home/bluefire-lab -F perm=aw` watches `/home/bluefire-lab`, a folder above `/home/bluefire-lab/.bash_history`";
 
@@ -98,7 +102,6 @@ function limitedDelta(): Delta {
   };
   return {
     ...delta,
-    // The run of a pair before the change loads its rules and sensor settings from the base commit.
     before: { ...delta.before, run_url: RUN, defense_commit: "d".repeat(40) },
     after: { ...delta.after, run_url: RUN, defense_commit: "c".repeat(40) },
     runners: 2,
@@ -117,10 +120,7 @@ function limitedDelta(): Delta {
   };
 }
 
-/**
- * The same pair when the before run's rules also watch the history file's
- * folder: the key gives no mark, so the step is not attributable either.
- */
+/** The same pair when the before run's rules also watch the history file's folder: the key gives no mark. */
 function unmarkedDelta(): Delta {
   const delta = limitedDelta();
   const steps = delta.steps.map((item): DeltaStep => {
@@ -150,9 +150,10 @@ function summaryOf(recordingId: string): RecordingSummary {
   };
 }
 
-function pairSummary(delta: Delta): DeltaSummary {
+function pairSummary(delta: Delta, id = ID): DeltaSummary {
   return {
-    id: ID, claim: delta.claim, declared_change: delta.declared_change, runners: delta.runners ?? null, one_run: delta.one_run === true, lab_rules: delta.lab_rules ?? null, comparable: delta.comparable, limit: delta.limit ?? null, refused_because: delta.refused_because, counts: delta.counts,
+    id, claim: delta.claim, declared_change: delta.declared_change, runners: delta.runners ?? null, one_run: delta.one_run === true, lab_rules: delta.lab_rules ?? null, comparable: delta.comparable, limit: delta.limit ?? null, refused_because: delta.refused_because, counts: delta.counts,
+    moved: delta.steps.filter((item) => ["better", "worse", "changed"].includes(item.result)),
     before: delta.before, after: delta.after,
     recordings: { before: summaryOf(delta.before.id), after: summaryOf(delta.after.id) },
     origin: { kind: "imported", note: "Imported. BlueFire did not make the comparison." },
@@ -164,169 +165,158 @@ function Address() {
   return <output aria-label="Address">{`${location.pathname}${location.search}`}</output>;
 }
 
-function mount(delta: Delta) {
-  vi.spyOn(api, "recordingDelta").mockResolvedValue({ summary: pairSummary(delta), delta });
+type Files = Map<string, unknown>;
+
+/** Mounts the page of `delta`, with `loop` the comparisons the service lists, and the recording files by SHA-256. */
+function mount(delta: Delta, { files, loop = [] as DeltaSummary[], id = ID }: { files?: Files; loop?: DeltaSummary[]; id?: string } = {}) {
+  vi.spyOn(api, "recordingDelta").mockResolvedValue({ summary: pairSummary(delta, id), delta });
+  vi.spyOn(api, "recordingDeltas").mockResolvedValue({ deltas: loop, unreadable_count: 0, omitted_count: 0 });
+  const fetched = vi.spyOn(api, "recordingFile").mockImplementation(async (recordingId, sha256) => {
+    const file = files?.get(sha256);
+    if (file === undefined) throw new Error("not kept in this test");
+    return { summary: summaryOf(recordingId), recording: file };
+  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runs", `/runs/compared/${ID}`]} initialIndex={1}>
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runs", `/runs/compared/${id}`]} initialIndex={1}>
     <Routes>
       <Route path="/runs/compared/:deltaId" element={<ComparedRunsPage />} />
       <Route path="*" element={<p>Elsewhere</p>} />
     </Routes>
     <Address />
   </MemoryRouter></QueryClientProvider>);
-  return userEvent.setup();
+  return { user: userEvent.setup(), fetched };
 }
 
-describe("the page of two compared runs", () => {
-  it("names the one declared change with both values, and a moved step as one line with its price and procedures", async () => {
+async function openProof(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByText("How we know"));
+  return screen.getByText("How we know").closest("details") as HTMLElement;
+}
+
+function shippedSensor() {
+  const delta = readDelta(JSON.parse(sensorDeltaText));
+  const files: Files = new Map([[delta.before.sha256, JSON.parse(sensorBeforeText) as unknown], [delta.after.sha256, JSON.parse(sensorAfterText) as unknown]]);
+  return { delta, files };
+}
+
+function shippedRule() {
+  const delta = readDelta(JSON.parse(ruleDeltaText));
+  const files: Files = new Map([[delta.before.sha256, JSON.parse(ruleBaseText) as unknown], [delta.after.sha256, JSON.parse(ruleHeadText) as unknown]]);
+  return { delta, files };
+}
+
+describe("the page of a change to the defense", () => {
+  it("says first what the change did, from the delta alone, with the basis of the verdict in sight", async () => {
     mount(sensorDelta());
-    expect(await screen.findByRole("heading", { level: 1, name: "One change: the settings of sensor auditd" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
+    const move = screen.getByRole("region", { name: "What the change did" });
+    expect(within(move).getByText("unseen")).toBeVisible();
+    expect(within(move).getByText("seen, no alert")).toBeVisible();
+    expect(within(move).getByText("new auditd settings")).toBeVisible();
+    // How the comparison was made, without opening anything, and the fair line does not say it again.
+    expect(screen.getByText("It rests on one pair of runs: before 23 Nov 2026, after 23 Nov 2026.")).toBeVisible();
+    expect(screen.getByText("Only the settings of sensor auditd differed.")).toBeVisible();
+  }, 20_000);
+
+  it("keeps how we know behind one line: the one change highlighted with both values, what was the same, the control and the lab's words", async () => {
+    const { user } = mount(sensorDelta());
+    await screen.findByRole("heading", { level: 1 });
+    const proof = await openProof(user);
+    const table = within(proof).getByRole("table", { name: "The two runs, before and after" });
+    const [, declared] = within(table).getAllByRole("row");
+    expect(declared).toHaveClass("is-declared");
+    expect(declared).toHaveTextContent("the settings of sensor auditdthe one change");
     // A digest reads by its start, and whole on focus and to a screen reader.
-    const digest = screen.getByTitle(DIGEST_BEFORE);
+    const digest = within(table).getByTitle(DIGEST_BEFORE);
     expect(digest).toHaveTextContent(DIGEST_BEFORE);
     expect(digest).toHaveAttribute("tabindex", "0");
-    expect(screen.getByText("7da98ea7a3c0…")).toBeInTheDocument();
-    expect(screen.getByText("The same steps, made with the same setup apart from this change.")).toBeVisible();
-    expect(screen.getByText("the kernel of host target")).toBeVisible();
+    expect(within(table).getByText("7da98ea7a3c0…")).toBeInTheDocument();
+    expect(within(proof).getByText(/The same steps, made with the same setup apart from this change\./)).toBeVisible();
+    expect(within(proof).getByText("Recorded as the same in both: the tests' commit, the kernel of host target.")).toBeVisible();
+    expect(within(proof).getByText("What happened, which this change cannot move: the same on 2 of 2 paired steps.")).toBeVisible();
+    expect(within(proof).getByText("No race: the rules ran after each run, so there is no race to compare.")).toBeVisible();
+    const words = within(proof).getByRole("region", { name: "Each step that differs, in the comparison's words" });
+    expect(words).toHaveTextContent("on 1 of the 4 published procedures of T1070.003 in the list");
+    expect(within(words).getByText(PRICE)).toHaveClass("cmp-price");
+    expect(within(words).queryByText("List OS Information")).not.toBeInTheDocument();
+  }, 20_000);
 
-    const moved = screen.getByRole("region", { name: /^What the change moved/ });
-    const [line] = within(moved).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    if (!line) throw new Error("The moved step should be listed.");
-    expect(within(line).getByRole("button", { name: /Clear Bash history \(echo\)/ })).toHaveAttribute("aria-expanded", "false");
-    expect(line).toHaveTextContent("Before unseen, after seen, no alert");
-    expect(line).toHaveTextContent("on 1 of the 4 published procedures of T1070.003 in the list");
-    expect(within(line).getByText(PRICE)).toHaveClass("cmp-price");
-    expect(within(line).getByText("recorded now: 1 event")).toBeVisible();
-    // The step that did not move is not among them.
-    expect(within(moved).queryByText("List OS Information")).not.toBeInTheDocument();
+  it("never shows the gain without its price, and says the price is in the lab's words", async () => {
+    mount(sensorDelta());
+    const cost = await screen.findByRole("region", { name: "What it cost" });
+    expect(cost).toHaveTextContent("Published rules that alerted on ordinary activity, outside every step.");
+    expect(cost).toHaveTextContent(`In the lab's words: ${PRICE}`);
+  }, 20_000);
 
-    const control = screen.getByRole("region", { name: /^The control/ });
-    expect(within(control).getByText("What happened, which this change cannot move: the same on 2 of 2 paired steps.")).toBeVisible();
-    expect(screen.getByText("No race: the rules ran after each run, so there is no race to compare.")).toBeVisible();
-    expect(screen.getByText("All of this rests on one pair of runs.")).toBeVisible();
-  });
-
-  it("says that two runs side by side on alike runners had the same setup apart from the change", async () => {
-    mount({ ...sensorDelta(), runners: 2, limit: null });
-    expect(await screen.findByText("The same steps, made with the same setup apart from this change, side by side in one CI run, each on a fresh runner of its own.")).toBeVisible();
-    expect(screen.queryByRole("region", { name: /^A limited verdict/ })).not.toBeInTheDocument();
-    expect(screen.queryByText(/limited verdict/i)).not.toBeInTheDocument();
-  });
-
-  it("says a limited verdict at the top, why, in what the runners differed, and what alone is credited", async () => {
-    mount(limitedDelta());
-    // Not "One change": the runners differed too.
-    expect(await screen.findByRole("heading", { level: 1, name: "Declared change: the settings of sensor auditd" })).toBeVisible();
-    expect(screen.queryByText(/One change/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/made with the same setup apart from this change/)).not.toBeInTheDocument();
-    expect(screen.getByText("The same steps, made side by side in one CI run on two fresh runners.")).toBeVisible();
+  it("says a limited verdict near the top, why, and keeps the steps it does not credit apart", async () => {
+    const { user } = mount(limitedDelta());
+    expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
     const limit = screen.getByRole("region", { name: "A limited verdict: the two runners differed" });
-    // It comes before the steps, inside the claim.
-    const moved = screen.getByRole("region", { name: /^What the change moved/ });
-    expect(limit.compareDocumentPosition(moved) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const rows = within(within(limit).getByRole("table", { name: "What differed between the two runners" })).getAllByRole("row");
     expect(rows.map((row) => row.textContent)).toEqual([
       "The runnersBeforeAfter",
       "the image of host targetubuntu24 20261116.376.1ubuntu24 20261116.133.1",
       "the kernel of host target7.0.0-1017-azure7.0.0-1014-aws",
     ]);
-    expect(within(limit).getByText(/^Credited: only a step that carries the change's own mark/).parentElement).toHaveTextContent(`Credited: ${CREDITS}.`);
     expect(within(limit).getByText("1 step credited by the mark, 1 not attributable.")).toBeVisible();
+    expect(screen.getByText("Limited")).toBeVisible();
+    expect(screen.queryByText("The one change")).not.toBeInTheDocument();
+    // The step not credited is listed apart, with no move.
+    const move = screen.getByRole("region", { name: "What the change did" });
+    expect(within(move).getByText("Also moved, not credited to the change")).toBeVisible();
+    expect(within(move).getByRole("button", { name: /Stop the audit daemon/ })).toHaveTextContent("not attributable");
+    expect(screen.getByRole("region", { name: "What it cost" })).toHaveTextContent("Not known");
 
-    // Each run names the commit its rules and sensor settings came from, never one relative to the other.
-    const before = screen.getByRole("article", { name: "Before" });
-    const after = screen.getByRole("article", { name: "After" });
-    expect(before).toHaveTextContent("Rules and sensor settingsfrom commit dddddddd");
-    expect(after).toHaveTextContent("Rules and sensor settingsfrom commit cccccccc (the lab's commit)");
-    expect(screen.queryByText(/the same commit/)).not.toBeInTheDocument();
-  });
-
-  it("draws a step credited by the mark as that, with the mark, its records and a price that is not known", async () => {
-    mount(limitedDelta());
-    const moved = await screen.findByRole("region", { name: /^What the change moved/ });
-    expect(moved).toHaveTextContent("each credited by the change's own mark only");
-    const [line] = within(moved).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    if (!line) throw new Error("The credited step should be listed.");
-    expect(within(line).getByText("better")).toHaveClass("cmp-result");
-    expect(line).toHaveTextContent("better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors");
-    // The mark is said once, in the delta's own verdict.
-    expect(line).toHaveTextContent(RESTS.replaceAll("`", ""));
-    expect(line.textContent?.match(/it rests on/g)).toHaveLength(1);
-    expect(line).toHaveTextContent("What sensor auditd recorded of it in one run onlyOnly in the after run, 1 eventopenat: /home/bluefire-lab/.bash_history");
-    // A key that can carry the mark gives no line of why it carries none.
-    expect(line).not.toHaveTextContent(/No mark of the change's own/);
-    const price = within(line).getByText(/^price not known: /);
-    expect(price).toHaveClass("cmp-price");
-    expect(price).toHaveTextContent(UNKNOWN_PRICE);
-    expect(line).not.toHaveTextContent(/price: published/);
-    // The lab's code spans read as code.
-    expect(within(line).getByText("shell-history", { selector: "code" })).toBeVisible();
-  });
-
-  it("draws a step that is not attributable on two runners that differed as the runners', not as run variation alone", async () => {
-    mount(limitedDelta());
-    const control = await screen.findByRole("region", { name: /^The control/ });
-    expect(within(control).getByRole("heading", { name: /^Not attributable to the change/ })).toHaveTextContent("the two runners differed, and could have moved these");
-    expect(within(control).queryByRole("heading", { name: "Changed without a cause" })).not.toBeInTheDocument();
-    const [line] = within(control).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    expect(line).toHaveTextContent("not attributable: the two runners differed (the image of host target, the kernel of host target), and the step does not carry the change's own mark");
-    // Both values side by side, flat: not a move from one to the other.
-    expect(line).toHaveTextContent("Beforeseen, no alertAfteralerted");
-    const moved = screen.getByRole("region", { name: /^What the change moved/ });
-    expect(within(moved).queryByText("Stop the audit daemon")).not.toBeInTheDocument();
-    // Its events are of no key only one run's events carry, so no key's reason is told under it.
-    expect(line).not.toHaveTextContent(/No mark of the change's own/);
-  });
+    // Each run names the commit its rules and sensor settings came from.
+    const proof = await openProof(user);
+    expect(within(proof).getByRole("row", { name: /^Rules and sensor settings from commit/ })).toHaveTextContent("dddddddd" + "cccccccc (the lab's commit)");
+    const words = within(proof).getByRole("region", { name: "Each step that differs, in the comparison's words" });
+    expect(words).toHaveTextContent("better by the change's own mark, on two runners that differed: no telemetry to recorded by the sensors");
+    expect(words).toHaveTextContent(RESTS.replaceAll("`", ""));
+    expect(within(words).getByText(/^price not known: /)).toHaveTextContent(UNKNOWN_PRICE);
+    expect(within(words).getAllByText("shell-history", { selector: "code" })[0]).toBeVisible();
+  }, 20_000);
 
   it("says under a step that is not attributable why the key of its events gives no mark", async () => {
-    mount(unmarkedDelta());
-    const control = await screen.findByRole("region", { name: /^The control/ });
-    const lines = within(control).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    const history = lines.find((item) => item.textContent?.includes("Clear Bash history (echo)"));
-    if (!history) throw new Error("The step whose key gives no mark should be listed as not attributable.");
-    const why = within(history).getByText(/^No mark of the change's own from the audit key/);
+    const { user } = mount(unmarkedDelta());
+    expect(await screen.findByRole("heading", { level: 1, name: "No step moved." })).toBeVisible();
+    expect(screen.getByRole("region", { name: "What else moved" })).toHaveTextContent("None of 3 steps moved. 1 is the same, 2 differ without a verdict for the change.");
+    const proof = await openProof(user);
+    const why = within(proof).getByText(/^No mark of the change's own from the audit key/);
     expect(why).toHaveTextContent(`No mark of the change's own from the audit key shell-history, only in the after run's events: ${HOME_RULE.replaceAll("`", "")}.`);
-    expect(within(why).getByText("/home/bluefire-lab", { selector: "code" })).toBeVisible();
-    // Said once under its own step, and not under the step whose events are of no such key.
     expect(screen.getAllByText(/^No mark of the change's own/)).toHaveLength(1);
-    // Nothing is credited, so nothing moved.
-    const moved = screen.getByRole("region", { name: /^What the change moved/ });
-    expect(within(moved).getByText("No step moved in what this change can move.")).toBeVisible();
-  });
+  }, 20_000);
 
-  it("says No verdict with every reason and every difference, as prominently as a verdict", async () => {
+  it("says No verdict with every reason and every difference, and judges no step", async () => {
     const delta = sensorDelta();
     delta.comparable = false;
     delta.refused_because = ["also differed: the kernel of host `target` (7.0.0-1014-aws before, 7.0.0-1015-aws after)", "the steps of the two recordings ran in another order"];
     delta.differences = [{ what: "kernels:target", before: "7.0.0-1014-aws", after: "7.0.0-1015-aws" }, ...delta.differences];
-    delta.same_in_both = ["atomic_commit"];
     const [first] = delta.steps;
     if (!first) throw new Error("The delta should have a step.");
     delta.steps = [first, { ...better, result: "no verdict", verdict: "no verdict: the comparison is refused; one pair of runs", price: undefined, procedures: undefined }];
+    delta.counts = { ...delta.counts, better: 0, "no verdict": 1 };
     mount(delta);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "No verdict" })).toBeVisible();
-    // Every reason, with the lab's code spans drawn as code rather than as backticks.
-    const reasons = screen.getAllByRole("listitem").filter((item) => item.closest(".cmp-reasons"));
+    expect(await screen.findByRole("heading", { level: 1, name: "No verdict." })).toBeVisible();
+    const refused = screen.getByRole("region", { name: /^Declared change: the settings of sensor auditd\. The comparison was refused/ });
+    const reasons = within(refused).getAllByRole("listitem");
     expect(reasons.map((item) => item.textContent)).toEqual(delta.refused_because.map((reason) => reason.replaceAll("`", "")));
     expect(within(reasons[0] ?? document.body).getByText("target").tagName).toBe("CODE");
-    const table = screen.getByRole("table", { name: "What differed between the two runs" });
-    const rows = within(table).getAllByRole("row");
+    const rows = within(within(refused).getByRole("table", { name: "What differed between the two runs" })).getAllByRole("row");
     expect(rows.map((row) => row.textContent)).toEqual([
       "What differedBeforeAfter",
       "the kernel of host target7.0.0-1014-aws7.0.0-1015-aws",
       `the settings of sensor auditddeclared7da98ea7a3c0…${DIGEST_BEFORE}1cad187ffe68…${DIGEST_AFTER}`,
     ]);
-    const moved = screen.getByRole("region", { name: /^Steps that differ, with no verdict/ });
-    const [line] = within(moved).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    // Both values side by side, led by its result: not a move from one to the other.
-    expect(line).toHaveTextContent("BeforeunseenAfterseen, no alert");
-    expect(line).not.toHaveTextContent("Before unseen, after");
-    expect(line).toHaveTextContent("no verdict: the comparison is refused; one pair of runs");
-    expect(screen.queryByText(/One change/)).not.toBeInTheDocument();
-  });
+    const move = screen.getByRole("region", { name: "What the change did" });
+    expect(within(move).getByText("Steps that differ, not judged")).toBeVisible();
+    expect(within(move).getByRole("button", { name: /Clear Bash history \(echo\)/ })).toHaveTextContent("not judged");
+    expect(screen.getByRole("region", { name: "What it cost" })).toHaveTextContent("Not judged");
+    expect(screen.getByRole("region", { name: "What else moved" })).toHaveTextContent("2 paired steps, none judged. 1 is the same, 1 differs without a verdict for the change.");
+    expect(screen.queryByText("The one change")).not.toBeInTheDocument();
+  }, 20_000);
 
-  it("names a step that varied in the control as run variation, never as an effect", async () => {
+  it("names a step that varied with nothing declared as run variation, never as an effect", async () => {
     const delta = sensorDelta();
     delta.declared_change = null;
     delta.differences = [];
@@ -334,137 +324,277 @@ describe("the page of two compared runs", () => {
     delta.lab_code = { before: "a".repeat(40), after: "b".repeat(40), same: false };
     delta.control = { fields: ["happened", "recorded", "outcome", "outcome_with_lab_rules"], same: 1, of: 2, varied: ["2"] };
     delta.unexplained = ["2"];
+    delta.counts = { ...delta.counts, better: 0, "without cause": 1 };
     delta.steps = [same("1", "List OS Information"), { ...better, result: "without cause", verdict: "changed without a cause: run variation or a change of the lab's code, not an effect; one pair of runs", price: undefined, procedures: undefined }];
-    mount(delta);
+    const { user } = mount(delta);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Nothing declared as changed" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: /^Steps credited to a change/ })).toBeVisible();
-    expect(screen.getByText("Nothing was declared as changed, so no step is credited to a change.")).toBeVisible();
-    const control = screen.getByRole("region", { name: /^The control/ });
-    expect(within(control).getByText("What happened, whether a sensor recorded the step, the outcome by the published rules and the outcome with the lab's rules, every field, since nothing was declared: the same on 1 of 2 paired steps.")).toBeVisible();
-    expect(within(control).getByText("It varied on 1 step: that is run variation or a change of the lab's code, not an effect.")).toBeVisible();
-    expect(within(control).getByRole("heading", { name: "Changed without a cause" })).toBeVisible();
-    const [line] = within(control).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    expect(line).toHaveTextContent("changed without a cause: run variation or a change of the lab's code, not an effect; one pair of runs");
-    expect(line).toHaveTextContent("BeforeunseenAfterseen, no alert");
-    expect(screen.getByText(/The lab's code differed/)).toHaveTextContent("The lab's code differed (aaaaaaaa before, bbbbbbbb after).");
-  });
+    expect(await screen.findByRole("heading", { level: 1, name: "Nothing was declared as changed." })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "What the change did" })).getByText("Changed without a cause")).toBeVisible();
+    const proof = await openProof(user);
+    expect(within(proof).getByText("What happened, whether a sensor recorded the step, the outcome by the published rules and the outcome with the lab's rules, every field, since nothing was declared: the same on 1 of 2 paired steps.")).toBeVisible();
+    expect(within(proof).getByText("It varied on 1 step: that is run variation or a change of the lab's code, not an effect.")).toBeVisible();
+    expect(within(proof).getByText(/The lab's code differed/)).toHaveTextContent("The lab's code differed (aaaaaaaa before, bbbbbbbb after).");
+  }, 20_000);
 
   it("lists new and gone steps without counting them, and a race only when the delta has one with numbers", async () => {
     const delta = sensorDelta();
     delta.new = [{ id: "test:aaaa", role: "test", title: "A test only after", technique: "T1059" }];
     delta.gone = [{ id: "control:bbbb", role: "control", title: "A control only before", technique: "T1082" }];
     delta.race = { before: { goal_seconds: 63 }, after: { first_alert_seconds: 12.5, goal_seconds: 61 } };
-    mount(delta);
+    const { user } = mount(delta);
+    await screen.findByRole("heading", { level: 1 });
+    const proof = await openProof(user);
+    expect(within(proof).getByText("New and gone, listed, not counted")).toBeVisible();
+    expect(within(proof).getByText("Only in the after run").parentElement).toHaveTextContent("A test only after");
+    expect(within(proof).getByText("Only in the before run").parentElement).toHaveTextContent("A control only before");
+    expect(within(proof).getByText("Before: the goal after 63 s. After: first alert after 12.5 s, the goal after 61 s.")).toBeVisible();
+  }, 20_000);
 
-    const control = await screen.findByRole("region", { name: /^The control/ });
-    expect(within(control).getByRole("heading", { name: /^New and gone/ })).toHaveTextContent("listed, not counted");
-    expect(within(control).getByText("Only in the after run").parentElement).toHaveTextContent("A test only after");
-    expect(within(control).getByText("Only in the before run").parentElement).toHaveTextContent("A control only before");
-    expect(screen.getByText("Before: the goal after 63 s. After: first alert after 12.5 s, the goal after 61 s.")).toBeVisible();
-    expect(screen.queryByText(/^No race/)).not.toBeInTheDocument();
-  });
-
-  it("opens a step's detail for both runs side by side and keeps it in the address", async () => {
+  it("draws the moved step on two stages from both recordings, and opens its whole detail from both, kept in the address", async () => {
     const delta = sensorDelta();
     const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "nothing of the test was recorded besides its launcher's start", events: 0 } })] }), id: "run-before" };
     const after = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4, { visibility: { answer: "telemetry only", basis: "one record", events: 1 }, first_event: "2026-01-01T10:00:03.500Z" })], events: [event("2-1", "2", 3.5)] }), id: "run-after" };
-    // Each side is asked for by its file, as the delta names it: one run evaluated twice has one id for both.
-    const recordingFetch = vi.spyOn(api, "recordingFile").mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
-    const user = mount(delta);
+    // Both files have the same digest in this small delta: each side is read by its id here.
+    const { user, fetched } = mount(delta);
+    fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
 
-    await user.click(await screen.findByRole("button", { name: /Clear Bash history \(echo\)/ }));
-    const detail = await screen.findByRole("region", { name: "Clear Bash history (echo), before and after" });
-    expect(within(detail).getByRole("heading", { name: "Clear Bash history (echo), before and after" })).toHaveFocus();
-    expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2`);
+    const stages = await screen.findByRole("group", { name: "Clear Bash history (echo), before and after" });
+    const beforeStage = await within(stages).findByRole("article", { name: /^Before/ });
+    const afterStage = within(stages).getByRole("article", { name: /^After/ });
+    expect(beforeStage).toHaveTextContent("Nothing of the test was recorded besides its launcher's start.");
+    expect(afterStage).toHaveTextContent("Sysmon recorded 1 event. No rule matched it.");
+    expect(within(beforeStage).getByRole("link", { name: "Play it in the run before" })).toHaveAttribute("href", `/runs/recorded/run-before/${"a".repeat(64)}?step=2&at=0&paused=1`);
+    // A step still with no alert offers Fix this, in the run after.
+    expect(within(afterStage).getByRole("link", { name: "Fix this" })).toHaveAttribute("href", `/runs/recorded/run-after/${"a".repeat(64)}?step=2&paused=1&mode=analyse&select=2`);
+
+    await user.click(within(stages).getByRole("button", { name: "Every detail of this step, from both runs" }));
+    const detail = await screen.findByRole("region", { name: "Clear Bash history (echo), every detail before and after" });
+    expect(within(detail).getByRole("heading", { name: "Clear Bash history (echo), every detail before and after" })).toHaveFocus();
+    expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2&detail=1`);
     const articles = await within(detail).findAllByRole("article");
     expect(articles).toHaveLength(2);
     // The unseen test is told in its recording's own words.
     expect(articles[0]).toHaveTextContent("It took effect, and nothing of the test was recorded besides its launcher's start.");
     expect(articles[1]).toHaveTextContent("1 event recorded, no rule matched, none at alert level.");
-    expect(recordingFetch.mock.calls.map(([id]) => id).sort()).toEqual(["run-after", "run-before"]);
-    expect(recordingFetch.mock.calls.every(([, sha256]) => sha256 === "a".repeat(64))).toBe(true);
-    // One way to close the pair's detail, and none of the live view's playback actions.
-    expect(within(detail).queryByRole("button", { name: /Whole run|Watch from here/ })).not.toBeInTheDocument();
-
     await user.click(within(detail).getByRole("button", { name: "Close the step's detail" }));
-    expect(screen.queryByRole("region", { name: "Clear Bash history (echo), before and after" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}`);
+    expect(screen.queryByRole("region", { name: /every detail before and after/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2`);
+  }, 20_000);
 
-    await user.click(screen.getByRole("button", { name: /Clear Bash history \(echo\)/ }));
-    expect(await screen.findByRole("region", { name: "Clear Bash history (echo), before and after" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /Clear Bash history \(echo\)/ }));
-    expect(screen.queryByRole("region", { name: "Clear Bash history (echo), before and after" })).not.toBeInTheDocument();
-  });
+  it("counts every test of the run after that raises no alert, seen or unseen, beside what its score gives", async () => {
+    const delta = sensorDelta();
+    const alerted = { happened: "took effect", recorded: "recorded", outcome: "alerted", outcome_with_lab_rules: "alerted" } as const;
+    delta.steps = [same("1", "List OS Information"), { ...better, after: alerted }];
+    const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4), step("3", 5, 6)] }), id: "run-before" };
+    const after = { ...recording({ steps: [step("1", 1, 2, { outcome: "unseen" }), step("2", 3, 4, { outcome_with_lab_rules: "alerted" }), step("3", 5, 6)] }), id: "run-after" };
+    after.score = { ...after.score, seen: 2, unseen: 1 };
+    const { fetched } = mount(delta);
+    fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
+
+    const next = await screen.findByRole("region", { name: "What comes next" });
+    expect(await within(next).findByText("2 tests still raised no alert.")).toBeVisible();
+    expect(next).toHaveTextContent("In the run after, with the lab's own rules too; 1 of them went unseen.");
+    expect(next).toHaveTextContent("Its score counts only published rules: 3 with no alert.");
+    expect(screen.getByRole("link", { name: /^Next change, not made yet\s*2 tests still raised no alert, with the lab's own rules too/ })).toBeVisible();
+  }, 20_000);
+
+  it("with no test left without an alert, speaks only of the tests the run can judge, and says how many had no effect", async () => {
+    const delta = sensorDelta();
+    const alerted = { happened: "took effect", recorded: "recorded", outcome: "alerted", outcome_with_lab_rules: "alerted" } as const;
+    delta.steps = [same("1", "List OS Information"), { ...better, after: alerted }];
+    const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4), step("3", 5, 6)] }), id: "run-before" };
+    const noEffect = { happened: { answer: "not attempted", basis: "the test did not start" }, visibility: { answer: "no telemetry", basis: "no events", events: 0 }, outcome: "no effect" } as const;
+    const after = { ...recording({ steps: [step("1", 1, 2, { outcome: "alerted" }), step("2", 3, 4, noEffect), step("3", 5, 6, noEffect)] }), id: "run-after" };
+    after.score = { ...after.score, seen: 0, unseen: 0 };
+    const { fetched } = mount(delta);
+    fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
+
+    const next = await screen.findByRole("region", { name: "What comes next" });
+    expect(await within(next).findByText("Every test the run can judge raised an alert or was stopped.")).toBeVisible();
+    expect(next).toHaveTextContent("In the run after, with the lab's own rules too. 2 tests had no effect, so the run says nothing about them.");
+    expect(next).not.toHaveTextContent("Every test raised an alert or was stopped.");
+    const card = screen.getByRole("link", { name: /^Next change, not made yet/ });
+    expect(card).toHaveTextContent("Every test the run can judge raised an alert or was stopped");
+    expect(card).toHaveTextContent("See the run after. 2 tests had no effect, so the run says nothing about them");
+    expect(card).not.toHaveTextContent("The tests with no alert");
+  }, 20_000);
+
+  it("shows the alert a changed rule no longer raises, with the rule and the event it matched, from the before recording alone", async () => {
+    // One run read with two rule sets: the lab's rule was changed, not removed, and stopped alerting on step 2.
+    const RULE = "Shell History File Truncated In Place";
+    const seen = { happened: "took effect", recorded: "recorded", outcome: "seen", outcome_with_lab_rules: "seen" } as const;
+    const lost: DeltaStep = {
+      ...same("2", "Clear Bash history (echo)"),
+      before: { ...seen, outcome_with_lab_rules: "alerted" },
+      after: seen,
+      changed: ["outcome_with_lab_rules"],
+      underneath: [`matches no more: high: ${RULE}`],
+      result: "worse",
+      verdict: "worse: alerted to seen with the lab's rules; one run evaluated with two rule sets",
+    };
+    const base = sensorDelta();
+    const delta: Delta = {
+      ...base,
+      claim: "one run evaluated with two rule sets",
+      one_run: true,
+      before: { ...side("run-once", "2026-11-24T12:42:13Z"), sha256: "b".repeat(64) },
+      after: { ...side("run-once", "2026-11-24T12:42:13Z"), sha256: "c".repeat(64) },
+      declared_change: "detectors:lab",
+      lab_rules: [{ rule: "r1", title: RULE, change: "changed", before: { accepted: true, reason: "it alerted on every run" }, after: { accepted: true, reason: "it alerted on every run" } }],
+      differences: [{ what: "detectors:lab", before: DIGEST_BEFORE, after: DIGEST_AFTER, declared: true }],
+      judged: ["outcome_with_lab_rules"],
+      counts: { ...base.counts, better: 0, worse: 1 },
+      steps: [same("1", "List OS Information"), lost],
+    };
+    const truncate = { ...event("2-1", "2", 3.5), kind: "open for writing", text: "/home/bluefire-lab/.bash_history" };
+    const ruleAlert = alert("a1", "2", 3.6, ["2-1"], { detector: "lab", rule: { id: "r1", title: RULE, level: "high", origin: "lab" } });
+    const steps = [step("1", 1, 2, { title: "List OS Information" }), step("2", 3, 4, { title: "Clear Bash history (echo)", technique: { id: "T1070.003" } })];
+    const before = { ...recording({ steps: steps.map((item) => (item.id === "2" ? { ...item, outcome_with_lab_rules: "alerted" as const } : item)), events: [truncate], alerts: [ruleAlert] }), id: "run-once" };
+    const after = { ...recording({ steps, events: [truncate] }), id: "run-once" };
+    mount(delta, { files: new Map<string, unknown>([["b".repeat(64), before], ["c".repeat(64), after]]) });
+
+    // The rule that alerted before is drawn on the stage of the run before, which only the before recording holds.
+    const stages = await screen.findByRole("group", { name: "Clear Bash history (echo), before and after" });
+    const beforeStage = await within(stages).findByRole("article", { name: /^Before/ });
+    expect(await within(beforeStage).findAllByText(RULE)).not.toHaveLength(0);
+    expect(within(within(stages).getByRole("article", { name: /^After/ })).queryAllByText(RULE)).toHaveLength(0);
+    // The event its alert rests on, said to be of the rules before.
+    const difference = screen.getByRole("region", { name: "What made the difference" });
+    const evidence = await within(difference).findByRole("article", { name: "What the alerts rest on" });
+    expect(evidence).toHaveTextContent("Clear Bash history (echo)");
+    expect(evidence).toHaveTextContent("with the rules before");
+    expect(within(evidence).getByText("/home/bluefire-lab/.bash_history")).toBeVisible();
+    expect(evidence).toHaveTextContent("alert · high");
+  }, 20_000);
 });
 
-describe("the page of one run evaluated with two rule sets", () => {
-  // The real files of CI run 45395673682, as the app ships them.
-  function shipped() {
-    const delta = readDelta(JSON.parse(ruleDeltaText));
-    const files = new Map([[delta.before.sha256, JSON.parse(ruleBaseText) as unknown], [delta.after.sha256, JSON.parse(ruleHeadText) as unknown]]);
-    const fetched = vi.spyOn(api, "recordingFile").mockImplementation(async (id, sha256) => ({ summary: summaryOf(id), recording: files.get(sha256) }));
-    return { delta, fetched };
-  }
+describe("the two comparisons shipped with the app", () => {
+  it("reads the change of auditd's settings as the first turn of the loop: the test, the event it now records, and the next turn", async () => {
+    const { delta, files } = shippedSensor();
+    const rule = shippedRule();
+    const loop = [pairSummary(delta, "0000000000000001"), pairSummary(rule.delta, "0000000000000002")];
+    mount(delta, { files, loop, id: "0000000000000001" });
+    expect(await screen.findByRole("heading", { level: 1, name: "Clear Bash history (echo) went from unseen to seen." })).toBeVisible();
+    const bar = screen.getByRole("navigation", { name: "The defender loop" });
+    expect(within(bar).getByText("New auditd settings").closest("[aria-current]")).toHaveAttribute("aria-current", "page");
+    expect(within(bar).getByRole("link", { name: /^Turn 2:\s*A new rule$/ })).toHaveAttribute("href", "/runs/compared/0000000000000002");
+    // The headline names the test; the line under it says what the test is, and does not name it again.
+    expect(await screen.findByText("A published test of Atomic Red Team for T1070.003, Indicator Removal: Clear Command History.")).toBeVisible();
 
-  it("says at the top that it is one run, not a pair, and shows the rule, how each evaluation judged it and its text", async () => {
-    const { delta, fetched } = shipped();
-    mount(delta);
-    expect(await screen.findByRole("heading", { level: 1, name: "A new rule: Shell History File Truncated In Place" })).toBeVisible();
-    expect(screen.getByText("one run evaluated with two rule sets", { selector: ".cmp-kicker span" })).toBeVisible();
-    expect(screen.getByText(/^One run, evaluated twice: the list ran once, on one runner/)).toHaveTextContent("Not a pair of runs, so no second runner and no run variation");
-    // No two runs side by side: one run, with the commit each evaluation took the lab's rules from.
-    expect(screen.queryByRole("region", { name: "The two runs" })).not.toBeInTheDocument();
-    const run = screen.getByRole("region", { name: "The run" });
-    expect(run).toHaveTextContent("before from commit 3d8f3610; after from commit e809f685");
-    expect(within(run).getByRole("link", { name: /Open with the rules after/ })).toHaveAttribute("href", `/runs/recorded/b2666c50/${delta.after.sha256}`);
+    const stages = screen.getByRole("group", { name: "Clear Bash history (echo), before and after" });
+    expect(await within(stages).findByRole("article", { name: /^Before auditd's earlier settings/ })).toHaveTextContent("Nothing of the test was recorded besides its launcher's start.");
+    expect(within(stages).getByRole("article", { name: /^After auditd's new settings/ })).toHaveTextContent("auditd recorded 1 event. No alert: Use Of Hidden Paths Or Files matched at level low, below the alert level.");
 
+    const cost = screen.getByRole("region", { name: "What it cost" });
+    expect(cost).toHaveTextContent("2 before, 2 after");
+    const others = screen.getByRole("region", { name: "What else moved" });
+    expect(others).toHaveTextContent("1 of 91 steps moved. 90 are the same.");
+    const next = screen.getByRole("region", { name: "What comes next" });
+    expect(next).toHaveTextContent("No rule alerted on Clear Bash history (echo) in the run after.");
+    expect(within(next).getByRole("link", { name: /^Next turn: A new rule/ })).toHaveAttribute("href", "/runs/compared/0000000000000002");
+
+    const difference = screen.getByRole("region", { name: "What made the difference" });
+    expect(within(difference).getByRole("heading", { name: "auditd recorded Clear Bash history (echo) in the run after" })).toBeVisible();
+    expect(within(difference).getByText("/home/bluefire-lab/.bash_history")).toBeVisible();
+    expect(within(difference).getByText("only after")).toBeVisible();
+    expect(difference).toHaveTextContent("It marks 9 events on 9 steps.");
+    const ways = screen.getByRole("region", { name: "Every published test of T1070.003" });
+    expect(ways).toHaveTextContent("2 of 4 alerted.");
+    expect(within(ways).getAllByRole("listitem")).toHaveLength(4);
+  }, 30_000);
+
+  it("reads the new rule as one run evaluated twice: four rows, a row chooses the stages, the rule's text and the price not counted", async () => {
+    const { delta, files } = shippedRule();
+    const { user, fetched } = mount(delta, { files });
+    expect(await screen.findByRole("heading", { level: 1, name: "4 steps went from seen to alerted." })).toBeVisible();
+    expect(screen.getByText("One run, its telemetry read with two rule sets, 24 Nov 2026.")).toBeVisible();
+    expect(screen.getByText("Only the rules of detector lab differed.")).toBeVisible();
+    const move = screen.getByRole("region", { name: "What the change did" });
+    const rows = within(move).getAllByRole("button", { pressed: false }).concat(within(move).getAllByRole("button", { pressed: true }));
+    expect(rows).toHaveLength(4);
+    const echoAgain = within(move).getAllByRole("button", { name: /Clear Bash history \(echo\)\s*with other arguments/ })[0];
+    if (!echoAgain) throw new Error("The rerun of echo should be listed.");
+    await user.click(echoAgain);
+    expect(echoAgain).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("Address")).toHaveTextContent("?step=variant%3Acbf506a5%3A27e9e5");
+    const stages = screen.getByRole("group", { name: "Clear Bash history (echo), before and after" });
+    expect(await within(stages).findByRole("article", { name: /^After with the new rule/ })).toHaveTextContent("The new rule raised an alert: Shell History File Truncated In Place (high).");
+
+    expect(screen.getByRole("region", { name: "What it cost" })).toHaveTextContent("Not counted");
     const rule = screen.getByRole("article", { name: "Shell History File Truncated In Place" });
-    expect(within(rule).getByText("lab/rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml")).toBeVisible();
-    const judged = within(rule).getByLabelText("How each evaluation judged it");
-    expect(judged).toHaveTextContent("Beforenot there");
-    expect(judged).toHaveTextContent("Afteraccepted" + "it alerted on every run with changed input arguments and on no ordinary activity");
-    // The rule's text as the after recording carries it, as text that can be selected.
-    const text = await within(rule).findByLabelText("The text of the rule Shell History File Truncated In Place");
+    expect(within(rule).getByLabelText("How each evaluation judged it")).toHaveTextContent("Beforenot there");
+    const text = within(rule).getByLabelText("The text of the rule Shell History File Truncated In Place");
     expect(text.tagName).toBe("PRE");
     expect(text.textContent?.startsWith("title: Shell History File Truncated In Place\nid: 3d6f0b8e-5a41-4c7e-9b2d-7e1a6c40f5b9\n")).toBe(true);
-    expect(text).toHaveTextContent("condition: selection_watch and (selection_openat or selection_open or selection_creat)");
-    // Only the evaluation that has the rule is loaded for it.
-    expect(fetched.mock.calls.map(([, sha256]) => sha256)).toEqual([delta.after.sha256]);
-  });
-
-  it("lists the steps the rule moved, seen to alerted, each with the event its alert rests on, and the price once in the lab's words", async () => {
-    const { delta } = shipped();
-    mount(delta);
-    const moved = await screen.findByRole("region", { name: /^What the change moved/ });
-    const lines = within(moved).getAllByRole("listitem").filter((item) => item.classList.contains("cmp-step"));
-    expect(lines).toHaveLength(4);
-    const [first] = lines;
-    if (!first) throw new Error("A moved step should be listed.");
-    expect(first).toHaveTextContent("Before seen, no alert, after alerted");
-    expect(first).toHaveTextContent("with the lab's rules");
-    expect(await within(first).findByText("auditd openat: /home/bluefire-lab/.bash_history")).toBeVisible();
-    expect(first).toHaveTextContent('by sh -c echo "" > ~/.bash_history');
-    expect(first).toHaveTextContent("audit key shell-history");
-    // Each step carries the price's lead; the price is said whole once, under the steps.
-    expect(within(first).getByText("price not counted: the lab's rules that matched ordinary activity are left out of the recording before it is written")).toHaveClass("cmp-price");
-    const price = within(moved).getByRole("heading", { name: /^The price/ }).parentElement;
-    expect(price).toHaveTextContent("(before: The run accepted 8 of the 9 rules written in this repository.");
-    expect(price).toHaveTextContent("after: The run accepted 9 of the 10 rules written in this repository.");
-    expect(screen.getByText("All of this rests on one run evaluated with two rule sets.")).toBeVisible();
-  });
+    const difference = screen.getByRole("region", { name: "What made the difference" });
+    expect(within(difference).getAllByText("/home/bluefire-lab/.bash_history")).toHaveLength(2);
+    expect(within(difference).getByText("/home/bluefire-lab/.zsh_history")).toBeVisible();
+    // Counted with the lab's own rules, beside the score the run after's page shows, which counts only published rules.
+    expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("41 tests still raised no alert.In the run after, with the lab's own rules too; none went unseen.");
+    expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("Its score counts only published rules: 57 with no alert.");
+    // Each evaluation is read by its own file.
+    expect(new Set(fetched.mock.calls.map(([, sha256]) => sha256))).toEqual(new Set([delta.before.sha256, delta.after.sha256]));
+  }, 30_000);
 });
 
 describe("the words of a pair", () => {
-  it("says what a list's pair changed and moved, from its summary", () => {
-    const delta = readDelta(JSON.parse(ruleDeltaText));
-    const moved = delta.steps.filter((item) => item.result === "better");
-    expect(pairChangeWords(delta)).toBe("A new rule: Shell History File Truncated In Place");
-    expect(movedWords({ declared_change: delta.declared_change, moved })).toBe("Clear Bash history (echo) and Clear Bash history (cat dev/null), each also with changed input arguments: seen to alerted with the lab's rules");
+  it("says what a change did, and names its turn, from the delta's own steps", () => {
+    const rule = readDelta(JSON.parse(ruleDeltaText));
+    const sensor = readDelta(JSON.parse(sensorDeltaText));
+    const moved = (delta: Delta) => delta.steps.filter((item) => item.result === "better");
+    expect(pairHeadline(rule, moved(rule))).toBe("4 steps went from seen to alerted.");
+    expect(pairHeadline(sensor, moved(sensor))).toBe("Clear Bash history (echo) went from unseen to seen.");
+    expect(pairHeadline({ ...sensor, comparable: false }, [])).toBe("No verdict.");
+    expect(turnName(rule)).toBe("A new rule");
+    expect(turnName(sensor)).toBe("New auditd settings");
+    expect(titlesWords(moved(rule))).toBe("Clear Bash history (echo) and (cat dev/null)");
+    // A summary lists at most 20 moved steps: words for how they moved only when the list holds them all.
+    expect(pairHeadline({ ...rule, counts: { ...rule.counts, better: 21, worse: 1 } }, moved(rule))).toBe("22 steps moved.");
+    expect(listedPrice(moved(rule))?.words).toBe("Not counted: the lab keeps its own rules' matches on ordinary activity out of the recording");
+    expect(listedPrice(moved(sensor))?.words).toBe("2 published rules alert on ordinary activity, before and after");
+    expect(listedPrice([{ price: "price: published rules that alerted on ordinary activity: 1 before, 3 after; ordinary events: 8902 before, 8841 after" }])?.words).toBe("Published rules alerting on ordinary activity: 1 before, 3 after");
+    expect(pairChangeWords(rule)).toBe("A new rule: Shell History File Truncated In Place");
     expect(movedWords({ declared_change: "sensors:auditd", moved: [better] })).toBe("Clear Bash history (echo): unseen to seen");
-    expect(movedWords({ declared_change: "sensors:auditd", moved: [] })).toBeNull();
-    expect(pairChangeWords(sensorDelta())).toBe("The settings of sensor auditd");
   });
+
+  it("says in the headline what moved, by the step's title for one step and in figures for several", () => {
+    const pair = sensorDelta();
+    const counted = (better: number, worse = 0) => ({ ...pair, counts: { ...pair.counts, better, worse } });
+    const side = (outcome: "unseen" | "seen" | "alerted") => ({ happened: "took effect", recorded: "recorded", outcome, outcome_with_lab_rules: outcome } as const);
+    const moving = (title: string, from: "unseen" | "seen" | "alerted", to: "unseen" | "seen" | "alerted", role = "test") => ({ role, title, before: side(from), after: side(to) });
+    // One step: its title, then its two outcomes.
+    expect(pairHeadline(counted(1), [moving("Clear Bash history (echo)", "unseen", "seen")])).toBe("Clear Bash history (echo) went from unseen to seen.");
+    expect(pairHeadline(counted(1), [moving("Clear Bash history (echo)", "seen", "alerted", "variant")])).toBe("Clear Bash history (echo), with other arguments, went from seen to alerted.");
+    // A step that got worse reads by the same rule.
+    expect(pairHeadline(counted(0, 1), [moving("Clear Bash history (echo)", "alerted", "seen")])).toBe("Clear Bash history (echo) went from alerted to seen.");
+    // Several that moved the same way: a figure, "tests" only when each is a published test as published.
+    const alike = [moving("A", "seen", "alerted"), moving("B", "seen", "alerted"), moving("C", "seen", "alerted"), moving("D", "seen", "alerted")];
+    expect(pairHeadline(counted(4), alike)).toBe("4 tests went from seen to alerted.");
+    expect(pairHeadline(counted(4), [...alike.slice(0, 3), moving("A", "seen", "alerted", "variant")])).toBe("4 steps went from seen to alerted.");
+    // Several that moved in different ways, or more than the list holds.
+    expect(pairHeadline(counted(4, 1), [...alike, moving("E", "alerted", "seen")])).toBe("5 tests moved.");
+    expect(pairHeadline(counted(5), alike)).toBe("5 steps moved.");
+    expect(pairHeadline(counted(1), [])).toBe("1 step moved.");
+    // None, refused, nothing declared.
+    expect(pairHeadline(counted(0), [])).toBe("No step moved.");
+    expect(pairHeadline({ ...counted(1), comparable: false }, [])).toBe("No verdict.");
+    expect(pairHeadline({ ...counted(1), declared_change: null }, [])).toBe("Nothing was declared as changed.");
+    // No headline says a count word where it can say the step, or the old slogan's words.
+    for (const words of [pairHeadline(counted(1), [moving("X", "unseen", "seen")]), pairHeadline(counted(4), alike)]) {
+      expect(words).not.toMatch(/\b(One|Four|now|nobody)\b/);
+    }
+  });
+
+  it("names the moved step once in the head of the page, even with the longest title of the shipped tests", async () => {
+    const delta = sensorDelta();
+    const title = "Execute a process from a directory masquerading as the current parent directory";
+    delta.steps = delta.steps.map((item) => (item.id === "2" ? { ...item, title } : item));
+    mount(delta);
+    const heading = await screen.findByRole("heading", { level: 1, name: `${title} went from unseen to seen.` });
+    const head = heading.closest("header");
+    if (!head) throw new Error("The headline should stand in the page's head.");
+    expect(head.textContent?.split(title)).toHaveLength(2);
+  }, 20_000);
 
   it("never draws a gain without its price, even when the verdict leaves it out", () => {
     expect(verdictParts(better)).toEqual({
@@ -484,15 +614,6 @@ describe("the words of a pair", () => {
     const delta = limitedDelta();
     expect(pairResultWords(delta)).toBe("Limited verdict, the runners differed: 1 better, 0 worse, 1 of them by the change's own mark alone; 1 not attributable; of 3 paired steps");
     expect(variationWords(delta)).toBe("run variation or the runners' difference");
-  });
-
-  it("leaves the mark's lead to the step's tags, and keeps the rest of the verdict in the delta's words", () => {
-    const [, marked] = limitedDelta().steps;
-    if (!marked) throw new Error("The limited delta should have a credited step.");
-    const parts = verdictParts(marked);
-    expect(parts.before).toBe("no telemetry to recorded by the sensors; unseen to seen by the published rules, on 1 of the 4 published procedures of T1070.003 in the list; ");
-    expect(parts.price).toBe(UNKNOWN_PRICE);
-    expect(parts.after.startsWith("; it rests on 1 event of the audit key `shell-history`")).toBe(true);
   });
 
   it("draws a race with no numbers on either side as a quiet line", () => {

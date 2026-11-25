@@ -5,7 +5,7 @@
 
 import { count, day, plural } from "../live/format";
 import type { Recording, RecordingEvent } from "../live/recording";
-import type { Delta, DeltaField, DeltaJudged, DeltaLabRule, DeltaLimit, DeltaResult, DeltaSide, DeltaStep, DeltaSummary, RaceTimes } from "./api";
+import type { Delta, DeltaField, DeltaJudged, DeltaLabRule, DeltaLimit, DeltaMoved, DeltaResult, DeltaSide, DeltaStep, DeltaSummary, RaceTimes } from "./api";
 
 /** The declared change of the lab's own rules, the one a single run can be evaluated twice for. */
 export const LAB_RULES = "detectors:lab";
@@ -344,4 +344,147 @@ export function raceWords(race: Delta["race"]): { quiet: boolean; text: string }
 /** The path of a pair's page inside the app. */
 export function pairPath(id: string): string {
   return `/runs/compared/${encodeURIComponent(id)}`;
+}
+
+/**
+ * The field every mark of a pair is drawn in, on its page, on the Runs screen
+ * and on the Overview: what the published rules and the lab's own rules made
+ * of a step together. A step that only the lab's rules alert on is drawn in the
+ * live view's violet, so the one field never hides whose rule it was.
+ */
+export const MARK_FIELD = "outcome_with_lab_rules";
+
+type MarkSide = Pick<DeltaStep["before"], "outcome" | "outcome_with_lab_rules">;
+type MovedLike = Pick<DeltaMoved, "role" | "title" | "before" | "after">;
+
+/** True when only the lab's own rules alerted on the step: the published rules did not. */
+export function alertedByLabOnly(side: MarkSide): boolean {
+  return side[MARK_FIELD] === "alerted" && side.outcome !== "alerted";
+}
+
+const NUMBER_WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve"];
+
+/** "One", "Four", or 13 and above in figures: a count as a headline says it. */
+export function numberWord(value: number): string {
+  return NUMBER_WORDS[value] ?? count(value);
+}
+
+/** How many steps the delta credits to the change. */
+export function creditedCount(counts: Pick<DeltaSummary["counts"], "better" | "worse" | "changed">): number {
+  return counts.better + counts.worse + counts.changed;
+}
+
+/** The one step's name as a headline says it: its title, and for a rerun with changed input arguments, that too. */
+function stepName(step: MovedLike): string {
+  return step.role === "variant" ? `${step.title}, with other arguments,` : step.title;
+}
+
+/**
+ * What the change did, in one sentence, from the steps the delta credits to
+ * it: "Clear Bash history (echo) went from unseen to seen." for one step, by
+ * its title; "4 steps went from seen to alerted." for several that moved the
+ * same way ("tests" when every one is a published test as published); "5
+ * steps moved." when they moved in different ways or the list does not hold
+ * them all. The count is the delta's own, and the outcomes are told in the
+ * field the marks are drawn in.
+ */
+export function pairHeadline(pair: Pick<DeltaSummary, "comparable" | "declared_change" | "counts">, moved: readonly MovedLike[]): string {
+  if (!pair.comparable) return "No verdict.";
+  if (pair.declared_change === null) return "Nothing was declared as changed.";
+  const total = creditedCount(pair.counts);
+  if (total === 0) return "No step moved.";
+  // A list entry holds at most 20 moved steps: titles and outcomes are said only when it holds them all.
+  const complete = moved.length === total;
+  const tests = complete && moved.every((step) => step.role === "test");
+  const noun = tests ? (total === 1 ? "test" : "tests") : total === 1 ? "step" : "steps";
+  const [first] = moved;
+  const from = first?.before[MARK_FIELD];
+  const to = first?.after[MARK_FIELD];
+  const alike = first !== undefined && from !== to && moved.every((step) => step.before[MARK_FIELD] === from && step.after[MARK_FIELD] === to);
+  if (complete && total === 1 && first) return alike ? `${stepName(first)} went from ${from ?? ""} to ${to ?? ""}.` : `${stepName(first)} moved.`;
+  if (!complete || !alike) return `${count(total)} ${noun} moved.`;
+  return `${count(total)} ${noun} went from ${from ?? ""} to ${to ?? ""}.`;
+}
+
+/** True when the headline of a pair names its one moved step, so the lines around it need not name it again. */
+export function headlineNamesStep(pair: Pick<DeltaSummary, "comparable" | "declared_change" | "counts">, moved: readonly MovedLike[]): boolean {
+  return pair.comparable && pair.declared_change !== null && creditedCount(pair.counts) === 1 && moved.length === 1;
+}
+
+/**
+ * The short name of a turn of the loop, the same wherever it is shown: "New
+ * auditd settings", "A new rule", or the declared change in words.
+ */
+export function turnName(pair: Pick<Delta, "declared_change" | "lab_rules">): string {
+  const declared = pair.declared_change;
+  if (declared === null) return "Nothing declared";
+  if (declared.startsWith("sensors:")) return `New ${declared.slice("sensors:".length)} settings`;
+  const rules = declared === LAB_RULES ? pair.lab_rules ?? [] : [];
+  const [only] = rules;
+  if (rules.length === 1 && only) return ruleChangeWords(only.change);
+  if (rules.length > 1) return `${count(rules.length)} of the lab's rules changed`;
+  return changeWords(declared);
+}
+
+/** How the comparison was made, in the lab's terms, small: "Two runs side by side, 24 Nov 2026". */
+export function methodWords(pair: Pick<Delta, "before" | "after" | "runners" | "one_run">): string {
+  const dates = [pair.before.started, pair.after.started].map((started) => (started ? day(started) : "not recorded"));
+  if (isOneRun(pair)) return `One run evaluated with two rule sets, ${dates[0] ?? ""}`;
+  if (pair.runners === 2) return `Two runs side by side, ${dates[1] === dates[0] ? dates[0] ?? "" : `${dates[0] ?? ""} and ${dates[1] ?? ""}`}`;
+  return `Before ${dates[0] ?? ""}, after ${dates[1] ?? ""}`;
+}
+
+/** The basis of every verdict of a pair and when it was made, as one sentence a careful reader finds without opening anything. */
+export function basisWords(pair: Pick<Delta, "claim" | "runners" | "one_run" | "before" | "after">): string {
+  const [first = "", second = ""] = [pair.before.started, pair.after.started].map((started) => (started ? day(started) : "not recorded"));
+  if (isOneRun(pair)) return `One run, its telemetry read with two rule sets, ${first}.`;
+  if (pair.runners === 2) return `One pair of runs, made side by side in one CI run, ${second === first ? first : `${first} and ${second}`}.`;
+  return `It rests on ${pair.claim}: before ${first}, after ${second}.`;
+}
+
+const COUNTED_PRICE = /^price: published rules that alerted on ordinary activity: (\d+) before, (\d+) after(;|$)/;
+
+/**
+ * A price in the page's plain words, short enough for a card: what the
+ * delta's price says of the published rules that alerted on ordinary activity,
+ * or that it is not counted or not known and why. A price the lab words in
+ * any other way is shown as its lead, as it is.
+ */
+export function priceWords(price: string): string {
+  const counted = COUNTED_PRICE.exec(price);
+  if (counted) {
+    const before = Number(counted[1]), after = Number(counted[2]);
+    if (before === after) return `${count(before)} published ${before === 1 ? "rule alerts" : "rules alert"} on ordinary activity, before and after`;
+    return `Published rules alerting on ordinary activity: ${count(before)} before, ${count(after)} after`;
+  }
+  if (price.startsWith("price not counted")) return "Not counted: the lab keeps its own rules' matches on ordinary activity out of the recording";
+  if (price.startsWith("price not known")) return "Not known: each run counted its ordinary activity on a runner of its own, and the runners differed";
+  return capitalFirst(priceLead(price).lead);
+}
+
+/**
+ * A price for a list, in plain words, when every listed step has the same
+ * price; null when there is none to say.
+ */
+export function listedPrice(moved: readonly Pick<DeltaMoved, "price">[]): { words: string; shared: boolean } | null {
+  const price = sharedPrice(moved);
+  if (price) return { words: priceWords(price), shared: true };
+  const any = moved.find((step) => step.price !== undefined)?.price;
+  return any ? { words: "Each step has a price of its own, said on the page", shared: false } : null;
+}
+
+/**
+ * The titles of steps as one phrase, a family said once: "Clear Bash history
+ * (echo) and (cat dev/null)".
+ */
+export function titlesWords(steps: readonly Pick<DeltaMoved, "title">[]): string {
+  const titles = [...new Set(steps.map((step) => step.title))];
+  const [first] = titles;
+  if (!first) return "";
+  const cut = first.indexOf(" (");
+  const stem = cut > 0 ? first.slice(0, cut) : "";
+  if (titles.length > 1 && stem && titles.every((title) => title.startsWith(`${stem} (`))) {
+    return `${stem} ${listWords(titles.map((title) => title.slice(stem.length + 1)))}`;
+  }
+  return listWords(titles);
 }
