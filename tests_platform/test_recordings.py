@@ -707,7 +707,8 @@ _LEFT_OUT = object()
          "steps[0].defense.why is missing."),
         (("events", 0, "tied_by"), _LEFT_OUT, "events[0].tied_by is missing."),
         (("events", 0, "tied_by"), "guess",
-         "events[0].tied_by must be one of: session, launcher, account, systemd, window."),
+         "events[0].tied_by must be one of: session, launcher, account, systemd, address, content, "
+         "window."),
         (("events", 0, "fields"), {"inode": 10**400},
          "events[0].fields must hold at most 64 plain values: text of at most 300 characters, "
          "a number no further than 9007199254740992 from zero, true, false or null."),
@@ -1365,3 +1366,28 @@ def test_a_recording_the_lab_writes_from_telemetry_with_control_characters_is_im
     assert kept["steps"][0]["command"] == "sh -c 'touch a\tb'\n" + ODD[:-2] + "\\u{0}\\u{D800}"
     assert [match["id"] for match in kept["ordinary"]["matches"]] == ["rule-a", "rule-b"]
     assert len({match["rule"] for match in kept["ordinary"]["matches"]}) == 2
+
+
+def test_a_recording_the_lab_writes_from_a_range_run_is_imported(
+    service: BlueFireService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lab's writer from this checkout, on the small run folder of range one that the lab's own
+    # tests build by hand (lab/tests/test_range_score.py): two steps, a few archive lines and alerts.
+    monkeypatch.syspath_prepend(str(ROOT / "lab"))
+    monkeypatch.syspath_prepend(str(ROOT / "lab" / "tests"))
+    import test_range_score as small_range
+    from bluefire_lab.range import engine as range_engine
+
+    folder = small_range.small_run(tmp_path)
+    assert range_engine.rescore(folder) == 0
+
+    written = recordings.parse_recording_bytes((folder / "recording.json").read_bytes())
+    stored = service.import_recording({"recording": written})
+
+    assert stored["created"] is True
+    kept = service.recording(written["id"])["recording"]
+    assert kept["kind"] == "attack path"
+    assert [step["outcome"] for step in kept["steps"]] == ["alerted", "seen"]
+    assert {event["tied_by"] for event in kept["events"]} == {"address", "account", "session", "content"}
+    assert all("raised" in alert for alert in kept["alerts"])
+    assert kept["score"]["first_alert_seconds"] < kept["score"]["goal_seconds"]

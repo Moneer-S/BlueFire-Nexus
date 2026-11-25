@@ -55,6 +55,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -63,7 +64,8 @@ from pathlib import Path, PurePosixPath
 
 from . import activity, atomics, build, ossec, plants, score, seal, wazuh
 from . import path as range_path
-from .spec import Spec, SpecError, load
+from . import recording as range_recording
+from .spec import Spec, SpecError, load, parse, read
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -574,7 +576,7 @@ class Run:
         if self.manifest["path"] is not None:
             (self.out / "path.md").write_text(range_path.summary(self.manifest), encoding="utf-8")
         if self.manifest["ecs"] is not None:
-            (self.out / "score.md").write_text(score.summary(self.manifest), encoding="utf-8")
+            (self.out / "score.md").write_text(score.markdown(self.manifest), encoding="utf-8")
 
     def phase(self, name: str, checks: list[dict]) -> bool:
         self.phases.append({"phase": name, "passed": seal.passed(checks), "checks": checks})
@@ -1746,18 +1748,9 @@ class Run:
         }
 
     def record_ecs(self) -> None:
-        """Write the manager's archive and alerts as ECS lines with their origins, and score the ordinary day."""
+        """Write the manager's archive and alerts as ECS lines with their origins and ties, and score the run."""
 
-        logs = self.out / "raw" / "hosts" / self.spec.manager / "var" / "ossec" / "logs"
-        self.manifest["ecs"], self.manifest["score"] = score.record(
-            self.out,
-            logs,
-            self.run_id,
-            self.spec.wazuh.alert_level,
-            self.spec.activity,
-            self.manifest["activity"],
-            self.addresses(),
-        )
+        scored(self.out, self.manifest, self.spec)
         self.write()
 
     def labelled(self) -> tuple[list[str], list[str]]:
@@ -1980,9 +1973,81 @@ class Run:
                 self.manifest.update({"result": result, "reason": reason, "exit_code": code})
                 self.manifest["engine_clock"]["ended"] = now()
                 self.write()
+                # Last, once the run's result is known and the event watch has stopped.
+                write_recording(self.out, self.manifest)
             finally:
                 for number, handler in held.items():
                     signal.signal(number, handler)
+
+
+def scored(out: Path, manifest: dict, spec: Spec) -> None:
+    """The ECS lines of a run folder's collected archive and alerts, its steps', and its score, into the manifest."""
+
+    logs = out / "raw" / "hosts" / spec.manager / "var" / "ossec" / "logs"
+    addresses = {
+        host: list((entry.get("addresses") or {}).values())
+        for host, entry in (manifest.get("containers") or {}).items()
+    }
+    uses, _ = activity.path_uses(range_path.section(spec), spec.hosts)
+    manifest["ecs"], manifest["score"] = score.record(
+        out,
+        logs,
+        manifest["run_id"],
+        spec.wazuh.alert_level,
+        spec.activity,
+        manifest.get("activity"),
+        addresses,
+        manifest.get("path"),
+        uses,
+        {
+            host: entry["name"]
+            for host, entry in (manifest.get("containers") or {}).items()
+            if entry.get("name")
+        },
+    )
+
+
+def write_recording(out: Path, manifest: dict) -> None:
+    """Write recording.json for a run whose path ran, and say in the manifest whether it was written."""
+
+    if not ((manifest.get("score") or {}).get("path")):
+        return
+    try:
+        made = range_recording.write(out)
+        manifest["recording"] = {"file": range_recording.FILE, "error": None, **made}
+    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+        # A recording an earlier scoring of the folder wrote is not this score's.
+        (out / range_recording.FILE).unlink(missing_ok=True)
+        manifest["recording"] = {"file": None, "error": f"{type(error).__name__}: {error}"[:500]}
+    write_json(out / "manifest.json", manifest)
+
+
+def rescore(folder: Path) -> int:
+    """Write the ECS lines, the score and the recording of a run folder again, from its own files.
+
+    The spec is the copy the run's manifest holds, so a run is scored by what it ran.
+    """
+
+    try:
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        text = manifest["spec"]["text"]
+        spec = parse(read(text), text)
+    except (OSError, ValueError, KeyError, TypeError, SpecError) as error:
+        print(f"{folder}: not a run folder of a range whose spec can be read: {error}", file=sys.stderr)
+        return 2
+    if not spec.wazuh:
+        print(f"{folder}: the range has no defense, so there is nothing to score", file=sys.stderr)
+        return 2
+    scored(folder, manifest, spec)
+    write_json(folder / "manifest.json", manifest)
+    (folder / "score.md").write_text(score.markdown(manifest), encoding="utf-8")
+    write_recording(folder, manifest)
+    error = (manifest.get("ecs") or {}).get("error") or (manifest.get("recording") or {}).get("error")
+    print(score.path_summary(manifest) or score.summary(manifest))
+    if error:
+        print(error, file=sys.stderr)
+        return 1
+    return 0
 
 
 def failing(checks: list[dict]) -> str:

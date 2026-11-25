@@ -346,6 +346,70 @@ def test_a_step_whose_exec_has_not_ended_has_no_daemon_times() -> None:
     assert range_path.daemon_times(None) == {}
 
 
+# s03's test of range one, and the times a loaded Docker daemon gave its exec: exec_die 0.749 s before
+# exec_start. The container and exec IDs and the container's name are stand-ins.
+UNAME = (
+    'uname -a >> "/tmp/T1082.txt"; if [ -f /etc/lsb-release ]; then cat /etc/lsb-release >> "/tmp/T1082.txt"; '
+    'fi; if [ -f /etc/redhat-release ]; then cat /etc/redhat-release >> "/tmp/T1082.txt"; fi; if [ -f '
+    '/etc/issue ]; then cat /etc/issue >> "/tmp/T1082.txt"; fi; if [ -f /etc/os-release ]; then cat '
+    '/etc/os-release >> "/tmp/T1082.txt"; fi; uptime >> "/tmp/T1082.txt"; cat "/tmp/T1082.txt" 2>/dev/null'
+)
+MISORDERED = [
+    exec_event(f"exec_create: sh -c {UNAME}", "e3", 1_795_554_323_269_207_781),
+    exec_event(f"exec_start: sh -c {UNAME}", "e3", 1_795_554_323_271_196_036),
+    exec_event("exec_die", "e3", 1_795_554_322_521_993_782, exitCode="0"),
+]
+
+
+def test_a_step_whose_daemon_end_comes_before_its_start_is_timed_by_the_engines_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = range_path.Step(
+        id="s03",
+        technique="T1082",
+        guid=GUID,
+        name="List OS Information",
+        host="web",
+        to=(),
+        account="webadmin",
+        workdir="/tmp",
+        args={},
+        timeout=60,
+        cleanup="none",
+        check=None,
+        expect=(),
+        attack=("sh", "-c", UNAME),
+        prereqs=(),
+        undo=None,
+    )
+    watch = engine.Watch("bluefire-lab-r1", tmp_path / "events.ndjson", inspect=lambda _: None)
+    watch.containers.add(CONTAINER)
+    watch.alive = True
+    run = a_sealed_run(tmp_path, watch)
+    run.containers = {"web": CONTAINER}
+
+    class Exec:
+        """The docker client of the exec: the daemon reports its events while it runs, and it exits 0."""
+
+        returncode = 0
+
+        def __init__(self, *_, **__) -> None:
+            watch.feed(MISORDERED)
+
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(range_path.subprocess, "Popen", Exec)
+
+    found = range_path.Executor(run, range_path.Plan((step,), None, None), {}).exec(
+        step, "step:s03", step.attack, 60, tmp_path, "attack"
+    )
+
+    assert found["time_source"] == "engine clock (the daemon's exec_die came before its exec_start)"
+    assert found["ended_ns"] >= found["started_ns"] and found["seconds"] >= 0
+    assert watch.findings == []
+
+
 def tar_gz(members: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:

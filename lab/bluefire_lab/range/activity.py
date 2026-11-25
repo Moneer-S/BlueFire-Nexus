@@ -693,7 +693,7 @@ def event_time(event: dict) -> tuple[float, bool] | None:
     return moment.timestamp(), source == "log-second"
 
 
-def _names(account: str) -> re.Pattern:
+def names(account: str) -> re.Pattern:
     """Lines of auth.log that name an account as the one logging in, starting a session or using sudo."""
 
     name = re.escape(account)
@@ -769,7 +769,7 @@ def source(job: Job, event: dict, addresses: list[str]) -> str | None:
     if job.do == "ssh" and location == AUTH_LOG:
         if data.get("srcip") in addresses or any(f" {a} port " in log for a in addresses):
             return f"{location}, by address"
-        if _names(job.target_account).search(log):
+        if names(job.target_account).search(log):
             return f"{location}, by account"
     return None
 

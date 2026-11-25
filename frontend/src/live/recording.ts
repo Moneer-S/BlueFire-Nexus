@@ -15,7 +15,7 @@ export type StepRole = "test" | "canary" | "control" | "hardened" | "variant";
 export type HappenedAnswer = "took effect" | "attempted without effect" | "blocked" | "not attempted" | "inconclusive";
 export type VisibilityAnswer = "alert" | "telemetry only" | "no telemetry" | "inconclusive" | "not applicable";
 export type Outcome = "stopped" | "no effect" | "alerted" | "seen" | "unseen" | "inconclusive";
-export type TiedBy = "session" | "launcher" | "account" | "systemd" | "window";
+export type TiedBy = "session" | "launcher" | "account" | "systemd" | "address" | "content" | "window";
 export type RuleLevel = "informational" | "low" | "medium" | "high" | "critical";
 export type RuleOrigin = "pinned" | "lab";
 
@@ -246,7 +246,7 @@ const ROLES: readonly StepRole[] = ["test", "canary", "control", "hardened", "va
 const HAPPENED: readonly HappenedAnswer[] = ["took effect", "attempted without effect", "blocked", "not attempted", "inconclusive"];
 const VISIBILITY: readonly VisibilityAnswer[] = ["alert", "telemetry only", "no telemetry", "inconclusive", "not applicable"];
 const OUTCOMES: readonly Outcome[] = ["stopped", "no effect", "alerted", "seen", "unseen", "inconclusive"];
-const TIES: readonly TiedBy[] = ["session", "launcher", "account", "systemd", "window"];
+const TIES: readonly TiedBy[] = ["session", "launcher", "account", "systemd", "address", "content", "window"];
 const LEVELS: readonly RuleLevel[] = ["informational", "low", "medium", "high", "critical"];
 const ORIGINS: readonly RuleOrigin[] = ["pinned", "lab"];
 
