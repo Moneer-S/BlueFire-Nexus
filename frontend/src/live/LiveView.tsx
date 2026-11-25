@@ -2,19 +2,21 @@
 // what the defenses saw, and keeps score. It owns one animation-frame clock.
 // This file and the parts beside it import nothing from the rest of the app.
 
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./live.css";
+import { planRoom } from "./room";
+import type { RoomPlan } from "./room";
 import type { Recording } from "./recording";
-import { eventsByStep } from "./recording";
+import { alertMoment, eventsByStep, timeOf } from "./recording";
 import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
-import { capital, clockTime, day, elapsed, isLabDetector, plural, runLink, sensorColours, sharedUnseenWords, stepLabel } from "./format";
-import { lateLine, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
+import { capital, clockTime, day, elapsed, isLabDetector, matchKind, plural, runLink, sensorColours, sharedUnseenWords, stepLabel, unitWord } from "./format";
+import { firstAlertClock, firstAlertOnScreen, lateLine, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
 import { FreeText } from "./FreeText";
 import { NetworkMap } from "./NetworkMap";
 import { EventLog } from "./EventLog";
 import { StepCaption } from "./StepCaption";
-import { RaceLine } from "./RaceLine";
+import { goalReached, RaceLine } from "./RaceLine";
 import { Scrubber } from "./Scrubber";
 import { AnalyseView } from "./AnalyseView";
 
@@ -130,8 +132,9 @@ const Provenance = memo(function Provenance({ recording, origin, originKind }: {
             </p>
           ) : null}
           <dl>
-            {source.tools.map((tool) => (
-              <div key={`${tool.name}:${tool.role}`}>
+            {/* Keyed by place: a recording may name one tool twice, and every entry is shown. */}
+            {source.tools.map((tool, index) => (
+              <div key={index}>
                 <dt>
                   {tool.name} <span>{tool.role}</span>
                 </dt>
@@ -144,8 +147,8 @@ const Provenance = memo(function Provenance({ recording, origin, originKind }: {
           </p>
           {recording.notes.length > 0 ? (
             <ul>
-              {recording.notes.map((note) => (
-                <li key={note}>
+              {recording.notes.map((note, index) => (
+                <li key={index}>
                   <FreeText text={note} />
                 </li>
               ))}
@@ -245,6 +248,98 @@ function PlayIcon({ playing }: { playing: boolean }) {
   );
 }
 
+/**
+ * Whether the transport stands stuck at the foot of the window, over the rest
+ * of the view scrolling under it: it then sits 1 pixel past the window's edge
+ * (live.css), so less than all of it is in view. Never where the view fits.
+ */
+/** The room under the log's head that a log of no line drops: its head's 6 px margin and its own 4 px foot (live.css). */
+const LOG_UNDER = 10;
+
+/**
+ * How the watch view shares the height it is given (room.ts): it measures the
+ * parts that never give way, and plans how many lines the log holds and the
+ * least height of the map. Null until the view is laid out, and outside watch
+ * mode.
+ */
+function useRoomPlan(view: HTMLElement | null, active: boolean, map: MapHeights | null, most: number): RoomPlan | null {
+  const [plan, setPlan] = useState<RoomPlan | null>(null);
+  useLayoutEffect(() => {
+    if (!view || !active || !map || typeof ResizeObserver === "undefined") {
+      setPlan(null);
+      return undefined;
+    }
+    const measure = () => {
+      const parent = view.parentElement;
+      const main = view.querySelector<HTMLElement>(":scope > .lv-main");
+      const band = view.querySelector<HTMLElement>(":scope > .lv-caption");
+      const bar = view.querySelector<HTMLElement>(":scope > .lv-transport");
+      const log = main?.querySelector<HTMLElement>(".lv-log");
+      const lines = log?.querySelector<HTMLElement>(".lv-log-lines");
+      if (!parent || !main || !band || !bar || !log || !lines) return;
+      // The room is the box the view is given, and never more than the window: a page that grows with the view still has a fold.
+      const room = Math.min(parent.clientHeight, window.innerHeight);
+      if (room <= 0) return;
+      const font = Number.parseFloat(getComputedStyle(lines).fontSize) || 15;
+      // The log's head as measured now, with or without the room under it that a log of no line drops (live.css).
+      const head = log.offsetHeight - lines.offsetHeight;
+      const alone = log.classList.contains("is-head");
+      const next = planRoom({
+        room,
+        above: main.offsetTop,
+        // The band's own margin pulls it up into the log's empty lines: what it takes of the view is its height less that.
+        band: band.offsetHeight + (Number.parseFloat(getComputedStyle(band).marginTop) || 0),
+        bar: bar.offsetHeight,
+        logHead: alone ? head + LOG_UNDER : head,
+        logHeadAlone: alone ? head : head - LOG_UNDER,
+        logLine: 1.6 * font + 2,
+        most,
+        roomy: map.roomy,
+        least: map.least,
+      });
+      setPlan((old) => (old && old.lines === next.lines && old.map === next.map && old.scroll === next.scroll ? old : next));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(view);
+    if (view.parentElement) observer.observe(view.parentElement);
+    for (const child of Array.from(view.children)) observer.observe(child);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [view, active, map, most]);
+  return active ? plan : null;
+}
+
+/** The map's least heights, as it tells them: with every badge above its host, and with nothing on another. */
+interface MapHeights {
+  least: number;
+  roomy: number;
+}
+
+function useStuck(element: HTMLElement | null): boolean {
+  const [stuck, setStuck] = useState(false);
+  useEffect(() => {
+    if (!element || typeof IntersectionObserver === "undefined") return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1];
+        // Cut at its foot by the pixel it stands past the edge, not by a fraction of a pixel of rounding.
+        if (entry) setStuck(entry.isIntersecting && entry.boundingClientRect.bottom - entry.intersectionRect.bottom >= 0.5);
+      },
+      { threshold: [0.5, 0.999, 1] },
+    );
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      setStuck(false);
+    };
+  }, [element]);
+  return stuck;
+}
+
 export function LiveView({ recording, origin, originKind, initial, onFix, onMoment }: LiveViewProps) {
   const timeline = useMemo(() => buildTimeline(recording), [recording]);
   const firstMode: LiveMode = recording.steps.length > 0 ? (initial?.mode ?? "watch") : "watch";
@@ -263,6 +358,12 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   const timeRef = useRef(time);
   const playButton = useRef<HTMLButtonElement | null>(null);
   const focusPlayOnWatch = useRef(false);
+  const [transport, setTransport] = useState<HTMLElement | null>(null);
+  const stuck = useStuck(transport);
+  const [view, setView] = useState<HTMLDivElement | null>(null);
+  const [mapHeights, setMapHeights] = useState<MapHeights | null>(null);
+  // A new object only when a height changes, so the plan is not made again for nothing.
+  const onMapHeights = useCallback((next: MapHeights) => setMapHeights((old) => (old && old.least === next.least && old.roomy === next.roomy ? old : next)), []);
 
   // The one clock: while playing in watch mode, screen time follows the animation frames.
   useEffect(() => {
@@ -341,13 +442,28 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   const labDetectors = useMemo(() => new Set(recording.network.detectors.filter((detector) => isLabDetector(recording, detector.id)).map((detector) => detector.id)), [recording]);
   const facts = useMemo(() => runFacts(recording, timeline), [recording, timeline]);
   const stepId = frame.step?.id;
-  // The step's matches in the order playback fires them, fired or not: only the lights of its events read them all. What is said reads `moment.heard`.
+  // The step's matches in the order playback fires them, fired or not: only the thinning of a burst of lights reads them all. What is said, and a light's colour, read the fired ones.
   const stepAlerts = useMemo(() => (stepId === undefined ? [] : stepMatchesInFiringOrder(timeline, stepId)), [timeline, stepId]);
   const matches = useMemo(() => stepMatches(stepAlerts), [stepAlerts]);
-  const moment = momentOf(timeline, frame, stepAlerts, matches);
+  const moment = momentOf(timeline, frame, matches);
   const lateFires = frame.late;
-  const late = useMemo(() => lateLine(recording, timeline, lateFires), [recording, timeline, lateFires]);
+  // On a network the engine lists the step's own matches raised in the silence after it with its others, and its sentence
+  // names its alert: the late line names earlier steps' only there.
+  const network = useMemo(() => recording.network.hosts.filter((host) => host.kind !== "defense").length > 1, [recording]);
+  const late = useMemo(() => lateLine(recording, timeline, network ? lateFires.filter((fire) => fire.alert.step !== stepId) : lateFires), [recording, timeline, lateFires, stepId, network]);
   const arrival = useCallback((id: string) => timeline.arrival.get(id) ?? 0, [timeline]);
+  // The host an attack path reached its goal on: the host of the step whose end is the goal. Marked on the map once the race line tells the goal.
+  const goalStepHost = useMemo(() => (facts.goal === null ? null : (recording.steps.find((item) => item.ended !== undefined && Math.abs(timeOf(item.ended) - (facts.goal ?? 0)) <= 1)?.host ?? null)), [recording, facts]);
+  const firstTold = firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, moment?.revealed ?? false);
+  const goalHost = goalStepHost !== null && goalReached(frame, facts, firstTold) ? goalStepHost : null;
+  // The first alert and the goal are places on the map too, each with the time the race line gives it.
+  const firstClock = firstTold ? firstAlertClock(recording, facts, firstTold) : null;
+  const mapFirst = firstTold && firstClock ? { id: firstTold.alert.id, time: elapsed(firstClock.seconds) } : null;
+  const goalTime = recording.score.goal_seconds === undefined || recording.score.goal_seconds === null ? null : elapsed(recording.score.goal_seconds);
+  // The published rules' alerts raised so far, as the score counts them: earlier steps' by their time, the step's own once fired.
+  const alertsOfRun = useMemo(() => (network ? recording.alerts.filter((alert) => matchKind(alert) === "alert").sort((a, b) => alertMoment(a) - alertMoment(b)) : []), [recording, network]);
+  const heard = moment?.heard;
+  const raised = useMemo(() => alertsOfRun.filter((alert) => (alert.step === stepId ? (heard ?? []).includes(alert) : alertMoment(alert) <= frame.real)), [alertsOfRun, stepId, heard, frame.real]);
   const total = stepId === undefined ? 0 : (byStepEvents.get(stepId)?.length ?? 0);
   // Watching, the score is the score so far; analysing, it is the whole run's.
   const totals = recording.score;
@@ -363,6 +479,12 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   // Ordinary activity has no times in a recording, so while watching, its false alerts are told only at the end.
   // They are counted from ordinary activity, so they are shown only with it: the reader refuses the count without it.
   const falseAlerts = recording.ordinary && (mode === "analyse" || frame.ended) ? recording.score.false_alerts : undefined;
+  // What a step is called and counted as: "step" on an attack path, "test" in a list of tests.
+  const unit = unitWord(recording);
+  const units = `${unit}s`;
+  // The log holds 3 lines on a network and 4 on one host, fewer where the room is short.
+  const logMost = network ? 3 : 4;
+  const room = useRoomPlan(view, mode === "watch" && hasSteps, mapHeights, logMost);
 
   // One rule for entering watch mode, however the page was opened: playback
   // starts from where the clock stands, and plays unless it is at the end.
@@ -406,25 +528,26 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   }, [onMoment, stepId, momentAt, playing, mode, select]);
 
   return (
-    <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`}>
+    <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`} ref={setView}>
       <header className="lv-top">
         <Brand recording={recording} origin={origin} originKind={originKind} notice={notice} />
         <div className="lv-score-wrap">
           {hasSteps ? (
             <div className="lv-score" aria-label={mode === "watch" ? "The score so far" : "The score"}>
-              <div className={`lv-score-lead${score.alerted === 0 ? " is-zero" : ""}`} title={mode === "watch" ? "Tests that raised an alert, of the tests decided so far" : "Tests that raised an alert, of the tests that took effect"}>
+              <div className={`lv-score-lead${score.alerted === 0 ? " is-zero" : ""}`} title={mode === "watch" ? `${capital(units)} that raised an alert, of the ${units} decided so far` : `${capital(units)} that raised an alert, of the ${units} that took effect`}>
                 <div className="lv-score-n">
                   <b>{score.alerted}</b>
-                  <span>/ {decided}</span>
+                  {/* Before any step is decided there is nothing to count it of: "0 / 0" would read as a result. */}
+                  {decided > 0 ? <span>/ {decided}</span> : null}
                 </div>
                 {/* While the run plays the counts go up: the head says so, so two moments of one run do not read as two runs. */}
-                <span className="lv-score-label">{mode === "watch" && !frame.ended ? "tests alerted so far" : "tests alerted"}</span>
+                <span className="lv-score-label">{mode === "watch" && !frame.ended ? `${units} alerted so far` : `${units} alerted`}</span>
               </div>
-              <div className={`lv-score-item is-seen${score.seen === 0 ? " is-zero" : ""}`} title="Tests a sensor recorded, and no published rule at alert level matched">
+              <div className={`lv-score-item is-seen${score.seen === 0 ? " is-zero" : ""}`} title={`${capital(units)} a sensor recorded, and no published rule at alert level matched`}>
                 <b>{score.seen}</b>
                 <span>seen, no alert</span>
               </div>
-              <div className={`lv-score-item is-unseen${score.unseen === 0 ? " is-zero" : ""}`} title={unseenBasis ? `Tests that took effect and were not seen. The recording says: ${capital(unseenBasis)}.` : "Tests that took effect and were not seen: each one's detail says what the recording holds of it"}>
+              <div className={`lv-score-item is-unseen${score.unseen === 0 ? " is-zero" : ""}`} title={unseenBasis ? `${capital(units)} that took effect and were not seen. The recording says: ${capital(unseenBasis)}.` : `${capital(units)} that took effect and were not seen: each one's detail says what the recording holds of it`}>
                 <b>{score.unseen}</b>
                 <span>unseen</span>
               </div>
@@ -435,6 +558,12 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
                 >
                   <b>{falseAlerts}</b>
                   <span>{falseAlerts === 1 ? "false alert" : "false alerts"}</span>
+                </div>
+              ) : network && recording.ordinary && recording.score.false_alerts !== undefined ? (
+                // On a network the counters keep their places from the first moment: this one is told at the end.
+                <div className="lv-score-item lv-score-false is-zero is-later" title="Published rules that alerted on ordinary activity, outside every step. Ordinary activity has no times in a recording, so this count is told at the end of the run.">
+                  <b>&ndash;</b>
+                  <span>false alerts</span>
                 </div>
               ) : null}
               {hardened > 0 || score.stopped > 0 ? (
@@ -471,12 +600,28 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
         <>
           <RaceLine recording={recording} timeline={timeline} frame={frame} facts={facts} score={score} revealed={moment?.revealed ?? false} />
           <div className="lv-main">
-            <NetworkMap recording={recording} moment={moment} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
-            <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} />
+            <NetworkMap
+              recording={recording}
+              moment={moment}
+              speed={speed}
+              seek={seek}
+              colours={colours}
+              labDetectors={labDetectors}
+              arrival={arrival}
+              goalHost={goalHost}
+              raised={raised}
+              firstAlert={mapFirst}
+              goalTime={goalTime}
+              runStart={facts.start}
+              goalAt={goalStepHost}
+              onLeast={onMapHeights}
+              minHeight={room?.map}
+            />
+            <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} lines={room?.lines ?? logMost} />
           </div>
           {/* Without the app, "Fix this" opens the step's detail, which says where the gap is. */}
           <StepCaption recording={recording} moment={moment} total={total} onFix={onFix ?? openInAnalyse} quiet={playing && speed >= 4} onLoseFocus={focusPlay} late={late} />
-          <footer className="lv-transport">
+          <footer className={`lv-transport${stuck ? " is-stuck" : ""}`} ref={setTransport}>
             <div className="lv-controls">
               <button type="button" className="lv-play" ref={playButton} aria-label={playing ? "Pause" : "Play"} onClick={togglePlay} disabled={timeline.duration <= 0}>
                 <PlayIcon playing={playing} />
@@ -506,12 +651,13 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
             </div>
             <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} onSeek={jump} />
             <div className="lv-stepno">
-              <b>{segment ? capital(stepLabel(recording, segment.step)) : ""}</b>
+              {/* On an attack path a step's name is its place on the path: one line says both, "Step 9 of 11". */}
+              <b>{segment ? (unit === "step" ? `${capital(stepLabel(recording, segment.step))} of ${recording.steps.length}` : capital(stepLabel(recording, segment.step))) : ""}</b>
               {/* Holds the column at the width of the longest name, so the scrubber beside it does not move under the pointer. */}
               <b className="lv-stepno-sizer" aria-hidden="true">
-                {widestName}
+                {unit === "step" ? `${widestName} of ${recording.steps.length}` : widestName}
               </b>
-              <span>{segment ? `${segment.index + 1} of ${plural(recording.steps.length, "step")}` : allSteps}</span>
+              {unit === "step" && segment ? null : <span>{segment ? `${segment.index + 1} of ${plural(recording.steps.length, "step")}` : allSteps}</span>}
             </div>
           </footer>
         </>

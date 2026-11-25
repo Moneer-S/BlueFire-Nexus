@@ -39,6 +39,11 @@
 .recorded-run-note.is-problem { color: var(--amber-soft); }
 
 .recorded-run-view { flex: 1; min-height: 720px; }
+/* A network's map that needs more height than the window gives grows the live view, and the view's box scrolls under the line above it, the
+   transport at its foot. In a small window (below) the page scrolls instead. */
+@media (min-width: 1101px) and (min-height: 701px) {
+  .recorded-run-view:has(.lv-map.is-tall) { overflow-y: auto; }
+}
 
 .recorded-run-message { display: grid; flex: 1; place-items: center; padding: 32px 24px; text-align: center; }
 .recorded-run-message > div { max-width: 40em; }

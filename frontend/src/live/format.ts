@@ -22,6 +22,17 @@ export function capital(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/**
+ * What one step of a recording is called, the one place the word is decided:
+ * on an attack path each step is a step of the path ("step 9", "11 steps"),
+ * though it runs a published test, which keeps its own title; in a list of
+ * tests on one host each test is a test ("test 39", "60 tests"). Every part of
+ * the view that names or counts the steps asks this.
+ */
+export function unitWord(recording: Pick<Recording, "kind">): "step" | "test" {
+  return recording.kind === "attack path" ? "step" : "test";
+}
+
 /** A step's name in a sentence, and the short form a table cell or an axis label has room for. */
 interface StepName {
   name: string;
@@ -57,7 +68,7 @@ function namesOf(recording: Recording): Map<string, StepName> {
     const [word, shortWord] = NAME_WORDS[step.role];
     // A rerun repeats a step before it, which is named already.
     const of = step.compared_with === undefined ? undefined : names.get(step.compared_with);
-    if (step.role === "test") names.set(step.id, { name: `test ${count}`, short: `test ${count}` });
+    if (step.role === "test") names.set(step.id, { name: `${unitWord(recording)} ${count}`, short: `${unitWord(recording)} ${count}` });
     else if (of) {
       const which = total > 1 ? ` ${count}` : "";
       names.set(step.id, { name: `${word}${which} of ${of.name}`, short: `${shortWord}${which} of ${of.short}` });
@@ -213,6 +224,24 @@ export function sensorWord(name: string): string {
   return short.split(/\s+/)[0] ?? short;
 }
 
+/**
+ * A sensor's name for a label, without its version: its short name (`name`),
+ * its first word where room is tight (`word`), or for a table's column, its
+ * first word (`column`). When another sensor of the recording has the same
+ * short name, such as a Wazuh agent on each host of a range, the label names
+ * its host too: "Wazuh agent on web", "Wazuh on web", and in a column, where
+ * only a word fits, the host alone: "web".
+ */
+export function sensorLabel(recording: Pick<Recording, "network">, sensor: Sensor, room: "name" | "word" | "column" = "name"): string {
+  const short = sensorShortName(sensor.name);
+  const shared = recording.network.sensors.some((other) => other.id !== sensor.id && sensorShortName(other.name) === short);
+  // A sensor told apart by its host keeps its kind with its name ("Wazuh agent on web"), so it never reads as the engine of the same name.
+  const name = room === "name" || shared ? short : sensorWord(sensor.name);
+  const host = shared ? recording.network.hosts.find((item) => item.id === sensor.host)?.name : undefined;
+  if (!host) return name;
+  return room === "column" ? host : `${name} on ${host}`;
+}
+
 /** A detector's name split at " with ": the rule set and its engine. */
 export function detectorParts(name: string): { main: string; engine: string } {
   const cut = name.indexOf(" with ");
@@ -247,7 +276,7 @@ export function sentence(text: string): string {
   return trimmed ? trimmed.charAt(0).toUpperCase() + trimmed.slice(1) : "";
 }
 
-/** How a match shows: an alert that counts, a lab rule that would alert, a match for review, or the launcher line. */
+/** How a match shows: an alert that counts, a lab alert, a match for review, or the launcher line. */
 export type MatchKind = "alert" | "lab" | "review" | "launcher";
 
 export function matchKind(alert: Alert): MatchKind {
@@ -259,12 +288,25 @@ export function matchKind(alert: Alert): MatchKind {
 
 const KIND_RANK: Record<MatchKind, number> = { alert: 3, lab: 2, review: 1, launcher: 0 };
 
+/** A match of one of the lab's own rules at alert level is a "lab alert", on every screen: the score does not count it. */
 export const MARK_WORDS: Readonly<Record<MatchKind, string>> = { alert: "alert", lab: "lab alert", review: "review", launcher: "" };
 
 /**
+ * When a live alert was raised against the end of the step it matched, in the
+ * one wording every part of the view uses: "raised 922 ms after the step
+ * ended". Null when it was raised by the step's end, or when the recording
+ * gives no time for either.
+ */
+export function raisedAfterStep(alert: Alert, step: Step | undefined, which = "the step"): string | null {
+  if (alert.raised === undefined || step?.ended === undefined) return null;
+  const after = timeOf(alert.raised) - timeOf(step.ended);
+  return Number.isFinite(after) && after > 0 ? `raised ${span(after)} after ${which} ended` : null;
+}
+
+/**
  * The mark some matches give a line: the strongest kind among them, and its
- * word, which is "info" where every match below alert level is informational,
- * since nobody reviews those. Null when only the launcher line matched.
+ * word, which is "informational" where every match below alert level is
+ * informational, since nobody reviews those. Null when only the launcher line matched.
  */
 export function markOf(alerts: readonly Alert[]): { kind: MatchKind; word: string } | null {
   let kind: MatchKind | null = null;
@@ -276,7 +318,7 @@ export function markOf(alerts: readonly Alert[]): { kind: MatchKind; word: strin
     if (own === "review" && alert.rule.level !== "informational") reviewed = true;
   }
   if (kind === null) return null;
-  return { kind, word: kind === "review" && !reviewed ? "info" : MARK_WORDS[kind] };
+  return { kind, word: kind === "review" && !reviewed ? "informational" : MARK_WORDS[kind] };
 }
 
 /** Each event's mark, from the matches that name it. */
@@ -381,6 +423,25 @@ export function belowAlertWords(alerts: readonly Alert[]): string {
   const { review, info } = belowAlert(alerts);
   const parts = [review > 0 ? `${plural(review, "rule")} matched for review` : "", info > 0 ? `${plural(info, "informational rule")} matched` : ""].filter(Boolean);
   return parts.length > 0 ? parts.join(", ") : "no rule matched";
+}
+
+/** A rule's title for the middle of a sentence: without the full stop many rule titles end with. */
+export function titleInSentence(title: string): string {
+  return title.replace(/\.$/, "");
+}
+
+/**
+ * A seen step in one sentence: "24 events recorded, 1 rule matched for
+ * review, none at alert level." Where one of the lab's own rules alerted, the
+ * last words say they speak of the published rules; where no rule matched,
+ * they are left out.
+ */
+export function seenWords(events: number, alerts: readonly Alert[]): string {
+  const { review, info } = belowAlert(alerts);
+  const lab = alerts.some((alert) => matchKind(alert) === "lab");
+  const matched = review + info > 0;
+  if (!matched) return `${plural(events, "event")} recorded, ${lab ? "no published rule matched" : "no rule matched"}.`;
+  return `${plural(events, "event")} recorded, ${belowAlertWords(alerts)}, ${lab ? "none of the published rules at alert level" : "none at alert level"}.`;
 }
 
 /** The step a hardened or variant step repeats, if the recording has it. */

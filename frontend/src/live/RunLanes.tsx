@@ -11,7 +11,7 @@ import type { Timeline } from "./playback";
 import { maxOf, PLAYBACK_RULE } from "./playback";
 import type { RunFacts } from "./moment";
 import { firstAlertClock } from "./moment";
-import { capital, elapsed, outcomeClass, plural, sensorShortName, stepLabel, stepShortName, testNumbers, unseenWords } from "./format";
+import { capital, elapsed, outcomeClass, plural, sensorLabel, stepLabel, stepShortName, testNumbers, unitWord, unseenWords } from "./format";
 import { roleCount, roleRuns } from "./analyse";
 import { useSize } from "./useSize";
 import type { StyleVars } from "./motion";
@@ -78,10 +78,13 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
   for (const sensor of sensors) {
     const host = recording.network.hosts.find((item) => item.id === sensor.host);
     const count = recording.events.filter((event) => event.sensor === sensor.id).length;
+    const label = sensorLabel(recording, sensor);
+    // The host once: in the label when another sensor shares the name, or else after the count.
+    const onHost = hosts.size > 1 && host && !label.endsWith(` on ${host.name}`) ? ` on ${host.name}` : "";
     rows.push({
       key: `s:${sensor.id}`,
-      label: sensorShortName(sensor.name),
-      sub: `${plural(count, "event")}${hosts.size > 1 && host ? ` on ${host.name}` : ""}`,
+      label,
+      sub: `${plural(count, "event")}${onHost}`,
       title: `${sensor.name}: records ${sensor.records}`,
       y,
       h: SENSOR,
@@ -212,10 +215,11 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
     const a = x(firstTest.start);
     const b = x(first.at);
     const clock = firstAlertClock(recording, facts, first);
-    const full = `${plural(first.testsBefore, "other test")} had started when the first alert on a test fired${clock ? `, ${elapsed(clock.seconds)} ${clock.words}` : ""}`;
+    const unit = unitWord(recording);
+    const full = `${first.testsBefore === 0 ? `No other ${unit} had started` : `${plural(first.testsBefore, `other ${unit}`)} had started`} when the first alert on a ${unit} fired${clock ? `, ${elapsed(clock.seconds)} ${clock.words}` : ""}`;
     const room = (words: string) => words.length * 6.4 + 16;
     // In a narrow plot where the sentence fits on neither side of the alert, a shorter one does; the whole one is its tooltip.
-    const short = `${plural(first.testsBefore, "other test")} had started${clock ? `, ${elapsed(clock.seconds)}` : ""}`;
+    const short = `${first.testsBefore === 0 ? `no other ${unit}` : plural(first.testsBefore, `other ${unit}`)} had started${clock ? `, ${elapsed(clock.seconds)}` : ""}`;
     const text = b - a > room(full) || b + room(full) <= width ? full : short;
     bracket = { a, b, text, full, right: b - a > room(text) || (b + room(text) > width && b > width - b) };
   }
@@ -253,7 +257,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
             if (!a || !b) return null;
             const left = x(a.start) + 1;
             const right = x(b.end) - 1;
-            const text = run.count > 1 ? roleCount(run.role, run.count) : run.role;
+            const text = run.count > 1 ? roleCount(run.role, run.count, unitWord(recording)) : run.role === "test" ? unitWord(recording) : run.role;
             if (right - left < text.length * 6.2 + 10) return null;
             return (
               <g key={`${run.role}:${run.first}`} className="lv-ln-run">
@@ -300,7 +304,7 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
           ) : null}
           {breaks.map((mark) => (
             <g key={`g${mark.x}`} className="lv-ln-break">
-              <title>{mark.seconds.length === 1 ? `A silence of ${silence(mark.seconds[0] ?? 0)} between steps, shortened` : `${mark.seconds.length} silences between steps (${mark.seconds.map(silence).join(", ")}), shortened`}</title>
+              <title>{mark.seconds.length === 1 ? `A quiet gap of ${silence(mark.seconds[0] ?? 0)} between steps, drawn shorter` : `${mark.seconds.length} quiet gaps between steps (${mark.seconds.map(silence).join(", ")}), drawn shorter`}</title>
               <rect x={mark.x - 6} y={bottom - 4} width={12} height={8} />
               <path d={`M${mark.x - 4} ${bottom + 4}l3 -8M${mark.x + 1} ${bottom + 4}l3 -8`} />
             </g>
@@ -336,8 +340,8 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
         </div>
       </div>
       <div className="lv-ln-foot">
-        <span title={`Times count from ${facts.startWords}.`}>
-          Silences are shortened{marked.length > 0 ? <>, those over {MARKED_SILENCE} s marked <b className="lv-ln-breakkey">//</b></> : null}
+        <span title={`Times count from ${facts.startWords}. Every step keeps its own length; the quiet time between two steps is drawn shorter than it lasted.`}>
+          Quiet gaps are shortened{marked.length > 0 ? <>, those over {MARKED_SILENCE} s marked <b className="lv-ln-breakkey">//</b></> : null}
           {longest > 0 ? ` (the longest, ${silence(longest)}, takes ${PLAYBACK_RULE.beat} s)` : ""}.{checks ? " Outlined: canary and control steps, which check the lab and are not counted in the score." : ""}
         </span>
         {rulesRanAfterTheRun(recording) ? <span>The rules ran after the run, so an alert&apos;s time is the time of its event.</span> : null}

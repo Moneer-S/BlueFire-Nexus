@@ -143,7 +143,7 @@ describe("the watch view's words and numbers", () => {
   const at = (screen: number) => {
     const frame = frameAt(timeline, screen);
     const own = run.alerts.filter((item) => item.step === frame.step?.id);
-    return { frame, moment: momentOf(timeline, frame, own, stepMatches(own)) };
+    return { frame, moment: momentOf(timeline, frame, stepMatches(own)) };
   };
 
   it("counts a step in the score at the moment its outcome is told, not before", () => {
@@ -197,7 +197,7 @@ describe("the watch view's words and numbers", () => {
     if (!next) return;
     const frame = frameAt(lateTimeline, next.start - 0.01);
     const own = late.alerts;
-    const moment = momentOf(lateTimeline, frame, own, stepMatches(own));
+    const moment = momentOf(lateTimeline, frame, stepMatches(own));
     expect(frame.step?.id).toBe("1");
     expect(moment?.revealed).toBe(true);
     expect(moment?.landed.map(({ alert: item }) => item.id)).toEqual(["a"]);
@@ -219,7 +219,7 @@ describe("an alert raised live after its step ended", () => {
     const view = (screen: number) => {
       const frame = frameAt(timeline, screen);
       const own = value.alerts.filter((item) => item.step === frame.step?.id);
-      const moment = momentOf(timeline, frame, own, stepMatches(own));
+      const moment = momentOf(timeline, frame, stepMatches(own));
       return { frame, moment, score: scoreOnScreen(timeline, frame, moment), first: firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, moment?.revealed ?? false) };
     };
     const fire = timeline.fire.get("a") ?? Number.NaN;
@@ -253,14 +253,14 @@ describe("an alert raised live after its step ended", () => {
     expect(fire).toBeLessThan(first.end);
     for (let t = first.start; t < first.end; t += 0.01) {
       const frame = frameAt(timeline, t);
-      const moment = momentOf(timeline, frame, value.alerts, stepMatches(value.alerts));
+      const moment = momentOf(timeline, frame, stepMatches(value.alerts));
       const score = scoreOnScreen(timeline, frame, moment);
       expect(score.seen).toBe(0);
       if (moment?.revealed) expect(moment.outcome).toBe("alerted");
       expect(score.alerted).toBe(t >= fire && moment?.revealed ? 1 : 0);
     }
     const end = frameAt(timeline, first.end - 0.01);
-    const moment = momentOf(timeline, end, value.alerts, stepMatches(value.alerts));
+    const moment = momentOf(timeline, end, stepMatches(value.alerts));
     expect(moment).toMatchObject({ revealed: true, outcome: "alerted", stood: "alerted" });
     expect(scoreOnScreen(timeline, end, moment)).toMatchObject({ alerted: 1, seen: 0 });
   });

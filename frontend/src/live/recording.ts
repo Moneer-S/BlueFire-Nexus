@@ -4,6 +4,18 @@
 
 export const RECORDING_SCHEMA = "bluefire.recording/1";
 
+/**
+ * The most of each column of the network map that it draws readably. The
+ * service (`bluefire/recordings.py`) refuses the same, so that it keeps no
+ * recording this page cannot show, and docs/RECORDING.md says them.
+ */
+export const MAX_HOSTS = 12;
+export const MAX_DEFENSE_HOSTS = 3;
+export const MAX_LINKS = 16;
+export const MAX_SENSORS = 16;
+export const MAX_SENSORS_ON_A_HOST = 4;
+export const MAX_DETECTORS = 4;
+
 /** An ISO 8601 time in UTC, such as `2026-11-17T17:07:23.834Z`. */
 export type Time = string;
 
@@ -327,6 +339,12 @@ function optionalTime(value: unknown, where: string): void {
   if (value !== undefined) time(value, where);
 }
 
+/** A list of the network, refused when it holds more than the map draws: `limit` of them. */
+function atMost(items: unknown[], limit: number, what: string): unknown[] {
+  if (items.length > limit) fail(`The network has ${items.length} ${what}; the map draws at most ${limit}.`);
+  return items;
+}
+
 function uniqueIds(items: Fields[], what: string): Set<string> {
   const ids = new Set<string>();
   items.forEach((item, index) => {
@@ -384,7 +402,7 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
   });
 
   const network = object(top.network, "The recording's network");
-  const hosts = array(network.hosts, "The network's hosts").map((item, index) => object(item, `Host ${index + 1}`));
+  const hosts = atMost(array(network.hosts, "The network's hosts"), MAX_HOSTS, "hosts").map((item, index) => object(item, `Host ${index + 1}`));
   const hostIds = uniqueIds(hosts, "host");
   hosts.forEach((host, index) => {
     text(host.name, `The name of host ${index + 1}`);
@@ -393,16 +411,24 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     optionalText(host.os, `The system of host ${index + 1}`);
     if (host.addresses !== undefined) textList(host.addresses, `The addresses of host ${index + 1}`);
   });
+  const defenseHosts = hosts.filter((host) => host.kind === "defense").length;
+  if (defenseHosts > MAX_DEFENSE_HOSTS) fail(`The network has ${defenseHosts} defense hosts; the map draws at most ${MAX_DEFENSE_HOSTS}.`);
   if (network.links !== undefined) {
-    array(network.links, "The network's links").forEach((item, index) => {
+    const seen = new Set<string>();
+    atMost(array(network.links, "The network's links"), MAX_LINKS, "links").forEach((item, index) => {
       const link = object(item, `Link ${index + 1}`);
       known(hostIds, link.from, `Link ${index + 1}`, "host");
       known(hostIds, link.to, `Link ${index + 1}`, "host");
-      text(link.label, `The label of link ${index + 1}`);
+      const label = text(link.label, `The label of link ${index + 1}`);
+      if (link.from === link.to) fail(`Link ${index + 1} joins a host to itself; a link runs between two hosts.`);
+      const key = JSON.stringify([link.from, link.to, label]);
+      if (seen.has(key)) fail(`Link ${index + 1} repeats a link with the same hosts and label.`);
+      seen.add(key);
     });
   }
-  const sensors = array(network.sensors, "The network's sensors").map((item, index) => object(item, `Sensor ${index + 1}`));
+  const sensors = atMost(array(network.sensors, "The network's sensors"), MAX_SENSORS, "sensors").map((item, index) => object(item, `Sensor ${index + 1}`));
   const sensorIds = uniqueIds(sensors, "sensor");
+  const onHost = new Map<unknown, number>();
   sensors.forEach((sensor, index) => {
     text(sensor.name, `The name of sensor ${index + 1}`);
     known(hostIds, sensor.host, `Sensor ${JSON.stringify(sensor.id)}`, "host");
@@ -410,8 +436,11 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     if (sensor.audit_watches !== undefined) {
       for (const [key, rules] of Object.entries(object(sensor.audit_watches, `What sensor ${index + 1} watches`))) textList(rules, `What sensor ${index + 1} watches under the key ${JSON.stringify(key)}`);
     }
+    const count = (onHost.get(sensor.host) ?? 0) + 1;
+    if (count > MAX_SENSORS_ON_A_HOST) fail(`The host ${JSON.stringify(sensor.host)} has more than ${MAX_SENSORS_ON_A_HOST} sensors; the map draws at most ${MAX_SENSORS_ON_A_HOST} on one host.`);
+    onHost.set(sensor.host, count);
   });
-  const detectors = array(network.detectors, "The network's detectors").map((item, index) => object(item, `Detector ${index + 1}`));
+  const detectors = atMost(array(network.detectors, "The network's detectors"), MAX_DETECTORS, "detectors").map((item, index) => object(item, `Detector ${index + 1}`));
   const detectorIds = uniqueIds(detectors, "detector");
   detectors.forEach((detector, index) => {
     text(detector.name, `The name of detector ${index + 1}`);

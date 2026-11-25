@@ -81,7 +81,7 @@ describe("a step's neighbours and its gap", () => {
     expect(fixHint(run, neither)).toBe("Start with a sensor: neither the test nor its launcher was recorded.");
     const edr = { ...lab, visibility: { ...lab.visibility, basis: "EDR saw nothing of the test" } };
     expect(fixHint(run, edr)).toBe("Start with a sensor: EDR saw nothing of the test.");
-    expect(fixHint(run, seen)).toBe("Recorded, no rule at alert level: start with a rule.");
+    expect(fixHint(run, seen)).toBe("No rule matched this step: start by writing one.");
     expect(fixHint(run, alerted)).toBeNull();
     expect(fixHint(run, { ...canary, outcome: "seen" })).toBeNull();
   });
@@ -98,11 +98,11 @@ describe("a step's neighbours and its gap", () => {
     const seen = run.steps.find((item) => item.id === "2");
     if (!seen) throw new Error("fixture");
     const groups = groupMatches(run.alerts.filter((item) => item.step === "2"));
-    expect(fixHint(run, seen, groups)).toBe("Start with a rule: Review (medium) matched it below alert level.");
+    expect(fixHint(run, seen, groups)).toBe('To alert here, start from the rule "Review": it matched this step at medium level.');
     const quiet: Recording = { ...run, ordinary: { events: 50, matches: [] } };
-    expect(fixHint(quiet, seen, groups)).toBe("Start with a rule: Review (medium) matched it below alert level, and nothing in ordinary activity.");
+    expect(fixHint(quiet, seen, groups)).toBe('To alert here, start from the rule "Review": it matched this step at medium level, and nothing in ordinary activity.');
     const noisy: Recording = { ...run, ordinary: { events: 50, matches: [{ rule: "Review", level: "medium", count: 5 }] } };
-    expect(fixHint(noisy, seen, groups)).toBe("Start with a rule: Review (medium) matched it below alert level, and 5 ordinary events.");
+    expect(fixHint(noisy, seen, groups)).toBe('To alert here, start from the rule "Review": it matched this step at medium level, and 5 events of ordinary activity too.');
   });
 
   it("splits the tests seen with no alert by what the published rules made of them", () => {

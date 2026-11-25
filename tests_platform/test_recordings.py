@@ -745,6 +745,116 @@ def test_a_step_role_the_format_does_not_name_is_refused(service: BlueFireServic
     assert problems == ["steps[1].role must be one of: test, canary, control, hardened, variant."]
 
 
+def _host(host_id: str, kind: str = "host") -> dict[str, Any]:
+    return {"id": host_id, "name": host_id, "role": f"{host_id} server", "kind": kind}
+
+
+def _sensor(sensor_id: str, host: str) -> dict[str, Any]:
+    return {"id": sensor_id, "name": "Wazuh agent", "host": host, "records": "log lines"}
+
+
+def _engine(detector_id: str) -> dict[str, Any]:
+    return {"id": detector_id, "name": f"{detector_id} rules", "rules": 1, "when": "after the run"}
+
+
+def _too_many_hosts(net: dict[str, Any]) -> None:
+    net["hosts"] += [_host(f"x{i}") for i in range(recordings.MAX_HOSTS)]
+
+
+def _too_many_defense_hosts(net: dict[str, Any]) -> None:
+    net["hosts"] += [_host(f"m{i}", "defense") for i in range(recordings.MAX_DEFENSE_HOSTS + 1)]
+
+
+def _too_many_links(net: dict[str, Any]) -> None:
+    net["hosts"].append(_host("x"))
+    net["links"] = [
+        {"from": "target", "to": "x", "label": f"port {i}"} for i in range(recordings.MAX_LINKS + 1)
+    ]
+
+
+def _too_many_sensors(net: dict[str, Any]) -> None:
+    net["hosts"] += [_host(f"x{i}") for i in range(8)]
+    net["sensors"] += [_sensor(f"s{i}", f"x{i % 8}") for i in range(recordings.MAX_SENSORS)]
+
+
+def _too_many_sensors_on_a_host(net: dict[str, Any]) -> None:
+    net["sensors"] += [_sensor(f"s{i}", "target") for i in range(recordings.MAX_SENSORS_ON_A_HOST)]
+
+
+def _too_many_engines(net: dict[str, Any]) -> None:
+    net["detectors"] += [_engine(f"d{i}") for i in range(recordings.MAX_DETECTORS)]
+
+
+def _a_link_to_itself(net: dict[str, Any]) -> None:
+    net["links"] = [{"from": "target", "to": "target", "label": "loopback"}]
+
+
+def _a_link_twice(net: dict[str, Any]) -> None:
+    net["hosts"].append(_host("x"))
+    net["links"] = [{"from": "target", "to": "x", "label": "SSH"} for _ in range(2)]
+
+
+_DRAWS = "are allowed, the most the live view's map draws."
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        (_too_many_hosts,
+         f"network.hosts has {recordings.MAX_HOSTS + 1} entries; at most {recordings.MAX_HOSTS} {_DRAWS}"),
+        (_too_many_defense_hosts,
+         f"network.hosts has {recordings.MAX_DEFENSE_HOSTS + 1} hosts of kind defense; the map "
+         f"draws at most {recordings.MAX_DEFENSE_HOSTS}."),
+        (_too_many_links,
+         f"network.links has {recordings.MAX_LINKS + 1} entries; at most {recordings.MAX_LINKS} {_DRAWS}"),
+        (_too_many_sensors,
+         f"network.sensors has {recordings.MAX_SENSORS + 1} entries; at most "
+         f"{recordings.MAX_SENSORS} {_DRAWS}"),
+        (_too_many_sensors_on_a_host,
+         f"network.sensors has {recordings.MAX_SENSORS_ON_A_HOST + 1} sensors on the host "
+         f"'target'; the map draws at most {recordings.MAX_SENSORS_ON_A_HOST} on one host."),
+        (_too_many_engines,
+         f"network.detectors has {recordings.MAX_DETECTORS + 1} entries; at most "
+         f"{recordings.MAX_DETECTORS} {_DRAWS}"),
+        (_a_link_to_itself,
+         "network.links[0] joins a host to itself; a link runs between two hosts."),
+        (_a_link_twice,
+         "network.links[1] repeats a link with the same hosts and label."),
+    ],
+)  # fmt: skip
+def test_a_network_the_map_cannot_draw_is_refused_with_its_limit(
+    service: BlueFireService, change: Any, problem: str
+) -> None:
+    """The live view's map draws at most so many of each; the page's own reader refuses the same."""
+
+    recording = small_recording()
+    change(recording["network"])
+
+    _, problems = refusal(service, recording)
+
+    assert problem in problems
+
+
+def test_a_network_at_every_limit_of_the_map_is_kept() -> None:
+    recording = small_recording()
+    field = [_host(f"x{i}") for i in range(recordings.MAX_HOSTS - recordings.MAX_DEFENSE_HOSTS - 1)]
+    defense = [_host(f"m{i}", "defense") for i in range(recordings.MAX_DEFENSE_HOSTS)]
+    recording["network"]["hosts"] += field + defense
+    recording["network"]["links"] = [
+        {"from": "target", "to": f"x{i % len(field)}", "label": f"port {i}"}
+        for i in range(recordings.MAX_LINKS)
+    ]
+    recording["network"]["sensors"] += [
+        _sensor(f"s{i}", "target" if i < recordings.MAX_SENSORS_ON_A_HOST - 1 else f"x{i % len(field)}")
+        for i in range(recordings.MAX_SENSORS - 1)
+    ]
+    recording["network"]["detectors"] += [
+        _engine(f"d{i}") for i in range(recordings.MAX_DETECTORS - 1)
+    ]
+
+    assert recordings.validate_recording(recording) is recording
+
+
 def _set(value: dict[str, Any], path: tuple[Any, ...], item: Any) -> None:
     holder: Any = value
     for key in path[:-1]:

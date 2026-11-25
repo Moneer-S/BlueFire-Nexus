@@ -29,6 +29,8 @@
   --lv-sm: clamp(11.5px, 5.5px + 0.42vw, 14.5px);
   --lv-md: clamp(12.5px, 6px + 0.46vw, 15.5px);
   --lv-gutter: clamp(16px, 2vw, 32px);
+  /* How tall the fade at the foot of a box whose list scrolls is, and the room after the list's end. */
+  --lv-fade: 30px;
 
   position: relative;
   display: grid;
@@ -49,6 +51,15 @@
 
 .lv--analyse {
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* A network may need a taller map than the window gives. The map's row fills the window when the map fits and grows past it
+   when it does not; the view then grows and the page scrolls, as in a small window (below), with the transport at the window's foot. */
+.lv:has(.lv-map.is-tall) {
+  grid-template-rows: auto auto minmax(min-content, 1fr) auto auto;
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
 }
 
 /* Read by screen readers, not shown. */
@@ -607,6 +618,7 @@
   animation: lv-plant 0.7s var(--lv-ease) both;
 }
 
+/* A label opens to the right of its flag; the race line moves it to the left near the end of the track. */
 .lv-flag span {
   position: absolute;
   bottom: 21px;
@@ -614,7 +626,6 @@
   font-size: var(--lv-md);
   color: #ffb59c;
   white-space: nowrap;
-  transform: translateX(-50%);
   font-variant-numeric: tabular-nums;
   animation: lv-rise 0.6s var(--lv-ease) both;
 }
@@ -629,9 +640,30 @@
   color: var(--lv-muted-strong);
 }
 
-.lv-flag.is-end span {
-  transform: translateX(-100%);
-  left: 10px;
+/* When the first alert's label and the goal's would touch on one row, the goal's stands a row higher. */
+.lv-race.is-stacked .lv-race-side {
+  padding-top: 38px;
+}
+
+.lv-race.is-stacked .lv-track {
+  margin-top: 20px;
+}
+
+.lv-flag.is-raised span {
+  bottom: 41px;
+}
+
+/* Hidden copies of the labels, which the race line measures to place them. */
+.lv-flag-ruler {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.lv-flag-ruler * {
+  animation: none;
 }
 
 .lv-flag.is-goal i {
@@ -693,13 +725,16 @@
   position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
   min-height: 0;
 }
 
+/* Below the width at which its columns fit, the map keeps that width and scrolls sideways in its box. */
 .lv-stage {
   position: relative;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .lv-map,
@@ -744,6 +779,11 @@
 
 .lv-link.is-used {
   stroke: rgba(255, 112, 69, 0.6);
+}
+
+/* The links earlier steps crossed: the way the attacker came, quieter than the step's own. */
+.lv-link.is-trail {
+  stroke: rgba(255, 112, 69, 0.3);
 }
 
 .lv-wire {
@@ -1182,11 +1222,72 @@
 }
 
 .is-small .lv-host-role {
+  /* At most three lines, the room the map keeps under a host; the whole role is in the host's detail. */
+  display: -webkit-box;
   max-width: 150px;
+  overflow: hidden;
   font-size: 11.5px;
   line-height: 1.3;
   white-space: normal;
   text-wrap: balance;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* A name longer than its place is cut there: the whole of it is in the host's detail. */
+.lv-host-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Text cut at the end where the map has no more room for it. */
+.lv-cut {
+  min-width: 0;
+  /* A glyph that leans past the end of the words, such as an italic or a "y", is drawn whole. */
+  overflow: clip;
+  overflow-clip-margin: 3px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lv-sensor-label:not(.is-small) .lv-cut {
+  max-width: 300px;
+}
+
+.lv-host-label:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--lv-blue-soft);
+  outline-offset: 2px;
+}
+
+/* A host's detail: its name and role whole, its system, addresses and sensors. Open while the pointer is on the host's words, or they have focus. */
+.lv-host-detail {
+  position: absolute;
+  z-index: 4;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 320px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--lv-muted-strong);
+  overflow-wrap: anywhere;
+  background: var(--lv-ink-875);
+  box-shadow: 0 0 0 1px var(--lv-line-strong), 0 10px 30px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+}
+
+.lv-host-detail b {
+  font-weight: 650;
+  color: var(--lv-text);
+}
+
+.lv-host-label:is(:hover, :focus-visible) + .lv-host-detail {
+  display: flex;
 }
 
 .lv-badge {
@@ -1246,6 +1347,17 @@
 .lv-sensor-label.is-flip {
   align-items: flex-end;
   text-align: right;
+}
+
+/* A sensor in a stack of its host's sensors: its count of events on its name's line, the name next to its dot. */
+.lv-sensor-label.is-inline {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.lv-sensor-label.is-inline.is-flip {
+  flex-direction: row-reverse;
 }
 
 .lv-sensor-name {
@@ -1402,6 +1514,524 @@
   transform: translate(-50%, -50%);
 }
 
+/* ---------- a network: the whole stage ---------- */
+
+/* A network told once: a soft rounded box round its hosts, a zone the eye reads without a line for each link.
+   A faint tint and a hairline: the attack's path, drawn over it, stays the strongest thing on the map. */
+.lv-zone {
+  fill: rgba(var(--rgb), 0.035);
+  stroke: none;
+}
+
+/* The defense's own side: a field of the same faintness, a cooler tint. */
+.lv-zone--defense {
+  fill: rgba(var(--rgb), 0.03);
+}
+
+/* The one quiet line of the defense's side: which sensors report to it, and over which network. */
+.lv-defense-note {
+  position: absolute;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--lv-muted);
+  text-shadow: 0 0 6px var(--lv-ink-950);
+}
+
+.lv-defense-note .lv-agent-dot {
+  width: 5px;
+  height: 5px;
+  margin: 0 7px 1px 1px;
+  box-shadow: 0 0 0 1.5px var(--lv-ink-950), 0 0 0 2.5px rgba(123, 202, 255, 0.6);
+}
+
+/* The numbers of the steps that crossed a hop, beside its line, as faint as the hop. */
+.lv-hop-number {
+  position: absolute;
+  font-size: 11px;
+  font-weight: 650;
+  color: #ffb59c;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 6px var(--lv-ink-950), 0 0 3px var(--lv-ink-950);
+  transform: translate(-50%, -50%);
+}
+
+.lv-hop-number.is-current {
+  color: #ffd2c2;
+}
+
+/* A step that stays on its host: a short bright arc round the host while it runs. */
+.lv-loop {
+  fill: none;
+  stroke: rgba(255, 140, 100, 1);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px rgba(255, 112, 69, 0.75));
+}
+
+/* Its name once, inside the box's top left corner: the whole name and its hosts are in its title. */
+.lv-zone-label {
+  position: absolute;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(var(--rgb), 0.62);
+  white-space: nowrap;
+  text-shadow: 0 0 6px var(--lv-ink-950), 0 0 3px var(--lv-ink-950), 0 0 1px var(--lv-ink-950);
+  transform: translateY(-50%);
+}
+
+/* On a network each head is one line, its name and then what it holds. */
+.lv-head.is-line {
+  top: 6px;
+  text-align: left;
+  transform: none;
+}
+
+.lv-head.is-line b,
+.lv-head.is-line span {
+  display: inline;
+}
+
+.lv-head.is-line span {
+  margin: 0 0 0 12px;
+}
+
+/* The dot that stands by each host whose sensor the head names. */
+.lv-agent-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 6px 1px 4px;
+  border-radius: 50%;
+  background: rgb(123, 202, 255);
+  box-shadow: 0 0 0 2px var(--lv-ink-950), 0 0 0 3px rgba(123, 202, 255, 0.6);
+  vertical-align: middle;
+}
+
+/* The events a sensor's light carries on a network: small soft points of one colour travelling a hairline, so the
+   attack's path stays the strongest line. Only an alert's light is larger, in its own colour. */
+.is-many .lv-light {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(var(--rgb), 0.55);
+  box-shadow: 0 0 5px rgba(var(--rgb), 0.35);
+  offset-anchor: 50% 50%;
+}
+
+.is-many .lv-light.is-strong {
+  width: 7px;
+  height: 7px;
+  background: rgba(var(--rgb), 0.95);
+  box-shadow: 0 0 10px rgba(var(--rgb), 0.7);
+}
+
+.is-many .lv-light--cross.is-strong {
+  width: 26px;
+  height: 3.5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(var(--rgb), 0), rgba(var(--rgb), 0.95));
+  box-shadow: 5px 0 14px rgba(var(--rgb), 0.85);
+  offset-anchor: 100% 50%;
+}
+
+/* The attack's path is the strongest line: the hop of the step on screen at full weight with a glow, the way it came
+   quiet and thin, each hop pointing where it went; every other line stays quiet. */
+.is-many .lv-link {
+  stroke: rgba(101, 163, 212, 0.3);
+  stroke-width: 1.1;
+}
+
+.is-many .lv-link.is-trail {
+  stroke: rgba(255, 112, 69, 0.42);
+  stroke-width: 1.4;
+}
+
+.is-many .lv-link.is-used {
+  stroke: rgba(255, 140, 100, 1);
+  stroke-width: 3.2;
+  filter: drop-shadow(0 0 5px rgba(255, 112, 69, 0.75));
+}
+
+.lv-arrow.is-trail {
+  fill: rgba(255, 112, 69, 0.6);
+}
+
+.lv-arrow.is-used {
+  fill: rgb(255, 140, 100);
+}
+
+.is-many .lv-wire--sj {
+  stroke: rgba(123, 202, 255, 0.16);
+  stroke-dasharray: none;
+}
+
+.is-many .lv-wire--sj.is-used {
+  stroke: rgba(123, 202, 255, 0.28);
+}
+
+/* From the defense host to the rule engines, a short connector of its own, as quiet as the stream. */
+.is-many .lv-wire--jd.is-review {
+  stroke: rgba(123, 202, 255, 0.28);
+}
+
+/* The host the step came from: lit in the attacker's colour, quieter than the host it reached. */
+.lv-host.is-from .lv-host-body {
+  stroke: rgba(255, 140, 100, 0.85);
+  stroke-width: 2;
+}
+
+/* Where the attack path reached its goal: the race line's white diamond, on the host. */
+.lv-goal-mark circle {
+  fill: none;
+  stroke: rgba(238, 247, 255, 0.75);
+  stroke-width: 1.5;
+}
+
+.lv-goal-mark circle {
+  filter: drop-shadow(0 0 5px rgba(238, 247, 255, 0.55));
+}
+
+/* Outlined, white words: the goal is marked, and the orange of the score and the alert stay the loudest. */
+.lv-badge.is-goal {
+  color: var(--lv-text);
+  background: rgba(3, 14, 26, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(238, 247, 255, 0.7), 0 0 10px rgba(238, 247, 255, 0.18);
+}
+
+/* The race line's goal diamond, in front of the words. */
+.lv-badge.is-goal::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px 0;
+  background: var(--lv-text);
+  transform: rotate(45deg);
+}
+
+/* On a network the host an alert was raised on says so in the alert's colour. */
+.is-many .lv-badge.is-alerted {
+  color: #ffc2ab;
+  background: rgba(255, 112, 69, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 69, 0.85), 0 0 12px rgba(255, 112, 69, 0.3);
+}
+
+/* On a network no line runs under a host's words: they stand on the zone's tint with no backing. */
+.is-many .is-small :is(.lv-host-name, .lv-host-role) {
+  padding: 0 4px;
+  background: none;
+  text-shadow: 0 0 6px var(--lv-ink-950), 0 0 2px var(--lv-ink-950);
+}
+
+/* Words in brackets at a role's end start a line of their own, and wrap as one note. */
+.is-many .lv-host-role > span.is-note {
+  display: block;
+}
+
+/* An alert raised on the host: its chip under the host's words, strong when it fires, quieter after, with its time. */
+.lv-host-alert {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 4px;
+  white-space: nowrap;
+  opacity: 0.78;
+}
+
+/* Kept after its moment, the chip is an outline: the alert is still told, and the step on screen leads. */
+.lv-host-alert .lv-chip {
+  font-size: 10px;
+  color: #ffb59c;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 69, 0.7);
+}
+
+.lv-host-alert.is-strong {
+  opacity: 1;
+}
+
+.lv-host-alert.is-strong .lv-chip {
+  color: #2a0b02;
+  background: var(--lv-flame);
+  box-shadow: 0 0 14px rgba(255, 112, 69, 0.55);
+}
+
+.lv-host-alert-time {
+  font-size: 11.5px;
+  color: #ffb59c;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 6px var(--lv-ink-950);
+}
+
+/* The run's first alert carries the race line's orange diamond. */
+.lv-host-alert-time.is-first::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px 0;
+  background: var(--lv-flame);
+  transform: rotate(45deg);
+}
+
+/* The goal's badge says its time, as the race line does. */
+.lv-badge-time {
+  margin-left: 7px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.is-many .lv-host-label.is-small .lv-host-name {
+  overflow: visible;
+}
+
+/* What the host's sensor recorded of the step, named once in the head: a line of its own under the role. */
+.lv-host-count {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--lv-blue-soft);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 6px var(--lv-ink-950);
+}
+
+.lv-host-count .lv-agent-dot {
+  width: 5px;
+  height: 5px;
+  margin: 0 6px 0 0;
+  box-shadow: 0 0 0 1.5px var(--lv-ink-950), 0 0 0 2.5px rgba(123, 202, 255, 0.6);
+}
+
+.lv-host-count.is-none {
+  color: var(--lv-muted);
+}
+
+.lv-host-count.is-zero {
+  font-weight: 650;
+  color: var(--lv-red);
+}
+
+/* The engine's own matches first, then an earlier step's late match, then how many more: the count ends the list. */
+.is-many .lv-match--late {
+  order: 1;
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+.is-many .lv-match--more {
+  order: 2;
+}
+
+/* A late match's step goes under its title, beside it, never at the far edge. */
+.is-many .lv-match--late .lv-match-count {
+  flex-basis: 100%;
+  padding-left: 2px;
+}
+
+.is-many .lv-match-count {
+  flex: none;
+}
+
+/* The engine on a network is drawn in the map's own pixels, larger with the map on a large stage: the alert's name reads
+   at least as large as a host's. */
+.is-many .lv-engine-name {
+  font-size: 15px;
+}
+
+.is-many .lv-engine-sub,
+.is-many .lv-match--more,
+.is-many .lv-match--none {
+  font-size: 12px;
+}
+
+.is-many .lv-matches {
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.is-many .lv-chip {
+  font-size: 10.5px;
+}
+
+/* A match on a network is a block: its chip on a line of its own, its title whole under it, its count after the title's
+   last word, then where and when an alert was raised. */
+.is-many .lv-match:not(.lv-match--late, .lv-match--more, .lv-match--none) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  font-size: 13.5px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.is-many .lv-match:not(.lv-match--late, .lv-match--more, .lv-match--none) > :is(.lv-chip, .lv-match-said) {
+  align-self: flex-start;
+}
+
+.is-many .lv-match:not(.lv-match--late, .lv-match--more, .lv-match--none) .lv-match-title {
+  display: block;
+  overflow: visible;
+}
+
+.is-many .lv-match-title > .lv-match-count {
+  margin-left: 7px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.is-many .lv-match:has(.lv-chip--alert) .lv-match-title {
+  font-weight: 600;
+  color: var(--lv-text);
+}
+
+/* Where an alert was raised, under its title: the host, the step and the rule's number; then when. */
+.lv-match-where {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--lv-xs);
+  color: #ffb59c;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.is-many .lv-match-where {
+  font-size: 11.5px;
+}
+
+.lv-match-where.is-when {
+  margin-top: 0;
+  color: var(--lv-muted-strong);
+}
+
+/* An alert of an earlier step, while the step on screen has none of its own: quiet, so it never reads as this step's. */
+.is-many .lv-match--earlier {
+  opacity: 0.72;
+}
+
+.lv-match-said {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--lv-muted);
+}
+
+.is-many .lv-match--earlier .lv-chip--alert {
+  box-shadow: none;
+}
+
+/* The engines' head spans their column to the page's side margin: its name over the engine, what it did at the margin. */
+.lv-head.is-line.is-spread span {
+  float: right;
+}
+
+/* One line height for a head's words, floated or not, so they share a baseline. */
+.lv-head.is-line {
+  font-size: var(--lv-xs);
+  line-height: 20px;
+}
+
+/* One measure at every size, wide enough that a short sentence stays on one line; a step smaller on a short window, so
+   the map and its path lead and the sentence confirms them. */
+.lv:has(.lv-map.is-many) .lv-plain {
+  max-width: min(100%, 31em);
+}
+
+.lv:has(.lv-map.is-many) .lv-plain:not(.is-long) {
+  font-size: clamp(22px, 1.8vw, 42px);
+}
+
+/* On a network the log holds three lines. The lines a step leaves empty are the story band's: it reaches up into them
+   and stands in the middle of its room, so no empty band opens between the log and the step's words. The band keeps room
+   for its eyebrow, a sentence of two lines, the outcome's line and the hint under it at every step, so the map and the
+   log stand still from step to step; a step that needs more makes the band taller, never cut. */
+.lv:has(.lv-map.is-many) .lv-caption {
+  --lv-free: 0;
+  --lv-band-gap: 9px;
+  --lv-band-floor: clamp(146px, 20vh - 30px, 224px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin-top: calc(var(--lv-free) * -1 * (1.6 * clamp(12.5px, 7px + 0.4vw, 15px) + 2px));
+  height: auto;
+  min-height: calc(
+    max(var(--lv-band-floor), 49px + var(--lv-band-gap) + 1.4 * var(--lv-xs) + 1.4 * var(--lv-sm) + 2.44 * clamp(22px, 1.8vw, 42px)) +
+      var(--lv-free) * (1.6 * clamp(12.5px, 7px + 0.4vw, 15px) + 2px)
+  );
+  padding-top: 4px;
+  padding-bottom: 6px;
+}
+
+/* On a network a late line takes its own place at the foot of the band, which grows for it. */
+.lv:has(.lv-map.is-many) .lv-late {
+  position: static;
+  order: 1;
+  margin-top: 6px;
+}
+
+.lv:has(.lv-map.is-many) .lv-late:empty {
+  margin-top: 0;
+}
+
+.lv:has(.lv-map.is-many):has(.lv-log[data-free="1"]) .lv-caption {
+  --lv-free: 1;
+}
+
+.lv:has(.lv-map.is-many):has(.lv-log[data-free="2"]) .lv-caption {
+  --lv-free: 2;
+}
+
+.lv:has(.lv-map.is-many):has(.lv-log[data-free="3"]) .lv-caption {
+  --lv-free: 3;
+}
+
+.lv:has(.lv-map.is-many) .lv-caption-out {
+  margin-top: 7px;
+  gap: 5px;
+}
+
+.lv:has(.lv-map.is-many) .lv-caption-in {
+  gap: var(--lv-band-gap);
+}
+
+/* A short window: the band keeps less clear space, and on a network its words stand a little closer, so the map keeps
+   its least height above them. */
+@media (max-height: 780px) {
+  .lv > .lv-caption {
+    min-height: clamp(146px, 20vh, 184px);
+  }
+
+  .lv:has(.lv-map.is-many) .lv-caption {
+    --lv-band-gap: 5px;
+    --lv-band-floor: 0px;
+    padding-top: 2px;
+    padding-bottom: 4px;
+  }
+}
+
+/* An alert's line in the log is tinted whole, so it stands out of the review lines at a glance. */
+.lv:has(.lv-map.is-many) .lv-log-line.is-alert {
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: rgba(255, 112, 69, 0.1);
+}
+
+/* The counters keep their places at every moment: a count told only at the end holds its place, dim, until then. */
+.lv-score-false.is-later b {
+  color: var(--lv-muted);
+}
+
+.lv-nobreak {
+  white-space: nowrap;
+}
+
 /* A direction character of a recording's free text, shown as its code and never applied. */
 .lv-mark {
   display: inline-block;
@@ -1453,6 +2083,33 @@
   text-wrap: balance;
 }
 
+/* Near a host of a network: smaller words in the box the layout placed them by, on a plain backing that covers lines only. */
+.lv-silence.is-near {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: rgba(3, 14, 26, 0.86);
+}
+
+.lv-silence.is-near b {
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+/* What the recording says of it keeps to two lines in the box; the whole of it is its tooltip. */
+.lv-silence.is-near span {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 /* ---------- what the sensors recorded ---------- */
 
 /* A full-width strip under the map: times on the left gutter, rule marks on the right one. */
@@ -1470,6 +2127,15 @@
   padding-bottom: 7px;
   border-bottom: 1px solid var(--lv-line);
   white-space: nowrap;
+}
+
+/* A log with no line, where the room is short: its head alone, with no room under it. */
+.lv-log.is-head {
+  padding-bottom: 0;
+}
+
+.lv-log.is-head .lv-log-head {
+  margin-bottom: 0;
 }
 
 .lv-log-head > b {
@@ -1503,9 +2169,13 @@
   text-decoration: underline;
 }
 
+/* Every sensor that recorded the step has its count: a long key wraps rather than widening the view. */
 .lv-log-key {
   display: flex;
-  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 14px;
+  min-width: 0;
   margin-left: auto;
   font-size: var(--lv-xs);
   color: var(--lv-muted);
@@ -1515,6 +2185,12 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+/* A long sensor or host name is cut in the key: the whole of it is in the entry's title. */
+.lv-log-key .lv-cut {
+  max-width: 220px;
 }
 
 .lv-log-key b {
@@ -1527,13 +2203,16 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-height: calc(4 * 1.6em + 6px);
+  /* The lines the log holds: 4 on one host and 3 on a network, fewer where the room is short (room.ts). Its height is
+     theirs exactly, whatever its lines hold, so the room planned for it is the room it takes. */
+  height: max(0px, calc(var(--lv-lines, 4) * (1.6em + 2px) - 2px));
+  overflow: hidden;
   font-size: clamp(12.5px, 7px + 0.4vw, 15px);
 }
 
 .lv-log-line {
   display: grid;
-  grid-template-columns: 7.6em 7px 7.6em minmax(0, 1fr) 6.6em;
+  grid-template-columns: 7.6em 7px 7.6em minmax(0, 1fr) 8.4em;
   align-items: center;
   gap: 10px;
   line-height: 1.6;
@@ -1624,19 +2303,23 @@
   box-shadow: 0 0 0 2px var(--lv-ink-950), 0 0 0 3.2px rgba(var(--rgb), 0.9);
 }
 
+/* As tall as a line of the log, in the larger words of a sentence. */
 .lv-log-none {
-  padding-top: 4px;
+  flex: none;
+  height: calc(1.6 * clamp(12.5px, 7px + 0.4vw, 15px));
   font-size: var(--lv-md);
+  line-height: calc(1.6 * clamp(12.5px, 7px + 0.4vw, 15px));
   color: var(--lv-muted);
 }
 
 /* ---------- caption ---------- */
 
-/* The story band: a fixed height with clear space above the eyebrow and above the scrubber. */
+/* The story band: a steady height with clear space above the eyebrow and above the scrubber. A step whose words need
+   more makes it taller: the step's words are never cut. */
 .lv-caption {
   position: relative;
   z-index: 2;
-  height: clamp(184px, 23vh, 270px);
+  min-height: clamp(184px, 23vh, 270px);
   padding: 18px 48px 0;
   overflow: hidden;
 }
@@ -1920,14 +2603,22 @@
 
 /* ---------- transport ---------- */
 
+/* Where the view grows and the page scrolls, the transport stays at the window's foot, 1 pixel past it so that
+   the view can tell when it is stuck there; only then does it cover what scrolls under it. */
 .lv-transport {
-  position: relative;
+  position: sticky;
+  bottom: -1px;
   z-index: 3;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 18px;
   padding: 2px var(--lv-gutter) 10px;
+}
+
+.lv-transport.is-stuck {
+  background: var(--lv-ink-950);
+  box-shadow: 0 -1px 0 var(--lv-line);
 }
 
 .lv-controls {
@@ -2679,15 +3370,31 @@
   --ow: var(--lv-green);
 }
 
+/* Beside a step's outcome by the published rules: one of the lab's own rules alerted on it. */
+.lv-ow.is-lab {
+  --ow: var(--lv-violet);
+  margin-left: 10px;
+  color: #c9bcff;
+}
+
 .lv-ow-note {
   font-size: 12px;
   color: var(--lv-muted);
 }
 
+/*
+ * The rows scroll under the head. The last rows the box shows fade out at its foot, so no row is cut hard by its edge,
+ * and the box has as much room after its last row, so the end of the list is never faded when it is scrolled to.
+ * The table adds what brings the list's end to a row's edge, and finds its own place again when its rows change
+ * height (StepTable.tsx), so the browser does not move it.
+ */
 .lv-table-wrap {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
+  padding-bottom: var(--lv-fade);
+  mask-image: linear-gradient(180deg, #000 calc(100% - var(--lv-fade)), transparent);
   border-radius: 8px;
   background: rgba(5, 20, 33, 0.55);
   box-shadow: inset 0 0 0 1px var(--lv-line);
@@ -2700,29 +3407,14 @@
   font-size: 12.5px;
 }
 
-.lv-table col.is-n {
-  width: 40px;
-}
+/* The columns' widths are set by the table itself (tableColumns in StepTable.tsx). */
 
-.lv-table col.is-out {
-  width: 100px;
-}
-
-/* The short name of a step that is not only a test: "canary 1", "rerun of test 12". */
-.lv-table col.is-name {
-  width: 132px;
-}
-
-.lv-table col.is-tech {
-  width: 92px;
-}
-
-.lv-table col.is-num {
-  width: 64px;
-}
-
-.lv-table col.is-rules {
-  width: 27%;
+/* A sensor's dot and short name in the head, "Sysmon", whole in its column. */
+.lv-table thead th.is-num > span {
+  gap: 3px;
+  padding-right: 6px;
+  padding-left: 2px;
+  letter-spacing: 0;
 }
 
 .lv-table thead th {
@@ -2770,7 +3462,9 @@
   font-style: normal;
 }
 
+/* A row of one line stands 33 px tall, a little air round its words. */
 .lv-table tbody tr {
+  height: 33px;
   border-bottom: 1px solid rgba(93, 151, 194, 0.08);
   cursor: pointer;
 }
@@ -2824,21 +3518,27 @@
   color: var(--lv-muted-strong);
 }
 
+/* A long title wraps onto a second line rather than being cut. */
+.lv-table td.is-title {
+  white-space: normal;
+}
+
+/* How many events the defense recorded, where the recording keeps fewer, stands under the title, not beside it: the title keeps its width. */
 .lv-table td.is-title > div {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
   min-width: 0;
 }
 
 .lv-row-button {
   all: unset;
-  overflow: hidden;
   min-width: 0;
   font-weight: 520;
+  line-height: 1.35;
   color: var(--lv-text-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -2850,6 +3550,7 @@
 .lv-kept-tag {
   flex: none;
   font-size: 10.5px;
+  line-height: 1.3;
   color: var(--lv-muted);
 }
 
@@ -2886,8 +3587,9 @@
   white-space: nowrap;
 }
 
+/* The counts stand a space and a little more apart, and the cell wraps between them. */
 .lv-table td.is-rules span + span {
-  margin-left: 9px;
+  margin-left: 5px;
 }
 
 .lv-table td.is-rules .is-lab {
@@ -2927,12 +3629,15 @@
   color: var(--lv-muted);
 }
 
-/* The detail scrolls; a soft fade at its foot says there is more below. */
+/*
+ * The detail scrolls; its last lines fade out at its foot, which says there is more below, and it has that much room
+ * after its last line, so its end is never faded once it is scrolled to.
+ */
 .lv-an-detail {
   min-height: 0;
   overflow: auto;
-  mask-image: linear-gradient(180deg, #000 calc(100% - 26px), transparent);
-  padding: 18px 20px 22px;
+  mask-image: linear-gradient(180deg, #000 calc(100% - var(--lv-fade)), transparent);
+  padding: 18px 20px var(--lv-fade);
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(13, 34, 53, 0.9), rgba(8, 26, 42, 0.85));
   box-shadow: inset 0 0 0 1px var(--lv-line);
@@ -3874,10 +4579,11 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* The table keeps its own scroll, at a height that leaves the page around it in reach. */
+  /* The table keeps its own scroll, at a height that leaves the page around it in reach, and no taller than its rows. */
   .lv-table-wrap {
     flex: none;
-    height: max(260px, 60vh);
+    height: auto;
+    max-height: max(260px, 60vh);
   }
 
   .lv-an-detail {
@@ -3902,15 +4608,6 @@
   .lv-winning {
     overflow: visible;
     white-space: normal;
-  }
-
-  /* The map keeps the narrowest width its columns fit in, and scrolls sideways inside its band below it. */
-  .lv-main {
-    overflow-x: auto;
-  }
-
-  .lv-main > .lv-stage {
-    min-width: 960px;
   }
 }
 
@@ -3980,6 +4677,15 @@
     grid-template-columns: 140px minmax(520px, 1fr);
     column-gap: 10px;
     overflow-x: auto;
+  }
+
+  /* The lanes' notes stay inside the window while the axis above them scrolls sideways: they wrap instead. */
+  .lv-lanes-panel .lv-ln-foot {
+    position: sticky;
+    left: 0;
+    grid-column: 1 / -1;
+    max-width: calc(100vw - 2 * var(--lv-gutter));
+    white-space: normal;
   }
 
   /* A flag's words near the end of the race line stay in reach: the line scrolls sideways if they must. */

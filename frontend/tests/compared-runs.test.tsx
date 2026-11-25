@@ -376,7 +376,7 @@ describe("the page of a change to the defense", () => {
     expect(articles).toHaveLength(2);
     // The unseen test is told in its recording's own words.
     expect(articles[0]).toHaveTextContent("It took effect, and nothing of the test was recorded besides its launcher's start.");
-    expect(articles[1]).toHaveTextContent("1 event recorded, no rule matched, none at alert level.");
+    expect(articles[1]).toHaveTextContent("1 event recorded, no rule matched.");
     await user.click(within(detail).getByRole("button", { name: "Close the step's detail" }));
     expect(screen.queryByRole("region", { name: /every detail before and after/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2`);

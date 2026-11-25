@@ -49,6 +49,11 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
     if (chosen && ((table.role !== "all" && chosen.step.role !== table.role) || (table.outcome !== null && chosen.step.outcome !== table.outcome))) setTable({ ...table, role: "all", outcome: null });
     if (detail.current) detail.current.scrollTop = 0;
   };
+  // A filter that hides the chosen step closes its detail, so the detail always shows a step the table lists.
+  const filterTable = (next: TableState) => {
+    setTable(next);
+    if (row && ((next.role !== "all" && row.step.role !== next.role) || (next.outcome !== null && row.step.outcome !== next.outcome))) onSelect(undefined);
+  };
   const chooseInTable = (stepId: string) => {
     choose(stepId);
     setFocusDetail(true);
@@ -68,7 +73,7 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
     <section className="lv-analyse" aria-label="Analyse" ref={panel}>
       <RunLanes recording={recording} timeline={timeline} facts={facts} colours={colours} selected={row?.step.id} onSelect={choose} />
       <div className="lv-an-body">
-        <StepTable recording={recording} rows={rows} sensors={sensors} colours={colours} state={table} onState={setTable} selected={row?.step.id} onSelect={chooseInTable} />
+        <StepTable recording={recording} rows={rows} sensors={sensors} colours={colours} state={table} onState={filterTable} selected={row?.step.id} onSelect={chooseInTable} />
         <div className="lv-an-detail" ref={detail}>
           {row ? (
             <StepDetail

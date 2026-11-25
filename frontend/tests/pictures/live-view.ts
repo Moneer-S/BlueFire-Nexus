@@ -119,10 +119,33 @@ function watch(page: Page, allowed: (url: string) => boolean) {
   return problems;
 }
 
-/** Waits for the fonts and for every animation and transition to end, then for two frames. */
+/**
+ * Waits for the fonts and for every animation and transition to end, then for
+ * the page to stand still: no animation runs, and nothing on it moves over two
+ * frames. An entrance animation that starts after a first look found none, as a
+ * page that has just loaded can start one, is waited for too, so the same page
+ * gives the same picture on every run.
+ */
 async function settle(page: Page): Promise<void> {
   await page.evaluate(() => document.fonts.ready.then(() => true));
-  await expect.poll(() => page.evaluate(() => document.getAnimations().filter((item) => item.playState === "running").length), { timeout: 15_000 }).toBe(0);
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const frame = () => new Promise((done) => requestAnimationFrame(() => done(null)));
+          const places = () => JSON.stringify([...document.querySelectorAll("body *")].slice(0, 4000).map((item) => {
+            const box = item.getBoundingClientRect();
+            return [box.x, box.y, box.width, box.height];
+          }));
+          const running = () => document.getAnimations().some((item) => item.playState === "running");
+          const before = places();
+          await frame();
+          await frame();
+          return !running() && places() === before;
+        }),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }
 
@@ -132,43 +155,42 @@ async function picture(page: Page, folder: string, name: string): Promise<void> 
 }
 
 /**
- * A picture of a view whose lists scroll: it ends just below the lowest table
- * row that is whole, at a line no text crosses, so no row or heading is cut in two.
+ * In analyse mode, every step's title in the table takes two lines at the most (three in a window narrower than 1440
+ * px), and the first row in view stands whole under the table's head: no row shows cut under it. With a row chosen,
+ * that row is whole in the table's box, above the fade at its foot.
  */
-async function pictureOfLists(page: Page, folder: string, name: string): Promise<void> {
+async function expectWholeRows(page: Page, name: string, chosen?: string): Promise<{ scrolled: number }> {
   await settle(page);
-  const height = await page.evaluate(() => {
-    const MARGIN = 6;
-    // The boxes of the lines of text themselves, not of the cells or blocks that hold them.
-    const lineBoxes: DOMRect[] = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if ((node.textContent ?? "").trim() === "") continue;
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      lineBoxes.push(...range.getClientRects());
+  const found = await page.evaluate((selected) => {
+    const titles = [...document.querySelectorAll<HTMLElement>(".lv-table .lv-row-button")].filter((title) => title.getBoundingClientRect().height > 0);
+    // Two lines at the most in a window 1440 px wide or wider, three in a narrower one.
+    const most = window.innerWidth >= 1440 ? 2 : 3;
+    const tall = titles.filter((title) => title.getBoundingClientRect().height / parseFloat(getComputedStyle(title).lineHeight) > most + 0.5).map((title) => title.textContent ?? "");
+    // The head's cells stick to the top of the box as the rows scroll; the head itself scrolls away with them.
+    const head = document.querySelector(".lv-table thead th")?.getBoundingClientRect().bottom ?? 0;
+    const rows = [...document.querySelectorAll<HTMLElement>(".lv-table tbody tr")];
+    const cut = rows
+      .filter((row) => {
+        const box = row.getBoundingClientRect();
+        return box.top < head - 0.5 && box.bottom > head + 0.5;
+      })
+      .map((row) => row.querySelector(".lv-row-button")?.textContent ?? "");
+    const wrap = document.querySelector<HTMLElement>(".lv-table-wrap");
+    const row = rows.find((item) => item.dataset.step === selected);
+    let whole = true;
+    if (selected !== null) {
+      if (!wrap || !row) return { tall, cut, titles: titles.length, whole: false, scrolled: 0 };
+      const box = row.getBoundingClientRect();
+      const foot = wrap.getBoundingClientRect().top + wrap.clientTop + wrap.clientHeight - parseFloat(getComputedStyle(wrap).paddingBottom);
+      whole = box.top >= head - 0.5 && box.bottom <= foot + 0.5;
     }
-    const crossed = (top: number, bottom: number) => lineBoxes.some((box) => box.height > 0 && box.top < bottom && box.bottom > top);
-    /** Where a row can be seen: inside the window and every box around it that scrolls. */
-    const seenTo = (item: Element) => {
-      let limit = window.innerHeight;
-      for (let around = item.parentElement; around; around = around.parentElement) {
-        if (/(auto|scroll|hidden)/.test(getComputedStyle(around).overflowY)) limit = Math.min(limit, around.getBoundingClientRect().bottom);
-      }
-      return limit;
-    };
-    const lines = [...document.querySelectorAll("tr")]
-      .map((row) => ({ bottom: row.getBoundingClientRect().bottom, limit: seenTo(row) }))
-      .filter((row) => row.bottom <= row.limit && row.bottom + MARGIN <= window.innerHeight)
-      .map((row) => row.bottom)
-      .sort((one, other) => other - one);
-    const line = lines.find((bottom) => !crossed(bottom, bottom + MARGIN));
-    return line === undefined ? 0 : Math.ceil(line + MARGIN);
-  });
-  const viewport = page.viewportSize();
-  if (!viewport) throw new Error("The page has no viewport size.");
-  if (height < viewport.height * 0.8) throw new Error(`${name}: no line near the bottom ends the lists whole (found ${height} px of ${viewport.height}).`);
-  await page.screenshot({ path: join(folder, name), clip: { x: 0, y: 0, width: viewport.width, height } });
+    return { tall, cut, titles: titles.length, whole, scrolled: wrap?.scrollTop ?? 0 };
+  }, chosen ?? null);
+  expect(found.titles, `${name}: the table shows no title`).toBeGreaterThan(0);
+  expect(found.tall, `${name}: titles over two lines, or three in a narrower window`).toEqual([]);
+  expect(found.cut, `${name}: rows cut under the table's head`).toEqual([]);
+  expect(found.whole, `${name}: the chosen row is not whole in the table's box`).toBe(true);
+  return { scrolled: found.scrolled };
 }
 
 /**
@@ -300,15 +322,37 @@ test("pictures of the live view, in the replay page and in the app", async ({ pa
     if (tried.length === steps.length) throw new Error(`${name}: every step cuts a rule title short.\n${tried.join("\n")}`);
   }
 
+  // Rows far down the table, and its last, chosen: the table scrolls to the row and stands at a row's edge under its
+  // head, the chosen row whole, and again each time the window changes size and the rows wrap anew. The pictures
+  // below choose rows near the table's top, where it does not scroll.
+  await open("mode=analyse");
+  await expect(page.getByRole("table")).toBeVisible();
+  const order = await page.locator(".lv-table tbody tr[data-step]").evaluateAll((rows) => rows.map((row) => (row instanceof HTMLElement ? (row.dataset.step ?? "") : "")));
+  for (const place of [Math.floor(order.length / 4), Math.floor(order.length / 2), Math.floor(order.length * 0.8), order.length - 1]) {
+    const far = order[place];
+    if (!far) throw new Error(`The table has ${order.length} rows.`);
+    await open(`mode=analyse&select=${far}`);
+    await expect(page.locator(`.lv-table tr[data-step="${far}"]`)).toHaveClass(/is-selected/);
+    const name = `analyse, row ${place + 1} of ${order.length} chosen`;
+    const { scrolled } = await expectWholeRows(page, `${name}, 1440 by 900`, far);
+    expect(scrolled, `${name}: the table did not scroll`).toBeGreaterThan(0);
+    for (const [width, height] of [[1280, 720], [1920, 1080], [1440, 900]] as const) {
+      await page.setViewportSize({ width, height });
+      await expectWholeRows(page, `${name}, the window made ${width} by ${height}`, far);
+    }
+  }
+
   await open("mode=analyse");
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("table")).toBeVisible();
   await expectLabelledAxis(page);
-  await pictureOfLists(page, folder, "analyse.png");
+  await expectWholeRows(page, "analyse.png");
+  await picture(page, folder, "analyse.png");
 
   await open(`mode=analyse&select=${unseen.id}`);
   await expect(page.getByRole("article").getByRole("heading", { name: unseen.title, exact: true })).toBeVisible();
-  await pictureOfLists(page, folder, "analyse-unseen.png");
+  await expectWholeRows(page, "analyse-unseen.png");
+  await picture(page, folder, "analyse-unseen.png");
 
   await page.setViewportSize({ width: 1920, height: 1080 });
   await open(`step=${firstAlert.id}&at=${LATE}&paused=1`);

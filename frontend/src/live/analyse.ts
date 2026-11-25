@@ -139,7 +139,9 @@ const ROLE_PLURAL: Record<StepRole, [string, string]> = {
   variant: ["variant", "variants"],
 };
 
-export function roleCount(role: StepRole, count: number): string {
+/** "60 tests", "12 hardened reruns"; the steps of an attack path, whose word `unit` is (`unitWord`), are "11 steps". */
+export function roleCount(role: StepRole, count: number, unit: "step" | "test" = "test"): string {
+  if (role === "test") return plural(count, unit);
   const [one, many] = ROLE_PLURAL[role];
   return plural(count, one, many);
 }
@@ -206,8 +208,9 @@ export function fixHint(recording: Recording, step: Step, matches?: MatchGroups)
   for (const alert of matches?.review ?? []) if (!rules.has(alert.rule.id)) rules.set(alert.rule.id, alert);
   const quiet = (alert: Alert) => ordinaryMatches(recording, alert.rule.title) ?? 0;
   const top = [...rules.values()].sort((a, b) => (LEVEL_RANK[b.rule.level] ?? 0) - (LEVEL_RANK[a.rule.level] ?? 0) || quiet(a) - quiet(b))[0];
-  if (!top) return "Recorded, no rule at alert level: start with a rule.";
+  if (!top) return "No rule matched this step: start by writing one.";
   const ordinary = ordinaryMatches(recording, top.rule.title);
-  const noise = ordinary === null ? "" : ordinary === 0 ? ", and nothing in ordinary activity" : `, and ${plural(ordinary, "ordinary event")}`;
-  return `Start with a rule: ${top.rule.title} (${top.rule.level}) matched it below alert level${noise}.`;
+  const noise = ordinary === null ? "" : ordinary === 0 ? ", and nothing in ordinary activity" : `, and ${plural(ordinary, "event")} of ordinary activity too`;
+  // The rule's own title is quoted whole, its closing full stop left to the sentence.
+  return `To alert here, start from the rule "${top.rule.title.replace(/\.$/, "")}": it matched this step at ${top.rule.level} level${noise}.`;
 }

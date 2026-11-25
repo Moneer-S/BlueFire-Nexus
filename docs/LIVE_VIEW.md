@@ -18,7 +18,7 @@ goes, and the view says the run is still running.
   `high` or `critical` on an event of the step. A match below that level is
   shown for review, and a match on the shell command that carried the test only
   is shown as a launcher match. Neither counts. A match at level
-  `informational` is shown as "info" and is not counted for review, in the
+  `informational` is shown as "informational" and is not counted for review, in the
   table and in the run's summary alike.
 - **A step nobody saw is told in the recording's words.** Its `visibility`
   says why it is unseen; for the lab's run, that nothing of the test was
@@ -34,8 +34,11 @@ goes, and the view says the run is still running.
   as its code in a small tag, "U+202E", and is not applied; in a tooltip or the
   page's title it is written "[U+202E]".
 - **Rules written in this repository are drawn apart and not scored.** Their
-  engine says "not counted in the score" under its name, their matches are
-  labelled "would alert", and the score never counts them.
+  engine says "not counted in the score" under its name, a match of one of
+  them at alert level is a "lab alert" on every screen ("LAB ALERT · HIGH" on
+  a chip), and the score never counts them. In a step's detail, the other runs
+  of its technique say "lab alert" beside their outcome where one of the lab's
+  own rules alerted on them.
 - **The head says what the run is, in one quiet line.** Under the title one
   line says what the run is and when it was recorded: "A real run, recorded 23
   Nov 2026 on a GitHub-hosted runner" for a run shipped with BlueFire or
@@ -44,7 +47,8 @@ goes, and the view says the run is still running.
   say where its recording comes from. Its "details" opens the rest: who
   checked what, the link to the CI run that made it, the tool versions and the
   recording's notes. While watching, the score's head says "tests alerted so
-  far", since its counts go up as the run plays; at the end of the run they are
+  far" ("steps alerted so far" on an attack path), since its counts go up as
+  the run plays; at the end of the run they are
   the run's own. The hardened reruns are counted apart as "repeated tests
   stopped", and the legend under the timeline calls their short marks, and
   those of the canary and control steps, "short: checks and repeats"; its
@@ -54,10 +58,12 @@ goes, and the view says the run is still running.
   alert's time is the time of the event it matched. The race line says so
   beside the first alert's time, "(the time of the event it matched)", and
   analyse mode's lanes say it again under the axis.
-- **Silences are shortened, and the screen says so.** Every step gets one bar
+- **Quiet gaps are shortened, and the screen says so.** Every step gets one bar
   on the timeline, and the time between two steps plays as a short beat
-  whatever its real length. The legend under the timeline says "silences
-  shortened", and the clock always shows the recording's own time. A step whose
+  whatever its real length. The legend under the timeline says "quiet gaps
+  shortened", analyse mode's lanes say "Quiet gaps are shortened" (their tooltip
+  says the quiet time between two steps is drawn shorter than it lasted), and
+  the clock always shows the recording's own time. A step whose
   last match fires near its end stays on screen, its clock held at the step's
   end, until that match's light has reached the rule engine and the step's
   outcome is told.
@@ -83,9 +89,9 @@ goes, and the view says the run is still running.
   alert was not raised yet is told as seen (or unseen) with no alert by the end
   of the step. When a match of a step is raised after that step ended, on
   whatever is on screen then (a later step, or the silence after its own
-  step), its rule engine lights, the log gets a line marked "raised late", and
-  one line under the step names it and says how long after its step ended it
-  was raised. When several arrive together, that line counts and names every
+  step), its rule engine lights, the log gets a line that says how long after
+  its step ended it was raised (called "alert" when it is one), and
+  one line under the step names it and says the same. When several arrive together, that line counts and names every
   one of them, the log names the earlier ones on a line of their own, and each
   engine says how many more arrived on it, so nothing that the score counts
   goes unnamed. A match raised after its step's `ended` that still fires while
@@ -132,12 +138,205 @@ goes, and the view says the run is still running.
   the goal, the race track's 00:00, the flags' places on it and the clock's
   time into the run.
   The goal falls `score.goal_seconds` after it, even where an event is stamped
-  before that start, and the race line and the run's summary name the
-  attacker's goal where they say it was reached. When the first alert came
+  before that start: at the end of the step that time names to the
+  millisecond, as the import checks it, so a time rounded a fraction of a
+  millisecond past the last step's end is still told. The race line and the
+  run's summary name the attacker's goal where they say it was reached. When
+  the first alert came
   before the goal, the race line tells the goal only once that alert has been
   told, never the other way round. A file whose `score.first_alert_seconds`,
   or a step's `first_alert`, says otherwise is refused on import; the page
   shows what the alerts say.
+- **A light takes a match's colour only once the match has fired.** What a
+  sensor records travels as light to each rule engine. Where a rule engine ran
+  live and raised a match a moment after the event, the event's light travels
+  as a plain event until the match is raised, and from then in the match's
+  colour; the engine lights when the match reaches it, as before. Where the
+  rules ran after the run, a match fires at its event's time, so its light
+  has the match's colour from the start.
+
+## The map of a network
+
+The map is drawn from the recording's `network` alone: nothing in it is placed
+for one network by hand.
+
+- **One host** stands on the left with its sensors around it, the rule
+  engines on the right.
+- **Several hosts** stand in columns from left to right. The first column holds
+  where the attacker starts, and every other host that reaches the network and
+  that no host reaches, such as a client; each other host stands one column
+  after the nearest host linked to it. A column's hosts stand in rows, ordered
+  so that fewer links cross. The defense's own server stands after the last
+  column, where the sensors' lines join, and the rule engines last.
+- Every host's name and role stand under it. A host's badge (running, then its
+  outcome) stands above it, or, when that place is taken, on the top of its
+  ring, and only when both are taken beside it or under its name: never on a
+  name. Each sensor stands beside its host, where its name covers nothing and no
+  link runs through it, on the side its line to the defense leaves from, so the
+  line never runs back across its host. A pair of hosts linked both ways gets
+  one line with both labels. A sensed host's link to the defense server where
+  the sensors' lines join is drawn by those lines rather than a second line;
+  any other link to the defense, from it or to another defense host, is drawn.
+  Two hosts of one column are linked by a curve to one side, and a link that
+  would run through a host or a name bends around it. A link's label sits where
+  no other line runs under it, when its link has such a place.
+- The link a step crosses, from its `from` host to its host, is lit, and the
+  links that the steps before it crossed stay faintly lit: the way the attacker
+  came.
+
+### What a network of several hosts shows
+
+On a map of several hosts (range one's seven, for example) the screen says the
+same things as on one host, laid out for a network:
+
+- **Networks are fields.** A network that several links share is a faint field
+  round the hosts on it, with no border, named once in small capitals where
+  the field begins ("EDGE", "INSIDE + MGMT"); its links are not drawn one by
+  one. Two fields side by side never overlap; a host on both networks, such as
+  web, stands where the two fields meet. The network's head says how many
+  hosts there are and which have no sensor ("no sensor on attacker, inet or
+  client").
+- **The defense is a side of its own**, at the right: the defense host (the
+  Wazuh manager) and the rule engines stand together in a field headed "The
+  defense", never in a field of the hosts they watch. One quiet line at its
+  foot, under the defense host, says which sensors there are and how they
+  report: "Wazuh agent 4.14.10 on web, db and build, reporting to manager over
+  mgmt." That line never lies on a host's circle, words or badge: where the
+  foot of the defense's side has no room clear of them, it is left out. An
+  engine shows at most two matches whole, and fewer where two would not fit
+  above that line; the rest are counted ("+ 6 more rules for review").
+- **The attack's path is the strongest line.** The hop of the step on screen
+  glows, with an arrowhead; each earlier hop keeps its arrowhead and grows
+  fainter the longer ago it was crossed. Beside each hop, never on its line,
+  stand the numbers of the tests that crossed it ("5 · 9"), so the picture of
+  the goal tells the order of the attack. A step that stays on its host (no
+  `from`, or `from` the same host) lights a short bright arc on that host while
+  it runs. The caption names a crossing step's hop in words beside its number:
+  "from web to inet". A hop stays inside the map's drawn fields, under the
+  column heads and above the fields' foot; where it has to go round a host's
+  words, it takes the shorter way round.
+- **Each sensor's count is in words.** An agent that the defense's line names
+  once has its count under its host's role: "agent · 24 events", or "agent ·
+  1,439 kept" where the recording kept fewer of the step's events than were
+  recorded. Every sensor that recorded the step is counted, the agent of the
+  host it ran from too, and the log's key names each by its host ("Wazuh agent
+  on web 3", "Wazuh agent on build 16").
+- **An alert is told the same way everywhere.** The rule engine names it as an
+  alert ("ALERT · HIGH", its title, where it was raised: host, test and rule
+  number). An alert raised after its step ended says so in one wording, on the
+  engine, in the log and in the caption alike: "raised 922 ms after the step
+  ended". The log calls that line "alert". The host it was raised on has its
+  chip under its words, strong at the moment it fires and quieter after, with
+  its time; the run's first alert carries the race line's orange diamond and
+  the race line's time ("first alert 01:01.6").
+- **The goal is a place on the map.** The host where the path reached its goal
+  has a white ring and a "goal reached" badge with the race line's white
+  diamond and its time ("goal reached 10:28.4"). The race line's sentence at
+  the goal says both facts, the attacker's first: "The attacker reached its
+  goal, “build's signing secret reaches inet”, 9 min 27 s after the first
+  alert, with no step stopped."
+- **The step's words keep their room.** The log holds three lines on a
+  network; lines a step leaves empty go to the story band below, which stands
+  in the middle of its room, so no empty band opens between the log and the
+  sentence. See [What gives way in a short room](#what-gives-way-in-a-short-room).
+- **The goal's badge stands clear of its host.** A badge stands above its
+  host, clear of the ring a lit host wears. Where a row at the top of a short
+  map leaves no room above it, the badge stands beside the host, starting past
+  that ring however wide the badge is ("goal reached 10:28.4" is the widest),
+  or under its words; it never lies on the host it marks or on a host's name,
+  and a hop's numbers keep clear of it.
+- **A field's name stands in a free corner of its field.** The top left corner
+  first, then the top right, the bottom left and the bottom right: the first
+  where no host, name, badge's place or line is under it, and where no hop's
+  number could stand beside a line the path may run on. A field with no corner
+  free is not drawn unnamed: no field is drawn then, as below. A field
+  never covers a host of another field: where its box would, it gives up the
+  edge that costs it least. The fields are drawn only when every one can be
+  drawn whole: each box round all of its hosts (a host on two fields standing
+  on the border between them) and none of another's, its name in a free
+  corner, no two on each other. Otherwise, as in a map whose columns fold in a
+  small window, no field is drawn, and the hosts and lines stand alone; each
+  host's details still name its networks.
+
+A map of one host is drawn as before.
+
+### How the map fits
+
+- **Every column fits, or the recording is refused.** Hosts, defense hosts,
+  the sensors of one host and the rule engines each stand in a column that
+  fits the map's height: drawn closer together down to a least pitch, and
+  where that is not enough the map grows taller. A column holds at most four
+  hosts one above another; a longer one stands as several columns side by side.
+  Two defense hosts stand far enough apart for the upper one's name and role
+  and the lower one's sensors and badge above it, and the top one low enough
+  for its sensors under the column heads. The defense hosts' sensors are placed
+  first, above their hosts; the field's sensors make way for them, and no
+  sensor stands on another host, its name or a rule engine while there is a
+  free place.
+  The map draws at most 12 hosts (3 of them defense hosts), 16 links, 16
+  sensors with at most 4 on one host, and 4 rule engines; the service and the
+  page refuse a recording beyond that, saying which limit it passes (see
+  [RECORDING.md](RECORDING.md)). A link from a host to itself, or one given
+  twice, is refused the same way.
+- The map uses the room the screen gives it. A network that needs more room
+  than that makes the map taller, and the view then grows and scrolls as it
+  does in a small window (see [Two modes](#two-modes)), with the play button,
+  the speeds, the clock and the timeline kept at the foot of the window, and
+  the step's words below the fold as a whole (see
+  [What gives way in a short room](#what-gives-way-in-a-short-room)). A map
+  squeezed to no height by the rows around it still claims the least height
+  it needs.
+- **Columns fit the window.** Two columns stand at least 112 pixels apart, and
+  far enough apart for a stack of sensors' names and counts beside a host. The
+  last column stands far enough from a defense host for its sensors' words.
+  When a network's columns do not fit side by side at the window's width, they
+  fold into bands of rows, one under another: the first band runs left to
+  right, the next right to left, so a chain reads on from the end of one band
+  to the start of the next, and folded columns stand far enough apart for a
+  lone sensor's name beside its host. A folded column holds at most eight
+  hosts; a network that would need more keeps the width its columns need.
+- **A narrow window.** The map never places anything outside itself. It is at
+  least 960 pixels wide; in a narrower box, or when a network keeps a wider
+  width, the map keeps its width and scrolls sideways inside its box. A
+  network is laid out at widths in steps of 16 pixels and stands in the middle
+  of its box, so dragging a window's edge lays it out once a step; layouts
+  already made are kept.
+- **The words for silence stand by their host.** On a network, "It took
+  effect." and, under it on at most two lines, what the recording says of the
+  unseen step stand near its host, a defense host too, in a box that covers
+  no host, name, sensor, link label, rule engine or the host's own badge. Other lines may run under it, but the host's own
+  links, one of which the step came along, only where no place near the host
+  is free of them. Where no place near a host is free, the words stand at the
+  nearest free one: in range one's example, for the hosts of its first two
+  columns, which link labels ring, and at 1024 by 768 for web and db too. When
+  some host's words find no free place on the map at all, room is kept for
+  them under the bottom row. On a map of one host and no defense
+  host they stand in the corridor between the sensors and the rule engines, as
+  before, or above or under the host's sensors' words when a long name reaches
+  into the corridor.
+- **Every sensor that recorded the step is counted where it stands.** A step's
+  events can come from sensors on several hosts. Each of those sensors shows
+  its count on the map, and the log's key names each of them (two of one name
+  told apart by their host); their counts add up to the number at the head of
+  the log and in the caption. The step's own host's sensors are always in the
+  key, a silent one with 0.
+- **Long names are cut where there is no room, and kept whole within reach.**
+  On a network a host's name is cut at its role's width and its role after
+  three lines; beside a defense host, the last column's words and the defense
+  host's each take half the room between them, and the defense host's stop
+  short of the rule engines. A small sensor's name is cut at 150 pixels, and a
+  rule engine's name where its column ends. On a map of one host, the host's
+  words stay on the map, and a sensor's name stops short of the rule engines
+  or a defense host level with it. In the log's key a name is cut at 220
+  pixels, and its whole is in the entry's title. A host's words open its
+  detail by pointer and by keyboard (each host's words take focus): its whole
+  name and role, its system, its addresses, or that none was recorded, and
+  each of its sensors with what it records. The detail stays within the map,
+  however near its edge the host stands.
+- When a recording's rule engines did not all run at the same time, the head
+  over them says so, and each engine says whether it ran live or after the run.
+  A map of one host beside a defense host is headed "The network", with its
+  count of hosts and sensors.
 
 ## Two modes
 
@@ -147,19 +346,75 @@ goes, and the view says the run is still running.
   page it opens the step's detail, which says where the gap is. Inside the app
   it opens the step's own page, the place where fixing it starts (see "Fix
   this" in [USER_GUIDE.md](USER_GUIDE.md)), and its "Back to the run" returns
-  to the moment it was opened from.
+  to the moment it was opened from. Above the map the race line flags the
+  first alert on a test, and on an attack path the first alert on a step and
+  the goal. A flag's label opens
+  to the right of its flag, or to its left near the end of the line; when the
+  two labels would touch, they stand one to each side of their flags, or the
+  goal's a row higher.
 - **Analyse** shows the whole run on one axis, the table of every step with
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"
   goes back to watch mode at that step. The table opens on the tests, or on
-  every step when the recording has no test. Inside the app the detail of a
-  step that got through without an alert also has "Fix this", which opens the
-  same page.
+  every step when the recording has no test. No cell of the table is cut: a
+  long title or a long list of the rules that matched wraps onto a second
+  line. The title takes the room the other columns leave, each as wide as its
+  contents need, and where the recording keeps fewer of a step's events than
+  were recorded, how many were recorded stands under the title, not beside
+  it. The table and the detail beside it let their last visible lines fade
+  out at their foot, with as much room after their end, so no row or line is
+  cut hard by an edge. When the table scrolls to the chosen row, it stands at
+  a row's edge under its head with the chosen row whole, and it finds that
+  place again whenever its rows change height: as the columns get their
+  widths, when the font has loaded, when the window changes size. Its end is
+  a row's edge too, the last row whole above the fade. Inside the app the
+  detail of a step that got through without an alert also has "Fix this",
+  which opens the same page.
 
-In a small window, or a large one zoomed in, the view grows with what it
-holds and the page scrolls; at phone width its bands stack. Nothing is cut
-off beyond reach. The app's page of a recorded run does the same at the same
-window sizes.
+In a small window, or a large one zoomed in, and wherever a network's map
+needs more height than the window gives, the view grows with what it holds
+and the page scrolls; at phone width its bands stack. While watching, the
+transport (the play button, the speeds, the clock and the timeline) stays at
+the foot of the window as the rest scrolls under it, so playing, pausing and
+moving on the timeline stay in reach. The network map keeps its least width
+and scrolls sideways inside its own box; nothing else scrolls sideways.
+Nothing is cut off beyond reach. The app's page of a recorded run does the
+same at the same window sizes.
+
+### What gives way in a short room
+
+The step's sentence, the line with its outcome (and "Fix this" where the step
+has it) and the hint under it never give way: in watch mode they stand whole
+above the transport, without scrolling, in the room the app gives the view on
+a laptop or a desktop window (1280 by 720 up to 1920 by 1080, less the app's
+own bars). The band that holds them keeps the height of its eyebrow, a
+sentence of two lines, the outcome's line and the hint at every step, so the
+map and the log stand still from step to step; a step whose words need more
+makes the band taller, never cut. When the room is short, the parts give way
+in this order:
+
+1. **The log shows fewer lines**: three on a network and four on one host,
+   then two, one, and at last only its head line, which still counts the
+   step's events and opens the rest in Analyse. A log of one line at an alert
+   raised after its step ended gives that line to the alert, as a longer log
+   writes it; where the log folds matches into one line, it counts each kind
+   as what it is ("1 alert rule, 5 rules for review and 2 informational").
+   When no event has a line, the head says how many there are and how many of
+   them Analyse lists, the events the recording keeps of the step: "19 events,
+   all 19 in Analyse", "1,857 events recorded, 1,439 kept here, all 1,439 in
+   Analyse", "1 event, listed in Analyse"; when some have, "N more in
+   Analyse" counts those not shown.
+2. **The map takes less height**, down to its least: on a network, first the
+   height at which every row keeps room above its hosts for their badges, and
+   then, with the rows closer and a lower host's badge beside it, the least
+   height at which no host, name, count, badge or line lies on another any
+   more than at the roomier one.
+3. **Only then does the page scroll.** The map keeps its least height and
+   reaches down to the transport, so what does not fit, the step's words, is
+   below the fold as a whole and never cut in half by the transport.
+
+The view measures its parts to decide this (`room.ts`); in a short window the
+band's words stand a little closer.
 
 ## Keys
 
@@ -189,10 +444,24 @@ The replay page reads where to start from its address, for example
 
 A step's `id` is the recording's own, and a step's detail in analyse mode shows
 it, so that a link can be written by hand. On screen a step is named the same
-way everywhere: a test as "test N", its count among the tests in run order,
-as the score counts them, and any other step by its role and, for a rerun, by
-the test it reruns ("canary 1", "the control", "hardened rerun of test 12",
-"variant 2 of test 39"). Where room is short, the analyse table's first
+way everywhere, and one function (`unitWord` in `format.ts`) decides the word
+for each kind of recording:
+
+- **A list of tests on one host** names a test "test N", its count among the
+  tests in run order, as the score counts them, and counts tests: "3 / 60
+  tests alerted", "first alert · test 39", "Test 39 of 60".
+- **An attack path** names each step "step N" and counts steps, everywhere a
+  step is named or counted: "1 / 11 steps alerted", "first alert · step 1",
+  "The defense raised its first alert on step 1, 01:01.6 after the first step
+  began.", "Step 9 of 11" over the step's detail and beside the timeline, with
+  no second line that says its place again, and one tab of steps in the
+  analyse table where a tab of tests would hold the same rows. The published
+  test a step ran keeps its own title and technique: the technique's chip and
+  the test's title beside it.
+
+Any other step is named by its role and, for a rerun, by the step it reruns
+("canary 1", "the control", "hardened rerun of test 12", "variant 2 of test
+39"). Where room is short, the analyse table's first
 column writes a test as its number alone, and the lanes' time axis as "#28";
 an axis label of a rerun or a variant holds its time alone, with the name in
 its tooltip.

@@ -168,8 +168,12 @@ test("at phone width the recorded run's page stacks the live view's bands and sc
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   // The step's caption and its Fix this are further down the page, in the window's width.
   const fix = page.getByRole("region", { name: "The step", exact: true }).getByRole("button", { name: "Fix this" });
+  // The play button stays in the window at the top of the page and as it scrolls down to the caption.
+  const play = page.getByRole("button", { name: "Play", exact: true });
+  await expect(play).toBeInViewport();
   await fix.scrollIntoViewIfNeeded();
   expect(await inWidth(await fix.boundingBox())).toBe(true);
+  await expect(play).toBeInViewport();
   await fix.click();
   // It opens the step's own page, which fits the window's width too.
   await expect(page).toHaveURL(/\/fix\/43\?/);

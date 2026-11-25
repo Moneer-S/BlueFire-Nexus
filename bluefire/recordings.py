@@ -61,6 +61,15 @@ MAX_RECORDING_BYTES = 8 * 1024 * 1024
 MAX_STEPS = 2_000
 MAX_EVENTS = 20_000
 MAX_ALERTS = 20_000
+# The most of each column of the live view's map that it draws readably; frontend/src/live/recording.ts
+# refuses the same, so that the service keeps no recording the page cannot show.
+MAX_HOSTS = 12
+MAX_DEFENSE_HOSTS = 3
+MAX_LINKS = 16
+MAX_SENSORS = 16
+MAX_SENSORS_ON_A_HOST = 4
+MAX_DETECTORS = 4
+_MAP_DRAWS = "are allowed, the most the live view's map draws"
 MAX_LISTED = 200
 # The files kept for one id: the first, and the other evaluations of the same run.
 MAX_FILES_PER_ID = 8
@@ -185,12 +194,14 @@ class _Checker:
         self.fail(where, "must be an object.")
         return {}
 
-    def items(self, value: Any, where: str, limit: int) -> list[Mapping[str, Any]]:
+    def items(
+        self, value: Any, where: str, limit: int, *, why: str = "are allowed"
+    ) -> list[Mapping[str, Any]]:
         if not isinstance(value, list):
             self.fail(where, "must be a list.")
             return []
         if len(value) > limit:
-            self.fail(where, f"has {len(value)} entries; at most {limit} are allowed.")
+            self.fail(where, f"has {len(value)} entries; at most {limit} {why}.")
             return []
         return [self.obj(item, f"{where}[{index}]") for index, item in enumerate(value)]
 
@@ -393,7 +404,7 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
             check.text(tool, "role", f"source.tools[{index}]", choices=_TOOL_ROLES)
 
     network = check.obj(value.get("network"), "network")
-    hosts = check.items(network.get("hosts"), "network.hosts", 200)
+    hosts = check.items(network.get("hosts"), "network.hosts", MAX_HOSTS, why=_MAP_DRAWS)
     host_ids = check.unique_ids(hosts, "network.hosts")
     for index, host in enumerate(hosts):
         where = f"network.hosts[{index}]"
@@ -402,17 +413,47 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.text(host, "kind", where, choices=("host", "attacker", "internet", "defense"))
         check.text(host, "os", where, required=False, limit=_MAX_LINE)
         check.texts(host, "addresses", where)
-    for index, link in enumerate(check.items(network.get("links", []), "network.links", 1_000)):
-        check.ref(link.get("from"), host_ids, f"network.links[{index}].from", "host")
-        check.ref(link.get("to"), host_ids, f"network.links[{index}].to", "host")
-        check.text(link, "label", f"network.links[{index}]")
-    sensors = check.items(network.get("sensors"), "network.sensors", 100)
+    defense_hosts = sum(1 for host in hosts if host.get("kind") == "defense")
+    if defense_hosts > MAX_DEFENSE_HOSTS:
+        check.fail(
+            "network.hosts",
+            f"has {defense_hosts} hosts of kind defense; the map draws at most {MAX_DEFENSE_HOSTS}.",
+        )
+    pairs: set[tuple[str, str, str]] = set()
+    links = check.items(network.get("links", []), "network.links", MAX_LINKS, why=_MAP_DRAWS)
+    for index, link in enumerate(links):
+        where = f"network.links[{index}]"
+        check.ref(link.get("from"), host_ids, f"{where}.from", "host")
+        check.ref(link.get("to"), host_ids, f"{where}.to", "host")
+        label = check.text(link, "label", where)
+        # A link the map cannot draw as a line of its own, said once the link is otherwise whole.
+        start, end = link.get("from"), link.get("to")
+        if label is None or not isinstance(start, str) or not isinstance(end, str):
+            continue
+        if start == end:
+            check.fail(where, "joins a host to itself; a link runs between two hosts.")
+        pair = (start, end, label)
+        if pair in pairs:
+            check.fail(where, "repeats a link with the same hosts and label.")
+        pairs.add(pair)
+    sensors = check.items(network.get("sensors"), "network.sensors", MAX_SENSORS, why=_MAP_DRAWS)
     sensor_ids = check.unique_ids(sensors, "network.sensors")
     for index, sensor in enumerate(sensors):
         check.text(sensor, "name", f"network.sensors[{index}]")
         check.ref(sensor.get("host"), host_ids, f"network.sensors[{index}].host", "host")
         check.text(sensor, "records", f"network.sensors[{index}]", limit=_MAX_LINE)
-    detectors = check.items(network.get("detectors"), "network.detectors", 100)
+    on_host: dict[str, int] = {}
+    for sensor in sensors:
+        if isinstance(sensor.get("host"), str):
+            on_host[sensor["host"]] = on_host.get(sensor["host"], 0) + 1
+    for host_id, count in sorted(on_host.items()):
+        if count > MAX_SENSORS_ON_A_HOST:
+            check.fail(
+                "network.sensors",
+                f"has {count} sensors on the host {host_id[:80]!r}; the map draws at most "
+                f"{MAX_SENSORS_ON_A_HOST} on one host.",
+            )
+    detectors = check.items(network.get("detectors"), "network.detectors", MAX_DETECTORS, why=_MAP_DRAWS)
     detector_ids = check.unique_ids(detectors, "network.detectors")
     for index, detector in enumerate(detectors):
         where = f"network.detectors[{index}]"

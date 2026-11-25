@@ -4,7 +4,7 @@ import { alertMoment, countsAsAlert, countsForScore, timeOf } from "./recording"
 import type { Alert, Outcome, Recording, RecordingEvent, Step } from "./recording";
 import type { Fire, FirstAlert, Frame, ScoreSoFar, Segment, Timeline } from "./playback";
 import { landing, maxOf, outcomeAt, outcomeAtEnd, PLAYBACK_RULE, stepEnd, stepMatchesFiredBy } from "./playback";
-import { matchKind, span, stepLabel, strongerKind } from "./format";
+import { matchKind, span, stepLabel, strongerKind, unitWord } from "./format";
 import type { MatchKind } from "./format";
 
 /** Screen seconds a recorded event takes to travel from its host to the rule engines. */
@@ -37,8 +37,6 @@ export interface StepMoment {
   events: RecordingEvent[];
   /** The step's matches that have fired, in firing order. */
   fired: Alert[];
-  /** Every match of the step, fired or not. Only for drawing the lights of its events: nothing said on screen reads it. */
-  all: readonly Alert[];
   /**
    * The step's matches that have fired by now, its late arrivals too, in
    * firing order: every sentence, count, hint and spoken text about the
@@ -55,9 +53,13 @@ export interface StepMoment {
   namedLab: Alert | null;
   /** The fired matches whose light has reached its rule engine, with that moment. */
   landed: { alert: Alert; at: number }[];
-  /** For each event of the step, the strongest match on it by each detector. */
+  /**
+   * For each event of the step, the strongest match on it by each detector,
+   * of the matches that have fired by now: an event's light takes a match's
+   * colour only once that match has fired, and until then travels plain.
+   */
   matchByDetector: Map<string, Map<string, MatchKind>>;
-  /** For each event of the step, its strongest match. */
+  /** For each event of the step, its strongest match, fired or not: only to keep its light when a burst of lights is thinned. */
   matchOf: Map<string, MatchKind>;
 }
 
@@ -75,6 +77,17 @@ export function stepMatches(alerts: readonly Alert[]): { byDetector: Map<string,
     }
   }
   return { byDetector, strongest };
+}
+
+const FIRED_MATCHES = new WeakMap<readonly Alert[], Map<string, Map<string, MatchKind>>>();
+
+/** `stepMatches` of the matches fired so far, worked out once for each count: the list is the same array for the same count. */
+function firedMatches(heard: readonly Alert[]): Map<string, Map<string, MatchKind>> {
+  const known = FIRED_MATCHES.get(heard);
+  if (known) return known;
+  const value = stepMatches(heard).byDetector;
+  FIRED_MATCHES.set(heard, value);
+  return value;
 }
 
 function firstCountingFire(timeline: Timeline, stepId: string): { alert: Alert; at: number } | undefined {
@@ -150,7 +163,7 @@ export function firstAlertOnScreen(first: FirstAlert | null, time: number, segme
 
 const LATE_WORDS: Record<MatchKind, string> = {
   alert: "Alert",
-  lab: "A rule written in this repository would alert",
+  lab: "Lab alert, which the score does not count,",
   review: "Match for review",
   launcher: "Launcher line match, never counted,",
 };
@@ -191,10 +204,10 @@ export function lateLine(recording: Recording, timeline: Timeline, late: readonl
     const owner = step(fire);
     return `${fire.alert.rule.title} on ${owner ? stepLabel(recording, owner) : fire.alert.step}, ${raisedAfterEnd(timeline, fire, "it")}`;
   });
-  return `${together.length} ${what} raised late: ${named.join("; ")}.`;
+  return `${together.length} ${what} raised after their steps ended: ${named.join("; ")}.`;
 }
 
-export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[], matches: ReturnType<typeof stepMatches>): StepMoment | null {
+export function momentOf(timeline: Timeline, frame: Frame, matches: ReturnType<typeof stepMatches>): StepMoment | null {
   const segment = frame.segment;
   if (!segment) return null;
   const now = frame.time;
@@ -217,12 +230,11 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
     late: frame.late,
     events: frame.events,
     fired: frame.alerts,
-    all,
     heard,
     named: heard.find(countsForScore) ?? null,
     namedLab: heard.find((alert) => countsAsAlert(alert) && alert.rule.origin === "lab") ?? null,
     landed,
-    matchByDetector: matches.byDetector,
+    matchByDetector: firedMatches(heard),
     matchOf: matches.strongest,
   };
 }
@@ -235,7 +247,7 @@ export function momentOf(timeline: Timeline, frame: Frame, all: readonly Alert[]
  * counts into the run from the first step, like the clock and the race track.
  */
 export function firstAlertClock(recording: Recording, facts: RunFacts, first: FirstAlert): { seconds: number; words: string } | null {
-  if (recording.kind === "attack path") return first.secondsFromFirstTest === null ? null : { seconds: first.secondsFromFirstTest, words: "after the first test step" };
+  if (recording.kind === "attack path") return first.secondsFromFirstTest === null ? null : { seconds: first.secondsFromFirstTest, words: `after the first ${unitWord(recording)} began` };
   return { seconds: (first.real - facts.start) / 1000, words: "into the run" };
 }
 
@@ -254,8 +266,8 @@ export interface RunFacts {
   end: number;
   /**
    * Real time (ms) at which an attack path reaches its goal: `score.goal_seconds`
-   * after its first step's recorded start, as the format counts it. Null
-   * without a goal time.
+   * after its first step's recorded start, as the format counts it, taken as
+   * the end of the step it names to the millisecond. Null without a goal time.
    */
   goal: number | null;
   /**
@@ -278,7 +290,10 @@ export function runFacts(recording: Recording, timeline: Timeline): RunFacts {
   // A running recording has no end yet: without steps its run has only begun.
   const end = last ? last.realEnd : timeOf(recording.source.finished ?? recording.source.started);
   const seconds = recording.kind === "attack path" ? recording.score.goal_seconds : undefined;
-  const goal = seconds === undefined || raceStart === null ? null : raceStart + seconds * 1000;
+  // The goal is the end of a step, and `goal_seconds` is that end to the millisecond, as the import checks it:
+  // a goal rounded a fraction of a millisecond past the last step's end still falls inside the run.
+  const counted = seconds === undefined || raceStart === null ? null : raceStart + seconds * 1000;
+  const goal = counted === null ? null : (recording.steps.map((item) => (item.ended === undefined ? Number.NaN : timeOf(item.ended))).find((ended) => Math.abs(ended - counted) <= 1) ?? counted);
   const roles = new Map(recording.steps.map((step) => [step.id, step]));
   const found = timeline.fires.find(({ alert }) => countsForScore(alert) && roles.get(alert.step)?.role !== "test");
   const step = found ? roles.get(found.alert.step) : undefined;
