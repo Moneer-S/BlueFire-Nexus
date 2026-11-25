@@ -1558,6 +1558,13 @@ the manifest says why, and `bluefire-lab range score` exits 1.
 The `range-one` job keeps `recording.json`, the three ECS files and
 `replay.html` in its artifact, and shows the path's score in its summary.
 
+The app ships the recording of
+[run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)
+as `bluefire/data/recordings/lab-range-one-path.json`. The loop at the top of
+the [front page](../README.md) and the single page
+[`docs/live-view/attack-path.html`](../docs/live-view/attack-path.html) play it
+([the run on the front page](../docs/LIVE_VIEW.md#the-run-on-the-front-page)).
+
 **What a run shows.** In
 [run 45546532335](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45546532335)
 on a hosted runner (its job "range one's path, sealed and watched", and the

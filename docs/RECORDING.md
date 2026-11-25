@@ -343,7 +343,10 @@ one finished recording, with the note on where it comes from
 file and plays one in the live view; the
 [user guide](USER_GUIDE.md#recorded-runs) says how. A recording shipped
 with the app is one that this repository's lab workflow recorded in CI; it is
-kept unchanged under `bluefire/data/recordings/`.
+kept unchanged under `bluefire/data/recordings/`. The single pages of the two
+the app ships, made in CI with that command, are in `docs/live-view/`:
+`attack-path.html` of the attack path, which the front page's loop shows, and
+`replay.html` of the run on one Linux machine.
 
 On import the app refuses a recording, and names each problem, unless it
 follows this format and its parts agree with each other:

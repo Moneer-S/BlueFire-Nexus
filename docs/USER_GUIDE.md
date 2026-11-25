@@ -173,7 +173,10 @@ Wazuh watches three of the hosts
 ([CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)).
 Select it to watch each step cross the map of the network, with what the
 agents recorded and the race between the first alert and the attacker's goal
-(see [The map of a network](LIVE_VIEW.md#the-map-of-a-network)). An attack
+(see [The map of a network](LIVE_VIEW.md#the-map-of-a-network)). The same run
+plays without the app in the single page
+[`docs/live-view/attack-path.html`](live-view/attack-path.html), and the loop
+at the top of the [front page](../README.md) is made from it. An attack
 path counts steps where a test list counts tests: its card on **Runs** reads
 "1 of 11 steps alerted, 10 seen, 0 unseen" and gives the race in words: the
 first alert came after 1 min 16 s, 10 min 54 s before the attacker reached

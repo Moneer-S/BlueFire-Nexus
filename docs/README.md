@@ -6,8 +6,9 @@ These are the documents of BlueFire Nexus: how to watch a recorded attack run, h
 
 - [The live view](LIVE_VIEW.md): what the player shows for each step of a run, what it never shows, its two modes and its keys.
 - [Recorded runs in the app](USER_GUIDE.md#recorded-runs): the Runs screen, how to open a recorded run, its address, and how to import a recording.
-- [The replay page](live-view/replay.html): one recorded run in a single HTML file. Download it and open it in any browser, offline.
-- [The run on the front page](LIVE_VIEW.md#the-run-on-the-front-page): what that run was and where it was made.
+- [The attack path's page](live-view/attack-path.html): the attack path through a network of seven hosts, in a single HTML file. Download it and open it in any browser, offline.
+- [The replay page](live-view/replay.html): the run of published tests on one Linux machine, in a single HTML file, opened the same way.
+- [The run on the front page](LIVE_VIEW.md#the-run-on-the-front-page): what that attack path was and where it was made, and [the run on one Linux machine](LIVE_VIEW.md#the-run-on-one-linux-machine).
 
 ## Change a defense and see before and after
 

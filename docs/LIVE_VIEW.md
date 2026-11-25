@@ -14,7 +14,11 @@ path through range one, a network of seven containers watched by Wazuh,
 recorded in
 [CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964).
 Open it on the Runs screen, where it is listed first, or write it as one page
-with `bluefire recordings page 20261125T054314Z-037227 --out path.html`.
+with `bluefire recordings page 20261125T054314Z-037227 --out path.html`. That
+page, made in CI, is
+[`docs/live-view/attack-path.html`](live-view/attack-path.html); the run on one
+Linux machine shipped with the app is
+[`docs/live-view/replay.html`](live-view/replay.html).
 
 ## What it shows, and what it never shows
 
@@ -549,47 +553,90 @@ and does not link it.
 The pictures of the live view are made in CI, on a clean runner, never on a
 developer's machine. After its browser tests, the job `screens in a browser`
 of the app workflow (`.github/workflows/app.yml`) runs
-`frontend/tests/pictures/live-view.ts` against the real service and the
-shipped recording. It makes the replay page with `bluefire recordings page`
-and takes pictures of it, paused at moments it finds by the steps' outcomes:
-the first alert on a test, the unseen test, a test seen with no alert, a
-hardened rerun that was stopped, analyse mode with the whole run and with the
-unseen test's detail, and the first alert again at 1920 by 1080. Inside the app
-it takes the Overview, which leads with the shipped run and the turns of the
-loop (`app-overview.png`), the Runs screen, its part "Before against after"
-with the two comparisons shipped with the app (`app-runs-pair.png`), the page
-of the pair of runs (`app-pair.png`) and the page of the run evaluated with two
-rule sets (`app-rule-pair.png`), each with both stages drawn, and the
-recorded run's page on the first alert, at 1920 by 1080 so that every rule
-title fits. Before that it opens the recorded run's page at 1440 by 900 too,
-on the first alert, and on the test with the longest command, whose command
-takes two lines under the host. It also makes `live-view-loop.gif`,
-a loop of the live view playing, 1000 pixels wide, at six tenths of the view's
-speed (`frontend/tests/pictures/loop.ts`). It starts on the moment of the
-first alert on a test, the picture `watch-first-alert.png`, held a second, so
-that a still or a link preview shows that moment. It goes on to the step after
-it, held two seconds, then plays the alerted test from the moment its step
-begins up to its first frame again, so it loops with no seam. Each frame is
+`frontend/tests/pictures/live-view.ts` against the real service and the two
+recordings shipped with the app. It makes the single replay page of each with
+`bluefire recordings page`: `replay.html` of the run on one Linux machine and
+`attack-path.html` of the attack path.
+
+Of the run on one Linux machine it takes pictures of its page, paused at
+moments it finds by the steps' outcomes: the first alert on a test, the unseen
+test, a test seen with no alert, a hardened rerun that was stopped, analyse
+mode with the whole run and with the unseen test's detail, and the first alert
+again at 1920 by 1080.
+
+Of the attack path it takes pictures of its page at moments it finds by what
+the steps are: late in the step that runs from the web server to the build
+server and was matched by a published rule below alert level, the step that
+logs in there with the key it found and copies files back, seen with no alert
+and with "Fix this" (`path-no-alert.png`, 1440 by 900), and the end of the
+last step, the goal reached, at 1920 by 1080 (`path-goal-wide.png`).
+
+Inside the app it takes the Overview, which leads with the attack path and the
+turns of the loop (`app-overview.png`), the Runs screen with
+both recorded runs, its part "Before against after" with the two comparisons
+shipped with the app (`app-runs-pair.png`), the page of the pair of runs
+(`app-pair.png`) and the page of the run evaluated with two rule sets
+(`app-rule-pair.png`), each with both stages drawn, the run on one Linux
+machine in analyse mode after a click on the first row of the table, the test
+no sensor recorded (`app-analyse.png`, 1920 by 1080), and that run's page on
+the first alert, at 1920 by 1080 so that every rule title fits. Before that it
+opens the recorded run's page at 1440 by 900 too, on the first alert, and on
+the test with the longest command, whose command takes two lines under the
+host.
+
+It also makes `live-view-loop.gif`, the loop at the top of the
+[README](../README.md), from the attack path's page, 1000 pixels wide at 10
+frames a second (`frontend/tests/pictures/loop.ts`). Its first frame is the
+end of the last step, the goal reached: every hop of the path drawn on the map,
+the first alert's mark on the web server, the goal's on the stand-in internet,
+both marks on the clock. It is held 2.5 s, so that a still or a link preview
+shows it. Then the first step plays from its start, four times as fast as the
+view since it is a long step, until a second after its alert has fired, held
+1.5 s; then the step that copies files back from the build server, twice as
+fast, from its start to late in it, held 1.5 s; then the last step from its start to its end,
+which is the first frame again, so the loop closes with no seam. Each frame is
 the page opened paused at one place of the recording, a step and how far into
 it as the address names it, so the same recording gives the same frames on any
-machine; [sharp](https://github.com/lovell/sharp) puts them together. It fails
-if a page prints an error, if the replay page asks for anything beyond its own
-file or the app for anything beyond the service, if a picture or the page at
-1440 by 900 would show a rule title cut short or a wrapped one reaching the
-next rule engine, if the host's label reaches below the map, if the race line
-of a watched moment is cut short, or if the lanes' time axis has no label past
-its middle. It also fails if the step after the first alert is not a test that
-no sensor recorded, because the caption under the loop in the
-[README](../README.md) says it is.
+machine; [sharp](https://github.com/lovell/sharp) puts them together.
+
+Each picture is taken when the page is at rest: no animation runs, nothing on
+the page moves from one frame to the next, and two pictures taken one after the
+other are the same. Inside the app three more things are settled first. The top
+bar must say "Connected" before the pictures and after them: it says
+"Connection unchecked" for a moment when its last check of the service is more
+than 30 seconds old. A screen is pictured from its top, since one opened from a
+scrolled screen can keep a few pixels of the old scroll. And the app's
+entrance animation, once ended, is let go, so the page is drawn as its own
+style draws it rather than as the animation's last frame, which can come out a
+shade apart. Three runs of the script on one commit give the same bytes in
+every file.
+
+The script fails if a page prints an error, if a replay page asks for anything
+beyond its own file or the app for anything beyond the service, if a picture
+or the page at 1440 by 900 would show a rule title cut short or a wrapped one
+reaching the next rule engine, if the host's label reaches below the map, if
+the race line of a watched moment is cut short, or if the lanes' time axis has
+no label past its middle. It also fails, with the sentence to change, if the
+attack path no longer bears out what the [README](../README.md) says of it:
+the caption under the loop (Wazuh's stock rules alerted on the first step, the
+password guessing against the web server, about a minute in; the goal, the
+build server's signing secret on the stand-in internet, was reached about
+eleven minutes after that, by a last step no rule alerted on), "Read what no
+rule alerted on" (every step after the first seen with no alert, and the step
+of its picture matched by a published rule below alert level), and "Find what
+nobody saw" (pressing Analyse in the app lists the test no sensor recorded
+first).
 
 The run keeps them for 90 days as the artifact `live-view-pictures`: the
-pictures, the loop, the page `replay.html` they show, and `SOURCE.txt`, which names the
-recording, the CI run that recorded it, each shipped pair and the CI run that
-made it, and the commit the pictures were made from.
+pictures, the loop, the two pages they show, and `SOURCE.txt`, which names the
+two recordings, the CI runs that recorded them, each shipped pair and the CI
+run that made it, and the commit the pictures were made from.
 
 The pictures of the [README](../README.md) in `docs/assets/front/`, the
-picture of [the run on the front page](#the-run-on-the-front-page)
-(`docs/assets/screenshots/live-view-first-alert.png`) and the page
+pictures of [the run on the front page](#the-run-on-the-front-page) and of
+[the run on one Linux machine](#the-run-on-one-linux-machine) in
+`docs/assets/screenshots/`, and the pages
+[`docs/live-view/attack-path.html`](live-view/attack-path.html) and
 [`docs/live-view/replay.html`](live-view/replay.html) are files of that
 artifact, copied in unchanged; `docs/assets/front/SOURCE.txt` and
 `docs/assets/screenshots/live-view-source.txt` name the run that made them
@@ -597,8 +644,8 @@ and the artifact file each one is, and the artifact's own `SOURCE.txt` names
 the recordings they show. To renew them, take
 the artifact `live-view-pictures` of a run of the app workflow on `main`, copy
 the files over the committed ones byte for byte, and update those notes from the
-artifact's `SOURCE.txt`. The page holds the recording, so when the recording
-changes, the page's entries in `.secrets.baseline` change with those of the
+artifact's `SOURCE.txt`. A page holds its recording, so when a recording
+changes, its page's entries in `.secrets.baseline` change with those of the
 recording.
 
 The browser test `frontend/tests/service/replay-page.spec.ts`, run by the app
@@ -610,8 +657,36 @@ mode, the score at the end, and that the page makes no request.
 
 ## The run on the front page
 
-The loop at the top of the [README](../README.md) plays the recording shipped
+The loop at the top of the [README](../README.md) plays the attack path shipped
 with BlueFire. These are its numbers and the CI run that made it.
+
+![The live view at the end of the attack path: every hop drawn on the map of seven hosts, from the attacker's machine to the web server, on to the database and the build server and out to the stand-in internet, the goal marked reached there, the one alert marked on the web server, and the race line above the map](assets/screenshots/live-view-path-goal.png)
+
+[The lab](../lab/README.md#range-one-its-hosts) built range one, seven
+containers on networks with no route out, from one spec file on a
+GitHub-hosted runner, and ran a path of eleven steps through it, each a
+published Atomic Red Team test, while Wazuh 4.14.10 with its stock rules
+watched the web server, the database and the build server through an agent on
+each. The first step guessed passwords against the web server's SSH until one
+got in, and Wazuh raised its first alert on it 01:16.4 into the run: rule
+40112, "Multiple authentication failures followed by a success." The path went
+on from the web server, found a private SSH key, logged in to the build server
+with it, copied files back with the build's signing secret among them, and
+uploaded them to the stand-in internet: the goal, "build's signing secret
+reaches inet", was reached 12:10.5 into the run, 10 min 54 s after the first
+alert. The other ten steps were recorded and no rule alerted
+on them; none was unseen and none was stopped, since the range has no active
+response. No rule raised a false alert on the ordinary work beside the path
+([CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)).
+
+Watch this run in the app: start it with [`docker compose up app`](INSTALLATION.md#look-at-the-current-source-with-docker), open the address it prints, then **Runs**, where it is listed first. Or open `docs/live-view/attack-path.html` from a clone in any browser, with nothing installed: double-click it, or drag it onto a browser window.
+
+## The run on one Linux machine
+
+The app ships a second recording, of published tests run one after another on
+one Linux machine. The front page's sections on what nobody saw, on hardening
+and on before against after are about this run. These are its numbers and the
+CI run that made it.
 
 ![The live view at the first alert on a test: the host, its two sensors, the rule engines, the events and the score](assets/screenshots/live-view-first-alert.png)
 
