@@ -15,7 +15,7 @@ import { activeProviderKind, backPath, browserStorage, candidates, draftKey, has
 import { originWords, recordedRunPath, RUNNING_POLL_MS } from "../lib/recorded-runs";
 import { chipField, codeSpans, isOneRun, pairChangeWords, priceLead, resultWords, verdictParts } from "../lib/recording-pairs";
 import { stepRows, type StepRow } from "../live/analyse";
-import { clockTime, comparedStep, count, outcomeClass, outcomeWords, plural, roleWords, sensorColours, stepLabel } from "../live/format";
+import { clockTime, count, outcomeClass, outcomeWords, plural, sensorColours, stepLabel } from "../live/format";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
 import { readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
@@ -98,9 +98,8 @@ function FixView({ recording, row, recordingId, file, sha256, list }: { recordin
   const start = startWith(recording, step, row.matches);
   const colours = sensorColours(recording.network.sensors);
   const sensors = sensorsOf(recording, row);
-  const compared = comparedStep(recording, step);
-  const label = stepLabel(recording, step);
-  const role = step.role === "test" ? label : compared ? `${roleWords(step.role)} of ${stepLabel(recording, compared)}` : `${roleWords(step.role)}, ${label}`;
+  // The step's one name, as every other screen gives it: "test 39", "hardened rerun of test 12", "the control".
+  const role = stepLabel(recording, step);
   const labWord = step.outcome_with_lab_rules !== undefined && step.outcome_with_lab_rules !== step.outcome ? step.outcome_with_lab_rules : null;
 
   return <div className="lv fx-view">

@@ -8,8 +8,9 @@ import type { Recording } from "./recording";
 import { eventsByStep } from "./recording";
 import { buildTimeline, frameAt, seekStep, stepMatchesInFiringOrder, stepPosition } from "./playback";
 import type { Timeline } from "./playback";
-import { clockTime, day, elapsed, isLabDetector, placeInRole, plural, runLink, sensorColours } from "./format";
+import { capital, clockTime, day, elapsed, isLabDetector, plural, runLink, sensorColours, sharedUnseenWords, stepLabel } from "./format";
 import { lateLine, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
+import { FreeText } from "./FreeText";
 import { NetworkMap } from "./NetworkMap";
 import { EventLog } from "./EventLog";
 import { StepCaption } from "./StepCaption";
@@ -31,13 +32,30 @@ export interface LiveMoment {
 
 export interface LiveViewProps {
   recording: Recording;
-  /** Where the recording comes from, in the words of whoever shows it: shown, as text, under the title. */
+  /** Where the recording comes from, in the words of whoever shows it: who checked what. Shown, as text, when the line under the title is opened. */
   origin?: string;
+  /**
+   * What the line under the title calls the run: "A real run" for one shipped
+   * with BlueFire or recorded by the lab's own CI, "An imported run, not
+   * verified by BlueFire", "A run of unknown origin" for a page that does not
+   * say, and "A run" when nothing is given.
+   */
+  originKind?: OriginKind;
   initial?: { step?: string; at?: number; paused?: boolean; mode?: LiveMode; select?: string };
   /** Starts fixing a step. When absent, "Fix this" in watch mode opens the step's detail, and the detail offers no "Fix this". */
   onFix?: (stepId: string) => void;
   /** Told where the viewer is when the step, the mode, the chosen step or the pause changes, and when the clock moves while paused. */
   onMoment?: (moment: LiveMoment) => void;
+}
+
+export type OriginKind = "shipped" | "lab run" | "imported" | "unsaid";
+
+/** The run in a few plain words, by where it comes from. */
+function runWords(kind: OriginKind | undefined): string {
+  if (kind === "shipped" || kind === "lab run") return "A real run";
+  if (kind === "imported") return "An imported run, not verified by BlueFire";
+  if (kind === "unsaid") return "A run of unknown origin";
+  return "A run";
 }
 
 const SPEEDS = [1, 4, 16] as const;
@@ -59,14 +77,20 @@ function startTime(timeline: Timeline, initial: LiveViewProps["initial"]): numbe
   return seekStep(timeline, initial.step, initial.at ?? 0.6) ?? 0;
 }
 
-/** Where the recording comes from: a line under the title that opens the tool versions. It does not change while playing. */
-const Provenance = memo(function Provenance({ recording }: { recording: Recording }) {
+/**
+ * Where the recording comes from: one quiet line under the title that says what
+ * the run is and when it was recorded, and opens to the rest: who checked what,
+ * the CI run that made it, the tool versions and the notes. It does not change
+ * while playing.
+ */
+const Provenance = memo(function Provenance({ recording, origin, originKind }: { recording: Recording; origin: string | undefined; originKind: OriginKind | undefined }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const popId = useId();
   const source = recording.source;
   const runUrl = runLink(source);
-  const ran = recording.steps.length > 0;
+  // A run that finished has run, also when it holds no step; only a recording with neither is a plan.
+  const ran = recording.steps.length > 0 || source.finished !== undefined;
   const close = () => {
     setOpen(false);
     trigger.current?.focus();
@@ -82,22 +106,29 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
     >
       {ran ? (
         <button type="button" className="lv-prov-button" ref={trigger} aria-expanded={open} aria-controls={popId} onClick={() => setOpen((value) => !value)}>
-          {source.finished ? "Recorded" : "Recording"} on a {source.environment}, {day(source.started)} &middot; <u>tool versions</u>
+          <span className="lv-prov-what">
+            {runWords(originKind)}, {source.finished ? `recorded ${day(source.started)}` : `recording since ${day(source.started)}`} on a {source.environment}
+          </span>
+          {/* Where the line is cut short, its end, which opens the rest, stays on screen. */}
+          <span className="lv-prov-more">
+            {" "}
+            &middot; <u>details</u>
+          </span>
         </button>
       ) : (
         <span className="lv-prov-plan">A plan: nothing has run on this network yet</span>
       )}
-      {ran && runUrl ? (
-        <>
-          <span className="lv-prov-sep"> &middot; </span>
-          <a className="lv-prov-link" href={runUrl} target="_blank" rel="noreferrer noopener" title={`The CI run that made this recording: ${runUrl}`}>
-            CI run (github.com)
-          </a>
-        </>
-      ) : null}
       {open ? (
         <div className="lv-prov-pop" id={popId}>
           <h3>Where this recording comes from</h3>
+          {origin === undefined ? null : <p className="lv-prov-origin">{origin}</p>}
+          {runUrl ? (
+            <p>
+              <a href={runUrl} target="_blank" rel="noreferrer noopener" title={runUrl}>
+                The CI run that made this recording (github.com)
+              </a>
+            </p>
+          ) : null}
           <dl>
             {source.tools.map((tool) => (
               <div key={`${tool.name}:${tool.role}`}>
@@ -111,17 +142,12 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
           <p>
             {source.engine} on a {source.environment}, {source.finished ? `${source.started} to ${source.finished}` : `from ${source.started}, still running`}.
           </p>
-          {runUrl ? (
-            <p>
-              <a href={runUrl} target="_blank" rel="noreferrer noopener">
-                The run that made this recording (github.com)
-              </a>
-            </p>
-          ) : null}
           {recording.notes.length > 0 ? (
             <ul>
               {recording.notes.map((note) => (
-                <li key={note}>{note}</li>
+                <li key={note}>
+                  <FreeText text={note} />
+                </li>
               ))}
             </ul>
           ) : null}
@@ -135,7 +161,7 @@ const Provenance = memo(function Provenance({ recording }: { recording: Recordin
 });
 
 /** The wordmark, the run's title and where the recording comes from. */
-const Brand = memo(function Brand({ recording, origin, notice }: { recording: Recording; origin: string | undefined; notice: AddressNotice | null }) {
+const Brand = memo(function Brand({ recording, origin, originKind, notice }: { recording: Recording; origin: string | undefined; originKind: OriginKind | undefined; notice: AddressNotice | null }) {
   return (
     <div className="lv-brand">
       <div className="lv-brand-row">
@@ -147,8 +173,7 @@ const Brand = memo(function Brand({ recording, origin, notice }: { recording: Re
         </span>
         <h1 className="lv-run-title">{recording.title}</h1>
       </div>
-      <Provenance recording={recording} />
-      {origin === undefined ? null : <p className="lv-origin">{origin}</p>}
+      <Provenance recording={recording} origin={origin} originKind={originKind} />
       {notice === null ? null : <AddressLine notice={notice} />}
     </div>
   );
@@ -220,7 +245,7 @@ function PlayIcon({ playing }: { playing: boolean }) {
   );
 }
 
-export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveViewProps) {
+export function LiveView({ recording, origin, originKind, initial, onFix, onMoment }: LiveViewProps) {
   const timeline = useMemo(() => buildTimeline(recording), [recording]);
   const firstMode: LiveMode = recording.steps.length > 0 ? (initial?.mode ?? "watch") : "watch";
   const [time, setTime] = useState(() => startTime(timeline, initial));
@@ -333,7 +358,8 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   const hardened = useMemo(() => recording.steps.filter((step) => step.role === "hardened").length, [recording]);
   const onlyHardenedStop = useMemo(() => recording.steps.every((step) => step.outcome !== "stopped" || step.role === "hardened"), [recording]);
   const allSteps = `${plural(recording.steps.length, "step")} in all`;
-  const widestPlace = useMemo(() => recording.steps.map((step) => placeInRole(recording, step)).reduce((widest, place) => (place.length > widest.length ? place : widest), ""), [recording]);
+  const widestName = useMemo(() => recording.steps.map((step) => capital(stepLabel(recording, step))).reduce((widest, name) => (name.length > widest.length ? name : widest), ""), [recording]);
+  const unseenBasis = useMemo(() => sharedUnseenWords(recording), [recording]);
   // Ordinary activity has no times in a recording, so while watching, its false alerts are told only at the end.
   // They are counted from ordinary activity, so they are shown only with it: the reader refuses the count without it.
   const falseAlerts = recording.ordinary && (mode === "analyse" || frame.ended) ? recording.score.false_alerts : undefined;
@@ -382,7 +408,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
   return (
     <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`}>
       <header className="lv-top">
-        <Brand recording={recording} origin={origin} notice={notice} />
+        <Brand recording={recording} origin={origin} originKind={originKind} notice={notice} />
         <div className="lv-score-wrap">
           {hasSteps ? (
             <div className="lv-score" aria-label={mode === "watch" ? "The score so far" : "The score"}>
@@ -391,13 +417,14 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
                   <b>{score.alerted}</b>
                   <span>/ {decided}</span>
                 </div>
-                <span className="lv-score-label">tests alerted</span>
+                {/* While the run plays the counts go up: the head says so, so two moments of one run do not read as two runs. */}
+                <span className="lv-score-label">{mode === "watch" && !frame.ended ? "tests alerted so far" : "tests alerted"}</span>
               </div>
               <div className={`lv-score-item is-seen${score.seen === 0 ? " is-zero" : ""}`} title="Tests a sensor recorded, and no published rule at alert level matched">
                 <b>{score.seen}</b>
                 <span>seen, no alert</span>
               </div>
-              <div className={`lv-score-item is-unseen${score.unseen === 0 ? " is-zero" : ""}`} title="Tests that took effect, and nothing of them was recorded">
+              <div className={`lv-score-item is-unseen${score.unseen === 0 ? " is-zero" : ""}`} title={unseenBasis ? `Tests that took effect and were not seen. The recording says: ${capital(unseenBasis)}.` : "Tests that took effect and were not seen: each one's detail says what the recording holds of it"}>
                 <b>{score.unseen}</b>
                 <span>unseen</span>
               </div>
@@ -411,12 +438,12 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
                 </div>
               ) : null}
               {hardened > 0 || score.stopped > 0 ? (
-                <div className={`lv-score-item lv-score-reruns is-stopped${score.stopped === 0 ? " is-zero" : ""}`} title="Not tests: tests run again with a hardening change in place, and how many the change stopped">
+                <div className={`lv-score-item lv-score-reruns is-stopped${score.stopped === 0 ? " is-zero" : ""}`} title="Hardened reruns, not in the score of tests: tests run again with a hardening change in place, and how many the change stopped">
                   <b>
                     {score.stopped}
-                    {onlyHardenedStop && hardened > 0 ? <small> / {hardened}</small> : null}
+                    {onlyHardenedStop && hardened > 0 ? <small> of {hardened}</small> : null}
                   </b>
-                  <span>{onlyHardenedStop && hardened > 0 ? "reruns stopped" : "steps stopped"}</span>
+                  <span>{onlyHardenedStop && hardened > 0 ? "repeated tests stopped" : "steps stopped"}</span>
                 </div>
               ) : null}
             </div>
@@ -425,7 +452,7 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
             <button type="button" aria-pressed={mode === "watch"} onClick={() => switchMode("watch")}>
               Watch
             </button>
-            <button type="button" aria-pressed={mode === "analyse"} onClick={() => switchMode("analyse")} disabled={!hasSteps} title={hasSteps ? undefined : "Nothing has run on this network yet, so there is nothing to analyse"}>
+            <button type="button" aria-pressed={mode === "analyse"} onClick={() => switchMode("analyse")} disabled={!hasSteps} title={hasSteps ? undefined : recording.source.finished !== undefined ? "This run holds no step, so there is nothing to analyse" : "Nothing has run on this network yet, so there is nothing to analyse"}>
               Analyse
             </button>
           </div>
@@ -435,7 +462,10 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
       {mode === "watch" && !hasSteps ? (
         <div className="lv-main is-plan">
           <NetworkMap recording={recording} moment={null} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
-          <p className="lv-plan-note">{planWords(recording)}</p>
+          <p className="lv-plan-note">
+            {recording.source.finished !== undefined ? "This run finished with no steps: nothing ran as a step on this network. " : ""}
+            {planWords(recording)}
+          </p>
         </div>
       ) : mode === "watch" ? (
         <>
@@ -476,12 +506,12 @@ export function LiveView({ recording, origin, initial, onFix, onMoment }: LiveVi
             </div>
             <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} onSeek={jump} />
             <div className="lv-stepno">
-              <b>{segment ? placeInRole(recording, segment.step) : ""}</b>
-              {/* Holds the column at the width of the longest place, so the scrubber beside it does not move under the pointer. */}
+              <b>{segment ? capital(stepLabel(recording, segment.step)) : ""}</b>
+              {/* Holds the column at the width of the longest name, so the scrubber beside it does not move under the pointer. */}
               <b className="lv-stepno-sizer" aria-hidden="true">
-                {widestPlace}
+                {widestName}
               </b>
-              <span>{allSteps}</span>
+              <span>{segment ? `${segment.index + 1} of ${plural(recording.steps.length, "step")}` : allSteps}</span>
             </div>
           </footer>
         </>

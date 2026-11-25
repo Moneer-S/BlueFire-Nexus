@@ -39,7 +39,7 @@ test("the shipped pair opens from Runs, reads as a claim with its price, opens a
   const detail = page.getByRole("region", { name: "Clear Bash history (echo), before and after" });
   await expect(detail.getByRole("heading", { name: "Clear Bash history (echo), before and after" })).toBeFocused();
   await expect(detail.getByRole("article")).toHaveCount(2);
-  await expect(detail.getByRole("article").first()).toContainText("It took effect, and no sensor recorded it.");
+  await expect(detail.getByRole("article").first()).toContainText("It took effect, and nothing of the test was recorded besides its launcher's start.");
   await page.goBack();
   await expect(detail).toHaveCount(0);
   await page.goBack();

@@ -1,5 +1,6 @@
-// The recorded runs on the Runs screen: what the service keeps, newest first,
-// each opening in the live view, and one control to import a recording file.
+// The recorded runs on the Runs screen: what the service keeps, those shipped
+// with BlueFire first and each part newest first, each opening in the live
+// view, and one control to import a recording file.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, FileUp, GitCompareArrows, Radio, RotateCcw } from "lucide-react";
@@ -53,6 +54,9 @@ export function RecordedRuns() {
       void queryClient.invalidateQueries({ queryKey: ["recordings"] });
     },
   });
+  // The file goes to the service as it is, byte for byte, and is read there as the command line reads it:
+  // the same file is refused for the same reason whichever way it comes in, and the service keeps the
+  // bytes the lab wrote.
   const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
@@ -61,12 +65,10 @@ export function RecordedRuns() {
     let bytes: Uint8Array;
     try {
       bytes = await readBytes(file);
-      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch (error) {
-      setProblem({ message: `${file.name} is not a JSON file, so it was not sent: ${error instanceof Error ? error.message : "it could not be read"}.`, problems: [] });
+      setProblem({ message: `${file.name} could not be read, so it was not sent: ${error instanceof Error ? error.message : "the file could not be read"}.`, problems: [] });
       return;
     }
-    // The file goes as it is: the service keeps the bytes the lab wrote.
     importing.mutate(bytes);
   };
   // A recording that is one side of a listed pair is listed with its pair, not again on its own:
@@ -83,7 +85,7 @@ export function RecordedRuns() {
     <header className="panel-header">
       <div>
         <h2 id="recorded-runs-heading">Recorded runs</h2>
-        <p>Real runs, recorded step by step with what the sensors saw and which rules fired. Open one to watch it.</p>
+        <p>Runs recorded step by step with what the sensors saw and which rules fired. Those shipped with BlueFire are real runs of this repository's CI; imported ones are shown as their files say. Open one to watch it.</p>
       </div>
       <div className="recorded-runs-actions">
         <Button size="small" variant="ghost" aria-label="Refresh recorded runs" onClick={() => { void recordings.refetch(); }} disabled={recordings.isFetching}><RotateCcw aria-hidden="true" />Refresh</Button>

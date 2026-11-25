@@ -2,7 +2,7 @@
 
 import type { Alert, Outcome, Recording, RecordingEvent, Step, StepRole } from "./recording";
 import { alertsByStep, countsAsAlert, countsForScore, eventsByStep } from "./recording";
-import { plural, stepLabel } from "./format";
+import { onlyItsLaunch, plural, stepLabel, unseenWords } from "./format";
 import { stepEnd, stepMatchesInFiringOrder } from "./playback";
 import type { Timeline } from "./playback";
 
@@ -153,17 +153,19 @@ export function otherRuns(recording: Recording, step: Step): Step[] {
 
 /**
  * The tests seen with no alert, split by what the published rules made of
- * them: a match for review, a match on the launcher line only, or nothing.
- * The last are the furthest from an alert.
+ * them, by the table's rule: a match for review (low or medium), only
+ * informational matches, which nobody reviews, a match on the launcher line
+ * only, or nothing. The last are the furthest from an alert.
  */
-export function seenBreakdown(recording: Recording): { total: number; review: number; launcher: number; none: number } {
+export function seenBreakdown(recording: Recording): { total: number; review: number; info: number; launcher: number; none: number } {
   const alerts = alertsByStep(recording);
-  const result = { total: 0, review: 0, launcher: 0, none: 0 };
+  const result = { total: 0, review: 0, info: 0, launcher: 0, none: 0 };
   for (const step of recording.steps) {
     if (step.role !== "test" || step.outcome !== "seen") continue;
     const groups = groupMatches(alerts.get(step.id) ?? []);
     result.total += 1;
-    if (groups.review.length > 0) result.review += 1;
+    if (groups.review.some((alert) => alert.rule.level !== "informational")) result.review += 1;
+    else if (groups.review.length > 0) result.info += 1;
     else if (groups.launcher.some((alert) => alert.rule.origin === "pinned")) result.launcher += 1;
     else result.none += 1;
   }
@@ -192,10 +194,12 @@ export function fixHint(recording: Recording, step: Step, matches?: MatchGroups)
     const recorded = otherRuns(recording, step)
       .filter((other) => other.outcome === "alerted" || other.outcome === "seen")
       .sort((a, b) => Number(b.outcome === "alerted") - Number(a.outcome === "alerted") || a.order - b.order);
-    if (recorded.length === 0) return "No sensor recorded it: start with a sensor.";
+    // Why a sensor is the place to start, in the recording's own words; for the lab, its one record is the harness's own start of the command.
+    const why = onlyItsLaunch(step) ? "its only record is the harness's own launch of its command, which never counts" : unseenWords(step);
+    if (recorded.length === 0) return `Start with a sensor: ${why}.`;
     const named = recorded.slice(0, 3).map((other) => `${stepLabel(recording, other)} ${other.outcome === "seen" ? "seen" : "alerted"}`);
     const more = recorded.length > 3 ? ` and ${recorded.length - 3} more` : "";
-    return `Start with a sensor: other runs of ${step.technique.id} were recorded (${named.join(", ")}${more}).`;
+    return `Start with a sensor: ${why}. Other runs of ${step.technique.id} were recorded: ${named.join(", ")}${more}.`;
   }
   if (step.outcome !== "seen") return null;
   const rules = new Map<string, Alert>();

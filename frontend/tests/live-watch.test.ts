@@ -134,7 +134,7 @@ describe("the watch view's words and numbers", () => {
   const run = recording({
     steps: [
       step("1", 10, 10.2, { outcome: "alerted", visibility: { answer: "alert", basis: "rule", events: 1 } }),
-      step("2", 20, 21, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "none", events: 0 } }),
+      step("2", 20, 21, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "nothing of the test was recorded besides its launcher's start", events: 0 } }),
     ],
     events: [event("1-1", "1", 10.1)],
     alerts: [alert("a", "1", 10.1, ["1-1"])],
@@ -155,7 +155,7 @@ describe("the watch view's words and numbers", () => {
     const after = at(told + 0.05);
     expect(scoreOnScreen(timeline, before.frame, before.moment).unseen).toBe(0);
     expect(scoreOnScreen(timeline, after.frame, after.moment).unseen).toBe(1);
-    expect(whoIsWinning(run, after.frame, scoreOnScreen(timeline, after.frame, after.moment), runFacts(run, timeline))).toBe("1 of 2 tests so far got through without an alert, 1 not even recorded.");
+    expect(whoIsWinning(run, after.frame, scoreOnScreen(timeline, after.frame, after.moment), runFacts(run, timeline))).toBe("1 of 2 tests so far got through without an alert, 1 unseen.");
   });
 
   it("counts an alerted step when its alert reaches the rule engine, as the caption says it", () => {

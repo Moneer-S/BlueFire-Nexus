@@ -155,11 +155,12 @@ Resolve a refusal by fixing the graph, environment, or least-privilege profileâ€
 
 A recording is one file that holds a run an engine outside the app really
 carried out: the steps, what the sensors recorded, which rules matched, and the
-score ([Recordings](RECORDING.md)). **Runs** lists the recorded runs first,
-newest first: each says what it is (a test list or an attack path), where and
-when it was recorded, whether it shipped with BlueFire or was imported, its
-score in words, and "Still running" while its engine is still sending it. The
-runs of experiments from Build follow under **Experiment runs**.
+score ([Recordings](RECORDING.md)). **Runs** lists the recorded runs first:
+those shipped with BlueFire, then the imported ones, whatever their dates, each
+newest first. Each says what it is (a test list or an attack path), where and
+when it was recorded, "Shipped with BlueFire" or "Imported, not verified by
+BlueFire", its score in words, and "Still running" while its engine is still
+sending it. The runs of experiments from Build follow under **Experiment runs**.
 
 Under **Before against after** come the changes to the defense that the lab
 compared, in the order they were made: what changed, how the runs were made, in
@@ -184,8 +185,12 @@ alert rests on, and the price in the lab's words
 
 Select a recorded run to play it in the live view at `#/runs/recorded/<id>`.
 The address keeps the moment you are at (the step, the position in it, whether
-playback is paused, watch or analyse mode, and the chosen step), so a link or a
-reload opens the same place. An address that names a step the recording does
+playback is paused, watch or analyse mode, and the chosen step), so a reload of
+the same tab opens the same place. A session belongs to its tab: the address
+opened in another tab or browser asks for a connection code first. To show
+someone else a moment, write the run as one page with
+`bluefire recordings page <id> --out <file>` ([CLI](CLI.md)), share that page,
+and add the same query to the page's address. An address that names a step the recording does
 not hold gets one line that says so, and keeps naming that step until you move
 from where the view opened. In a small window the view behaves as the single
 replay page does: it grows with what it holds, the page scrolls, and at phone
@@ -221,8 +226,9 @@ hardened rerun, or a test that ran with arguments is never tied that way. The
 line says it is another run of the same list, not this one.
 
 To import a recording, select **Import a recording** on **Runs** and choose its
-JSON file, or run `bluefire recordings import <file>`. A recording the service
-refuses is not stored, and each problem it found is listed. An imported
+JSON file, or run `bluefire recordings import <file>`. Either way the service
+reads the file's own bytes, so it refuses the same file for the same reason. A
+recording the service refuses is not stored, and each problem it found is listed. An imported
 recording opens at once, with the service's note above the view: what BlueFire
 checked, and what it cannot confirm. A CI run that an imported file names is
 shown there as text, never as a link to the run that made the recording.

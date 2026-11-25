@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 
+from . import recordings
 from .api_context import API_PREFIX, JsonResult, PlatformService
 from .api_context import JsonObject as JsonObject
 from .api_routes import APIRoutes
@@ -35,6 +36,8 @@ MAX_REQUEST_BODY = 1_048_576
 # One recording file of up to 8 MiB (``recordings.MAX_RECORDING_BYTES``) in base64, in its
 # import envelope. The comparisons' import route reads a body this large too.
 MAX_RECORDING_REQUEST_BODY = 4 * -(-8 * 1024 * 1024 // 3) + 1024
+# The body of the largest recording file in base64 as the import's `recording_file`.
+_MAX_FILE_BODY = 4 * -(-recordings.MAX_RECORDING_BYTES // 3) + len('{"recording_file":""}')
 _REJECTION_CLOSE_SECONDS = 0.2
 _REJECTION_DISCARD_BYTES = 65_536
 _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
@@ -750,7 +753,8 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         body = self._read_json_object(
             self.platform_server.max_recording_body
             if path in (f"{API_PREFIX}/recordings", f"{API_PREFIX}/recordings/deltas")
-            else self.platform_server.max_request_body
+            else self.platform_server.max_request_body,
+            recording=path == f"{API_PREFIX}/recordings",
         )
         if body is None:
             return
@@ -1639,7 +1643,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json_object(self, limit: int) -> dict[str, Any] | None:
+    def _read_json_object(self, limit: int, *, recording: bool = False) -> dict[str, Any] | None:
+        """Read the request's JSON object, or answer the refusal and return None.
+
+        With ``recording``, a body over the limit holds a file over the recording
+        file's own limit, and is refused as the command line refuses that file: 422
+        ``recording_invalid`` with its reason.
+        """
+
         if self.headers.get_all("Transfer-Encoding", []):
             self._reject_unread_body(
                 HTTPStatus.BAD_REQUEST,
@@ -1660,6 +1671,15 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return None
         length = int(raw_length, 10)
+        if length > limit and recording and length > _MAX_FILE_BODY:
+            # Larger than the largest file in base64 in `{"recording_file":""}`: the file is
+            # over the file limit itself, refused as the command line refuses it, not by the
+            # body's own limit.
+            refusal = recordings.invalid_recording(recordings.file_too_large())
+            self._reject_unread_body(
+                refusal.status, refusal.code, refusal.message, details=refusal.details
+            )
+            return None
         if length > limit:
             self._reject_unread_body(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -1713,13 +1733,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         code: str,
         message: str,
         *,
+        details: JsonResult | None = None,
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
         """Reject before reading a body and close instead of parsing it as another request."""
 
         self.close_connection = True
         headers = {**(extra_headers or {}), "Connection": "close"}
-        self._error(status, code, message, extra_headers=headers)
+        self._error(status, code, message, details, extra_headers=headers)
         self._finish_rejected_request()
 
     def _finish_rejected_request(self) -> None:

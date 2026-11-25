@@ -25,7 +25,7 @@ export function OverviewPage() {
   const activeSummary = useActiveWorkSummary(DEMO_MODE ? undefined : activeWork);
   const recordings = useQuery({ queryKey: ["recordings"], queryFn: api.recordings });
   const pairs = useQuery({ queryKey: ["recording-deltas"], queryFn: api.recordingDeltas });
-  // The newest of what the Runs screen lists: a run of its own, or a pair whose runs it lists only with the pair.
+  // The newest of what the Runs screen lists: its first run of its own, or a pair whose runs it lists only with the pair.
   const newestRecorded = recordings.data && !pairs.isPending ? newestListed(recordings.data.recordings, pairs.data?.deltas ?? []) : null;
   const recent = runs.data?.runs.slice(0, 4);
   const unavailable = runs.data?.unavailable_run_count ?? 0;
@@ -71,7 +71,7 @@ export function OverviewPage() {
 
       <section className="work-section overview-recent-work" aria-labelledby="recent-work-heading">
         <header className="work-section-heading"><h2 id="recent-work-heading">Recent outcomes</h2><div className="work-section-actions"><Link to="/runs">View all<ArrowRight aria-hidden="true"/></Link><Button variant="ghost" size="small" aria-label="Refresh runs" disabled={runs.isFetching} onClick={() => { void runs.refetch(); }}><RotateCcw aria-hidden="true"/><span className="sr-only">{runs.isFetching ? "Refreshing" : "Refresh runs"}</span></Button></div></header>
-        {newestRecorded && "run" in newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.run.id)}><Radio aria-hidden="true"/><span>Watch the newest recorded run: <strong>{newestRecorded.run.title}</strong><small>{originWords(newestRecorded.run.origin)} · {recordedScoreWords(newestRecorded.run)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
+        {newestRecorded && "run" in newestRecorded ? <Link className="overview-recorded" to={recordedRunPath(newestRecorded.run.id)}><Radio aria-hidden="true"/><span>Watch the first recorded run on Runs: <strong>{newestRecorded.run.title}</strong><small>{originWords(newestRecorded.run.origin)} · {recordedScoreWords(newestRecorded.run)}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {newestRecorded && "pair" in newestRecorded ? <Link className="overview-recorded" to={pairPath(newestRecorded.pair.id)}><GitCompareArrows aria-hidden="true"/><span>See the newest change to the defense, before against after: <strong>{pairChangeWords(newestRecorded.pair)}</strong><small>{originWords(newestRecorded.pair.origin)} · {(newestRecorded.pair.comparable ? movedWords(newestRecorded.pair) : null) ?? pairResultWords(newestRecorded.pair).replaceAll("`", "")}</small></span><ArrowRight aria-hidden="true"/></Link> : null}
         {runs.isError ? <><ErrorState title="Run history unavailable" error={runs.error} retry={() => runs.refetch()}/>{recent ? <p className="workspace-note">Showing previously loaded runs. Their current state could not be checked.</p> : null}</> : null}
         {unavailable > 0 ? <p className="workspace-note" role="status">{unavailable} run {unavailable === 1 ? "record is" : "records are"} unavailable. Only readable records are shown.</p> : null}

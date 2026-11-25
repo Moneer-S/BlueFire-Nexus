@@ -207,7 +207,9 @@ class _Checker:
         if parent.get(key) is not None:
             return True
         if required:
-            self.fail(f"{where}.{key}", "is missing.")
+            # A null is there and holds nothing: it is not missing.
+            message = "is null; it must be given." if key in parent else "is missing."
+            self.fail(f"{where}.{key}", message)
         elif key in parent and not null:
             self.fail(f"{where}.{key}", "is null; a value that is not known is left out.")
         return False
@@ -486,7 +488,12 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         if len(fields) > _MAX_FIELDS or any(
             not isinstance(item, (str, int, float, bool, type(None)))
             or (isinstance(item, str) and len(item) > _MAX_FIELD)
-            or (isinstance(item, int) and abs(item) > _MAX_FIELD_NUMBER)
+            # A number is bounded however it is written: 1e300 and 9007199254740993 alike.
+            or (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and abs(item) > _MAX_FIELD_NUMBER
+            )
             for item in fields.values()
         ):
             check.fail(
@@ -539,10 +546,12 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.seconds(score, key, "score")
 
     notes = value.get("notes")
-    if not isinstance(notes, list) or any(
-        not isinstance(note, str) or len(note) > _MAX_LINE for note in notes
-    ):
+    if not isinstance(notes, list) or any(not isinstance(note, str) for note in notes):
         check.fail("notes", "must be a list of plain sentences.")
+    else:
+        for index, note in enumerate(notes):
+            if len(note) > _MAX_LINE:
+                check.fail(f"notes[{index}]", f"is longer than {_MAX_LINE} characters.")
     if not check.problems and started is not None:
         _check_agreement(value, started, finished, check)
     if check.problems:
@@ -575,6 +584,7 @@ def _check_agreement(
     sensor_hosts = {sensor["id"]: sensor["host"] for sensor in value["network"]["sensors"]}
     detector_when = {item["id"]: item["when"] for item in value["network"]["detectors"]}
     event_steps = {event["id"]: event["step"] for event in events}
+    event_hosts = {event["id"]: event["host"] for event in events}
     event_times = {event["id"]: (_time(event["time"]), event["time"]) for event in events}
     held = Counter(event["step"] for event in events)
     # The earliest time of each kind on each step, as (time, the recording's own text).
@@ -642,6 +652,8 @@ def _check_agreement(
             check.fail(f"{where}.events", "is empty, but an alert that counts matched an event.")
         if any(event_steps[event_id] != alert["step"] for event_id in alert["events"]):
             check.fail(f"{where}.events", "names an event of another step.")
+        if any(event_hosts[event_id] != alert["host"] for event_id in alert["events"]):
+            check.fail(f"{where}.host", "is not the host of the events the alert matched.")
         # An alert's moment: when it was raised, for a live detector, else its time.
         live = detector_when.get(detector) == "live" and "raised" in alert
         moment = alert["raised"] if live else alert["time"]
@@ -1045,11 +1057,17 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"{value} is not a JSON number")
 
 
+def file_too_large() -> RecordingError:
+    """The refusal of a recording over the size limit, the same at every door."""
+
+    return RecordingError([f"A recording file is limited to {MAX_RECORDING_BYTES} bytes."])
+
+
 def parse_recording_bytes(payload: bytes) -> Mapping[str, Any]:
     """Parse and check one recording file's bytes."""
 
     if len(payload) > MAX_RECORDING_BYTES:
-        raise RecordingError([f"A recording file is limited to {MAX_RECORDING_BYTES} bytes."])
+        raise file_too_large()
     try:
         value = json.loads(
             payload.decode("utf-8"),
@@ -1406,9 +1424,7 @@ class RecordingLibrary:
                         [f"The recording cannot be written as JSON: {exc}"]
                     ) from None
             if len(payload) > MAX_RECORDING_BYTES:
-                raise RecordingError(
-                    [f"A recording file is limited to {MAX_RECORDING_BYTES} bytes."]
-                )
+                raise file_too_large()
             if recording["id"] == DELTAS_ADDRESS:
                 raise RecordingError(
                     [f"id {DELTAS_ADDRESS!r} is the address of the comparisons; give the "
@@ -1520,12 +1536,14 @@ class RecordingLibrary:
 def _file_bytes(value: Any) -> bytes:
     """The bytes of a file sent in base64."""
 
-    limit = 4 * -(-MAX_RECORDING_BYTES // 3)
-    if not isinstance(value, str) or len(value) > limit:
+    if not isinstance(value, str):
         raise RecordingError(
             [f"recording_file must be the file's bytes in base64, at most {MAX_RECORDING_BYTES} "
              "bytes."]
         )  # fmt: skip
+    if len(value) > 4 * -(-MAX_RECORDING_BYTES // 3):
+        # A file over the limit, refused as the command line refuses it.
+        raise file_too_large()
     try:
         return base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):

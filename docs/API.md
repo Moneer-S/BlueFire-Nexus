@@ -545,7 +545,15 @@ answered by the shipped file (`created: false`, `sha256` the shipped file's). A
 name the new file would take that is held by something else is `409
 recording_unreadable`. A recording that does not follow the format, or
 whose parts disagree, is `422 recording_invalid`; `details.problems` lists up to
-20 problems in plain words, and the message starts with the first. Imports into
+20 problems in plain words, and the message starts with the first. The Runs
+screen and `bluefire recordings import` both send a file as `recording_file`,
+and its bytes are read as strictly as a file: bytes that are not strict UTF-8
+JSON (a key twice in one object, `NaN` or `Infinity`, a byte order mark, bytes
+that are not UTF-8, more after the recording's object) are `422
+recording_invalid`, with the same reason whichever way the file came in. A file
+over 8 MiB is refused the same way, also when its body is over the route's
+limit: that one is answered from its `Content-Length` alone. A body that is not
+JSON is `400 invalid_json`. Imports into
 one runs directory, from the server or the command line, take one lock in turn;
 when it cannot be had within five seconds the import is
 `503 recordings_busy` and nothing is stored.

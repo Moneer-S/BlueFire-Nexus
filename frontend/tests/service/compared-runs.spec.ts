@@ -112,7 +112,7 @@ test("the pair shipped with the app is listed on Runs and read on its own page a
   await expect(detail.getByRole("article")).toHaveCount(2);
   const [before, after] = await detail.getByRole("article").all();
   if (!before || !after) throw new Error("The detail should show both runs.");
-  await expect(before).toContainText("It took effect, and no sensor recorded it.");
+  await expect(before).toContainText("It took effect, and nothing of the test was recorded besides its launcher's start.");
   await expect(after).toContainText("1 event recorded");
   const opened = page.url();
   await page.goBack();

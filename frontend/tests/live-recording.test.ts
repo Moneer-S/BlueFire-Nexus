@@ -132,7 +132,8 @@ describe("refusing a wrong value in a field the view shows", () => {
     ["a visibility", ["steps", 0, "visibility", "events"], Number.NaN, 'The events counted for Step "1" is not a number.'],
     ["a hardening change", ["steps", 0, "defense"], { title: "Mount /tmp noexec" }, 'Why the hardening change of Step "1" is deployed is not text.'],
     ["an event", ["events", 0, "user"], 0, 'The user of Event "1-1" is not text.'],
-    ["an event's fields", ["events", 0, "fields"], { exit: { code: 1 } }, 'The field "exit" of Event "1-1" is not text, a number, true or false, null or a list of text.'],
+    ["an event's fields", ["events", 0, "fields"], { exit: { code: 1 } }, 'The field "exit" of Event "1-1" is not text, a number no further than 2^53 from zero, true or false, null or a list of text.'],
+    ["an event's fields, with a number past 2^53 written as a float", ["events", 0, "fields"], { size: 1e300 }, 'The field "size" of Event "1-1" is not text, a number no further than 2^53 from zero, true or false, null or a list of text.'],
     ["a rule", ["alerts", 0, "rule", "id"], 12, 'The rule id of Alert "a1" is not text.'],
     ["ordinary activity", ["ordinary"], { events: 5, matches: [{ rule: "R", level: "high", count: "3" }] }, "The count of match 1 on ordinary activity is not a number."],
     ["the score", ["score", "seen"], "1", "The score's seen is not a number."],
@@ -192,6 +193,14 @@ describe("refusing what the page could not show truthfully, as the service does 
     ["a step that starts before the step before it has ended", (value) => Object.assign(value.steps[1] ?? {}, { started: at(10.5) }), 'Step "2" starts before Step "1", the step before it, has ended: its started is earlier than that step\'s end, and steps do not overlap.'],
     ["an event of a step stamped inside the next step", (value) => value.events.splice(1, 0, event("1-2", "1", 20.3)), 'Step "2" begins before Step "1", the step before it, ends: a step\'s start, events and alerts come after the end, events and alerts of the step before it.'],
     ["an alert whose moment is earlier than the first event it names", (value) => Object.assign(value.alerts[0] ?? {}, { time: at(20.3) }), 'Alert "a1" is earlier than the earliest event it matched: its time, 2026-01-01T10:00:20.300Z, comes before that event.'],
+    [
+      "an alert on another host than the events it names",
+      (value) => {
+        value.network.hosts.push({ id: "other", name: "other", role: "another host", kind: "host" });
+        Object.assign(value.alerts[0] ?? {}, { host: "other" });
+      },
+      'Alert "a1" is on the host "other", but an event it matched is on another host: an alert is on the host of its events.',
+    ],
     ["false alerts without ordinary activity", (value) => Object.assign(value.score, { false_alerts: 7 }), "The score's false_alerts is set, but the recording has no ordinary activity to count it from."],
     ["a rule listed twice in ordinary activity", (value) => Object.assign(value, { ordinary: { events: 100, matches: [{ rule: "Sudo Use", level: "high", count: 1 }, { rule: "Sudo Use", level: "high", count: 1 }] } }), 'Match 2 on ordinary activity names the rule "Sudo Use" again; each rule is listed once.'],
     ["a rule that matched more ordinary events than there were", (value) => Object.assign(value, { ordinary: { events: 0, matches: [{ rule: "Sudo Use", level: "high", count: 1000000 }] } }), "The count of match 1 on ordinary activity, 1000000, is more than the 0 events of ordinary activity."],

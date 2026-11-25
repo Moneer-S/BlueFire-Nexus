@@ -56,9 +56,18 @@ describe("the recordings in the service's client", () => {
     const [url, options] = fetch.mock.calls[0] ?? [];
     expect(url).toBe("/api/v1/recordings");
     expect(options?.method).toBe("POST");
-    const body = JSON.parse(String(options?.body)) as { recording_file: string };
-    expect(Object.keys(body)).toEqual(["recording_file"]);
-    expect(Array.from(atob(body.recording_file), (character) => character.charCodeAt(0))).toEqual(Array.from(file));
+    const sent = (init: RequestInit | undefined) => {
+      const body = JSON.parse(String(init?.body)) as { recording_file: string };
+      expect(Object.keys(body)).toEqual(["recording_file"]);
+      return Array.from(atob(body.recording_file), (character) => character.charCodeAt(0));
+    };
+    expect(sent(options)).toEqual(Array.from(file));
+
+    // A byte order mark, a key twice and a NaN: the service is to see them, as the command line does.
+    const odd = answer(201, { created: true, replaced: false, summary });
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('{"id": "lab-run-1", "id": "again", "n": NaN}')]);
+    await api.importRecording(bytes);
+    expect(sent(odd.mock.lastCall?.[1])).toEqual(Array.from(bytes));
 
     answer(422, { error: { code: "recording_invalid", message: "The recording is not valid: score.alerted is 2, but the steps give 1.", details: { problems: ["score.alerted is 2, but the steps give 1.", "score.seen is 1, but the steps give 0."] } } });
     const refusal = await api.importRecording(new TextEncoder().encode("{}")).catch((error: unknown) => error);
