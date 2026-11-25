@@ -456,8 +456,10 @@ def build(folder: Path) -> dict:
     made = lab.known(
         schema="bluefire.recording/1",
         id=manifest["run_id"],
-        title=f"{lab.count(len(tests), 'step')} of {lab.count(len(distinct), 'published test')} in "
-        f"{manifest.get('range')}",
+        # What a person reads first on a card: what this is, in a stranger's words. The range's own
+        # name and the count of published tests are in the description below.
+        title=f"An attack path of {lab.count(len(tests), 'step')} through a network of "
+        f"{lab.count(len(spec['hosts']), 'host')}",
         kind="attack path",
         source=lab.known(
             engine="bluefire-lab",
@@ -490,8 +492,9 @@ def build(folder: Path) -> dict:
                 part
                 for part in (
                     str(spec.get("sentence") or "").strip(),
-                    "The engine ran each published test of the path in turn inside the sealed range, through "
-                    "docker exec as the step's account."
+                    f"The engine ran the path's {lab.count(len(tests), 'step')} in turn inside the sealed "
+                    f"range {manifest.get('range')}, through docker exec as the step's account. The steps ran "
+                    f"{lab.count(len(distinct), 'published test')}."
                     if manifest.get("result") == "sealed"
                     else f"The engine started {lab.count(len(tests), 'step')} of the path's "
                     f"{len(path.get('planned') or tests)} in turn, through docker exec as the step's account; "
