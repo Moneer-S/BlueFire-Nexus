@@ -587,6 +587,41 @@ def test_a_race_the_clock_check_does_not_back_is_labelled_and_has_no_recording(t
     assert not (folder / recording.FILE).exists()
 
 
+def test_a_counting_alert_whose_archived_line_is_missing_gives_no_recording(tmp_path: Path) -> None:
+    # The manager raised 40112 on webadmin's login, but the login's line did not reach the archive.
+    archive = [make() for name, (make, _) in LINES.items() if name != "webadmin's login"]
+    login = LINES["webadmin's login"][0]()
+    alerts = [alert_on(login, "40112", 12, "Multiple authentication failures followed by a success.")]
+    folder = small_run(tmp_path, archive, alerts)
+
+    assert engine.rescore(folder) == 1
+    manifest = json.loads((folder / "manifest.json").read_text())
+
+    assert manifest["score"]["path"]["race"]["result"] is True
+    error = manifest["recording"]["error"]
+    assert "rule 40112 at 2026-" in error and "not in the archive (a delivery gap)" in error
+    assert not (folder / recording.FILE).exists()
+
+
+@pytest.mark.parametrize("level", [5, 15])
+def test_a_spec_whose_alert_level_is_not_the_formats_gives_no_recording(tmp_path: Path, level: int) -> None:
+    folder = small_run(tmp_path)
+    rewrite(
+        folder,
+        lambda m: m["spec"].update(
+            text=m["spec"]["text"].replace("alert_level: 12", f"alert_level: {level}")
+        ),
+    )
+
+    assert engine.rescore(folder) == 1
+    manifest = json.loads((folder / "manifest.json").read_text())
+
+    assert manifest["score"]["path"]["alert_level"] == level
+    error = manifest["recording"]["error"]
+    assert f"alert_level is {level}" in error and "set the level back to 12" in error
+    assert not (folder / recording.FILE).exists()
+
+
 def test_a_step_recorded_with_its_daemon_end_before_its_start_is_never_told_so(tmp_path: Path) -> None:
     # The daemon's times of s03, as a manifest can hold them: its end 0.749 s before its start. The folder was
     # scored once before, with a recording.

@@ -18,7 +18,9 @@ host it ran on or a path it was given (`score`); one that only falls inside
 its window is not the step's, and is not in the recording. A step that went to
 another host (`to` in the spec) is on that host, and comes `from` its own.
 A run whose race the score's clock check does not back as a result has no
-recording.
+recording, and neither has one the app's check would refuse: a counting alert
+whose archived line is not in the archive, or a spec whose alert level is not
+the level the format's words count from.
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ FILE = "recording.json"
 # Wazuh's levels in the words of the format: informational, low, medium, high and critical.
 WORDS = ((0, 3, "informational"), (4, 6, "low"), (7, 11, "medium"), (12, 14, "high"), (15, 15, "critical"))
 COUNTING = ("high", "critical")
+# The level the format's counting words start at: a score at another level cannot be written in them.
+FORMAT_LEVEL = min(low for low, _, word in WORDS if word in COUNTING)
 RULES_LOADED = re.compile(r"Total rules enabled: '([0-9]+)'")
 KINDS = {"creation": "file created", "change": "file changed", "deletion": "file deleted"}
 
@@ -257,6 +261,12 @@ def build(folder: Path) -> dict:
         # A step on the engine's clock, or a program start outside its step: the times are not shown to agree.
         raise ValueError(f"the run's race is not a result, so no recording is written: {race.get('says')}")
     alert_level = scored["alert_level"]
+    if alert_level != FORMAT_LEVEL:
+        raise ValueError(
+            f"the spec's defense.wazuh.alert_level is {alert_level}, but the recording format counts an alert "
+            f"from level {FORMAT_LEVEL} (its words high and critical), so no recording is written: set the level "
+            f"back to {FORMAT_LEVEL}, or read the score without a recording"
+        )
     defense = manifest.get("defense") or {}
     started, finished = run_times(folder)
     sensors = set(defense.get("agents") or [])
@@ -294,7 +304,19 @@ def build(folder: Path) -> dict:
         for document in on_step.get(step_id, []):
             rule = document.get("rule") or {}
             level = level_word((((document.get("wazuh") or {}).get("rule")) or {}).get("level"))
-            linked = placed.get((document.get("labels") or {}).get("event_id"))
+            event_id = (document.get("labels") or {}).get("event_id")
+            linked = placed.get(event_id)
+            if level in COUNTING and not linked:
+                # The format needs a counting alert to name the event it was raised on.
+                where = (
+                    " is not in the archive (a delivery gap)"
+                    if event_id is None
+                    else f", {event_id}, is not among the step's events"
+                )
+                raise ValueError(
+                    f"the alert of rule {rule.get('id')} at {document['@timestamp']} on {step_id} counts, but the "
+                    f"archived line it was raised on{where}, so no recording is written"
+                )
             host = (document.get("host") or {}).get("name")
             time = linked["time"] if linked else document["@timestamp"]
             # The manager's time can run behind the line's (see score.clock): raised is then left out, and

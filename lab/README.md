@@ -1515,6 +1515,12 @@ a recording, and the single page plays it:
 bluefire-lab replay <run folder>/recording.json --template bluefire/ui/replay.html --out replay.html
 ```
 
+The format counts an alert from level 12, so a run of a spec whose
+`defense.wazuh.alert_level` is another level writes no recording (set the
+level back to 12, or read the score without a recording), and nor does a run
+with an alert at level 12 or higher whose archived line is not in the archive:
+the manifest says why, and `bluefire-lab range score` exits 1.
+
 The `range-one` job keeps `recording.json`, the three ECS files and
 `replay.html` in its artifact, and shows the path's score in its summary.
 
