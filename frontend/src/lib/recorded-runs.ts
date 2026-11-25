@@ -3,7 +3,7 @@
 
 import type { LiveMoment, LiveViewProps } from "../live/LiveView";
 import type { Recording } from "../live/recording";
-import { count, day, plural, span } from "../live/format";
+import { count, day, plural, span, unitWord } from "../live/format";
 import type { DeltaSummary, RecordingList, RecordingOrigin, RecordingSummary } from "./api";
 
 /** How often a recording that is still running is asked for again, by every page that shows one. */
@@ -76,29 +76,40 @@ export function originWords(origin: Pick<RecordingOrigin, "kind">): string {
 }
 
 /**
- * The score in plain words: "3 of 60 tests alerted, 56 seen, 1 unseen". When
- * some tests did not take effect, the count says of how many: only a test that
- * took effect can alert, be seen or go unseen.
+ * The score in plain words: "3 of 60 tests alerted, 56 seen, 1 unseen", and of
+ * an attack path, in the live view's word for its steps: "1 of 11 steps
+ * alerted, 10 seen, 0 unseen". When some did not take effect, the count says
+ * of how many: only one that took effect can alert, be seen or go unseen.
  */
-export function recordedScoreWords(summary: Pick<RecordingSummary, "score" | "running">): string {
+export function recordedScoreWords(summary: Pick<RecordingSummary, "score" | "running" | "kind">): string {
   const score = summary.score;
+  const unit = unitWord(summary);
   const soFar = summary.running ? " so far" : "";
-  if (score.steps === 0) return summary.running ? "No test has run yet" : "No tests ran";
+  if (score.steps === 0) return summary.running ? `No ${unit} has run yet` : `No ${unit}s ran`;
   const rest = `${count(score.seen)} seen, ${count(score.unseen)} unseen${soFar}`;
-  if (score.took_effect === score.steps) return `${count(score.alerted)} of ${plural(score.steps, "test")} alerted, ${rest}`;
-  return `${count(score.alerted)} of the ${plural(score.took_effect, "test")} that took effect alerted, ${rest} (${plural(score.steps, "test")} ran)`;
+  if (score.took_effect === score.steps) return `${count(score.alerted)} of ${plural(score.steps, unit)} alerted, ${rest}`;
+  return `${count(score.alerted)} of the ${plural(score.took_effect, unit)} that took effect alerted, ${rest} (${plural(score.steps, unit)} ran)`;
 }
 
-/** For an attack path, the race in plain words when the recording measured it: "First alert after 4 min 12 s, the goal after 9 min 3 s". */
+/**
+ * For an attack path, the race in plain words when the recording measured it,
+ * and who won it: "The first alert came after 1 min 16 s, 10 min 54 s before
+ * the attacker reached the goal", or "The attacker reached the goal after
+ * 3 min, 12 s before the first alert". Both times count from the start of the
+ * first step.
+ */
 export function recordedRaceWords(summary: Pick<RecordingSummary, "score" | "kind">): string | null {
   if (summary.kind !== "attack path") return null;
-  const { first_alert_seconds: alert, goal_seconds: goal } = summary.score;
-  const parts: string[] = [];
-  if (alert !== undefined) parts.push(`first alert after ${span(alert * 1000)}`);
-  if (goal !== undefined) parts.push(`the goal after ${span(goal * 1000)}`);
-  if (parts.length === 0) return null;
-  const text = parts.join(", ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  const { first_alert_seconds: alert, goal_seconds: goal, alerted } = summary.score;
+  if (alert !== undefined && goal !== undefined) {
+    const gap = span(Math.abs(goal - alert) * 1000);
+    return alert <= goal
+      ? `The first alert came after ${span(alert * 1000)}, ${gap} before the attacker reached the goal`
+      : `The attacker reached the goal after ${span(goal * 1000)}, ${gap} before the first alert`;
+  }
+  if (alert !== undefined) return `The first alert came after ${span(alert * 1000)}`;
+  if (goal !== undefined) return `The attacker reached the goal after ${span(goal * 1000)}${alerted === 0 ? " with no alert" : ""}`;
+  return null;
 }
 
 /**

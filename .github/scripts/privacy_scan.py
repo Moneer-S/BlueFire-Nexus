@@ -63,6 +63,10 @@ FORBIDDEN_FOLDERS = {"node_modules", "__pycache__", ".pytest_cache", "runs", "bu
 APP_LAB_HOME = b"/home" b"/bluefire"
 # Range one's web host has an account of its own, which the path's steps search.
 RANGE_ONE_WEB_HOME = b"/home" b"/webadmin"
+# The path through range one that ships with the app names that home folder and, in
+# full, the two files of it that its steps read.
+RANGE_ONE_WEB_KEY = RANGE_ONE_WEB_HOME + b"/.ssh/id_rsa"
+RANGE_ONE_WEB_KNOWN_HOSTS = RANGE_ONE_WEB_HOME + b"/.ssh/known_hosts"
 # Range one's build host has an account of its own, whose files the ordinary activity writes.
 RANGE_ONE_CI_FILES = b"/home" b"/ci/*"
 # Range one's administrator account, whose logins to web the activity count's fixtures hold.
@@ -72,6 +76,9 @@ ACCEPTED_PATHS = {
     "bluefire/prepared_lab_install.py": (APP_LAB_HOME,),
     "bluefire/prepared_lab_runtime.py": (APP_LAB_HOME,),
     "docs/PREPARED_LINUX_LAB.md": (APP_LAB_HOME + b"/lab-isolation.json",),
+    "bluefire/data/recordings/lab-range-one-path.json": (
+        RANGE_ONE_WEB_HOME, RANGE_ONE_WEB_KEY, RANGE_ONE_WEB_KNOWN_HOSTS,
+    ),  # fmt: skip
     "lab/range/range-one.yaml": (RANGE_ONE_WEB_HOME, RANGE_ONE_CI_FILES),
     "lab/tests/test_range_path.py": (RANGE_ONE_WEB_HOME,),
     "lab/tests/fixtures/range/activity/archive.ndjson": (RANGE_ONE_OPS_HOME,),

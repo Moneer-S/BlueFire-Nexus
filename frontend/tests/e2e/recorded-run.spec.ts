@@ -1,8 +1,19 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { span } from "../../src/live/format";
 
-// The demo build ships the one real recording made in this repository's CI:
-// 60 published tests on one Linux host, one of which nothing recorded.
+/** The path through range one that the demo build ships, as its file holds it. */
+const rangePath = JSON.parse(readFileSync(join(resolve(process.cwd(), ".."), "bluefire/data/recordings/lab-range-one-path.json"), "utf-8")) as {
+  title: string;
+  network: { hosts: { name: string }[] };
+  score: { steps: number; alerted: number; seen: number; unseen: number; first_alert_seconds: number; goal_seconds: number };
+};
+
+// The demo build ships the real recordings made in this repository's CI: 60
+// published tests on one Linux host, one of which nothing recorded, and the
+// path of eleven steps of ten published tests through range one.
 
 /** Where the timeline stands, without its clock: "Test 11, seen: List OS Information, 13 of 91". */
 async function moment(page: Page): Promise<string> {
@@ -179,6 +190,29 @@ test("at phone width the recorded run's page stacks the live view's bands and sc
   await expect(page).toHaveURL(/\/fix\/43\?/);
   await expect(page.getByRole("region", { name: "Where to start" })).toContainText("Nothing of this test was recorded.");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("the demo lists the path through range one first, as an attack path with its score and its race, and opens it on the range's map", async ({ page }) => {
+  const problems: string[] = [];
+  page.on("pageerror", (error) => problems.push(String(error)));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("./#/runs");
+  // The title, the score and the race are the shipped file's own.
+  const { title, score, network } = rangePath;
+  expect(score.first_alert_seconds).toBeLessThan(score.goal_seconds);
+  const recorded = page.getByRole("region", { name: "Recorded runs" });
+  await expect(recorded.getByRole("listitem").first().getByRole("link")).toHaveText(title);
+  const path = recorded.getByRole("listitem").filter({ hasText: title });
+  await expect(path.getByText("Attack path", { exact: true })).toBeVisible();
+  await expect(path.getByText("Shipped with BlueFire", { exact: true })).toBeVisible();
+  await expect(path.getByText(`${score.alerted} of ${score.steps} steps alerted, ${score.seen} seen, ${score.unseen} unseen`, { exact: true })).toBeVisible();
+  const race = `The first alert came after ${span(score.first_alert_seconds * 1000)}, ${span((score.goal_seconds - score.first_alert_seconds) * 1000)} before the attacker reached the goal`;
+  await expect(path.getByText(race, { exact: true })).toBeVisible();
+  await path.getByRole("link", { name: title }).click();
+  await expect(page).toHaveURL(/#\/runs\/recorded\/[A-Za-z0-9_-]+/);
+  const map = page.getByRole("region", { name: "Network map" });
+  for (const host of network.hosts) await expect(map.getByText(host.name, { exact: true }).first()).toBeVisible();
+  expect(problems).toEqual([]);
 });
 
 test("a recording that is not there is said plainly, with the way back", async ({ page }) => {

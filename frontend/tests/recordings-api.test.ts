@@ -83,7 +83,7 @@ describe("the recordings in the demo build", () => {
     vi.resetModules();
   });
 
-  // These read and parse the three shipped recordings, about 1.1 MB each, which takes seconds on a busy machine.
+  // These read and parse the shipped recordings, about 1.2 MB each, which takes seconds on a busy machine.
   const SHIPPED_FILES_TIMEOUT = 30_000;
 
   async function demoApi() {
@@ -97,10 +97,16 @@ describe("the recordings in the demo build", () => {
     const demo = await demoApi();
     const list = await demo.recordings();
     expect(list).toMatchObject({ unreadable_count: 0, omitted_count: 0 });
-    // The example, the two runs of the shipped pair, and the run evaluated twice, once by its first file.
-    expect(list.recordings).toHaveLength(4);
-    expect(new Set(list.recordings.map((item) => item.id)).size).toBe(4);
+    // The example, the two runs of the shipped pair, the run evaluated twice, once by its first file, and the path through range one.
+    expect(list.recordings).toHaveLength(5);
+    expect(new Set(list.recordings.map((item) => item.id)).size).toBe(5);
     expect(list.recordings.every((item) => item.origin.kind === "shipped")).toBe(true);
+    // The path through range one, as a CI run of this repository recorded it; the loop below checks its entry against its file.
+    const path = list.recordings.find((item) => item.kind === "attack path");
+    expect(path).toMatchObject({ running: false, source: { environment: "GitHub-hosted runner" } });
+    expect(path?.source.run_url).toMatch(/^https:\/\/github\.com\/Moneer-S\/BlueFire-Nexus\/actions\/runs\/\d+$/);
+    expect(path?.score.first_alert_seconds).toBeGreaterThan(0);
+    expect(path?.score.goal_seconds).toBeGreaterThan(0);
     const shipped = list.recordings.find((item) => item.score.unseen === 1 && item.source.run_url?.endsWith("/45227119895"));
     expect(shipped).toMatchObject({
       title: "60 published tests on one Linux host",

@@ -9,8 +9,8 @@ keeps recordings: it lists them, returns one whole, imports one, plays one in
 its live view, and writes the single page of one (see "In the app" below).
 
 A recording is made from the files of a run by an engine that ran the steps for
-real: today `bluefire-lab` (published attack tests on one disposable host),
-later a range (a network of containers). Nothing in a recording is invented. A
+real: today `bluefire-lab`, on one disposable host or on a range (a network of
+disposable containers). Nothing in a recording is invented. A
 value the engine did not measure is left out, and the reader shows it as not
 known.
 

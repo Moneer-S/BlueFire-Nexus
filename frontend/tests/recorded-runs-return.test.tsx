@@ -154,7 +154,7 @@ describe("going back to Runs from a recorded run", { timeout: 20_000 }, () => {
 
     const row = await listed("Two steps toward a secrets file");
     expect(within(row).getByText("Imported, not verified by BlueFire")).toBeVisible();
-    expect(within(row).getByText("1 of 2 tests alerted, 1 seen, 0 unseen")).toBeVisible();
+    expect(within(row).getByText("1 of 2 steps alerted, 1 seen, 0 unseen")).toBeVisible();
     expect(window.location.hash).toBe("#/runs");
   });
 
@@ -174,7 +174,7 @@ describe("going back to Runs from a recorded run", { timeout: 20_000 }, () => {
 
     const after = await listed("Two steps toward a secrets file");
     expect(within(after).queryByText("Still running")).not.toBeInTheDocument();
-    expect(within(after).getByText("1 of 2 tests alerted, 1 seen, 0 unseen")).toBeVisible();
+    expect(within(after).getByText("1 of 2 steps alerted, 1 seen, 0 unseen")).toBeVisible();
   });
 
   it("lists a recording the service kept when its answer to the import was lost", async () => {
