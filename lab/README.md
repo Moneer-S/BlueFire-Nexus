@@ -527,10 +527,12 @@ control fails a run in which it does.
 6. `bluefire-lab replay` writes `replay.html` beside it: the app's single replay
    page (`bluefire/ui/replay.html` of the same checkout) with the recording put
    inside, which plays the run in a browser with nothing installed (see
-   [`docs/LIVE_VIEW.md`](../docs/LIVE_VIEW.md)). The job passes its own address
-   with `--run-url`, and the page says that the lab workflow made it in that CI
-   run. Written without that option, or by another run, the page says only which
-   CI run recorded the recording. It is part of the run's
+   [`docs/LIVE_VIEW.md`](../docs/LIVE_VIEW.md)). The command reads the CI run
+   it runs in from GitHub's own variables (`GITHUB_ACTIONS`,
+   `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`), and only when
+   that is the very run the recording names does the page say that the lab
+   workflow made it in that CI run. Written anywhere else, the page reads the
+   file as imported: it says the CI run the file names was not checked. It is part of the run's
    artifact `lab-run` too. The command fills the template as the app does,
    refuses one that does not hold exactly one recording element and one origin
    element, and never replaces an existing file.
@@ -658,9 +660,11 @@ managed"), and `python3 -m venv` needs the package `python3-venv`. The later
 commands in this file assume that environment is active.
 
 It needs Docker Engine 28 or later on a local endpoint (`unix://` or
-`npipe://`). Nothing in a range runs a published test yet: the containers of
-[`seal-check.yaml`](range/seal-check.yaml) run nothing but the official nginx
-image's web server, which gives the seal a real listener to connect to.
+`npipe://`). The containers of [`seal-check.yaml`](range/seal-check.yaml) run
+no published test: they run nothing but the official nginx image's web server,
+which gives the seal a real listener to connect to. A spec with a path, such as
+range one's, runs its published tests, on a developer's machine as in CI, but only inside
+the sealed range the engine created (see [range one: the path](#range-one-the-path)).
 
 Every network is created `--internal` with the isolated gateway mode, so that
 the Docker host has no address on it, and without IPv6. Every container is
@@ -683,7 +687,7 @@ checked in phases, each recorded in `seal.json`:
    [the defense of a range](#the-defense-of-a-range)): everything, the probes
    between the hosts and the listening ports included, with a connection that
    must work as the positive control.
-4. **after path**: everything again, where the path of published tests will
+4. **after path**: everything again, once the path of published tests has
    run.
 5. **teardown**: the event watch, after the teardown.
 
@@ -835,18 +839,21 @@ its build files without building or starting anything.
 A range's defense is Wazuh: one manager and an agent inside each host it
 watches. In [range one](#range-one-its-hosts) the agents are in `web`, `db`
 and `build`, and the run shows that what happens on each of them reaches the
-manager. No published test runs in it yet.
+manager. The path of published tests runs in it
+([range one: the path](#range-one-the-path)), and every step is scored
+([the score and the recording](#range-one-the-score-and-the-recording)).
 
 ```bash
 bluefire-lab range render lab/range/range-one.yaml --out <folder>   # optional: only writes the build files
-bluefire-lab range run lab/range/range-one.yaml --out <new folder> --hold 90
+bluefire-lab range run lab/range/range-one.yaml --out <new folder>
 ```
 
-`--hold 90` keeps the range up 90 s where the path will run, as CI does, so
-that cron starts each cron job of the
-[ordinary activity](#range-one-ordinary-activity) at least once. Without it
-the activity lasts well under a minute plus the engine's own steps, a cron job
-may not start at all, and the ordinary day is then "not scored".
+The path runs between the [ordinary activity](#range-one-ordinary-activity)'s
+warm-up and its tail, so the activity lasts as long as the path, which is long
+enough for cron to start each cron job at least once; CI runs it so, without
+`--hold`. `--hold <seconds>` keeps the sealed range up that much longer after
+the path; it is needed only when the spec has no path: without it, a cron
+job may not start at all and the ordinary day is then "not scored".
 
 - **The pieces.** The manager is the official `wazuh/wazuh-manager` 4.14.10
   image, pinned by digest, alone: no indexer and no dashboard, and its Filebeat
@@ -900,10 +907,11 @@ may not start at all, and the ordinary day is then "not scored".
     when the manager first sends it the shared configuration; the manager reads
     new agent keys every second.
 - **Alert level.** `defense.wazuh.alert_level` (12 in range one) is the
-  level from which a Wazuh alert will count as an alert when a step is scored,
+  level from which a Wazuh alert counts as an alert when a step is scored,
   and `manifest.json` records it. It is not the manager's `log_alert_level`,
   which keeps its stock value 3, so that `alerts.json` also holds the matches
-  below it for review. It changes no image. No step is scored yet.
+  below it for review. It changes no image. Each step is scored against it in
+  [the score and the recording](#range-one-the-score-and-the-recording).
 - **Ready.** After the seal's phase "no way out" and before its segmentation
   phase, within 180 s of the start: the manager's
   ports 1514 and 1515 answer; each agent's state file says it is connected and
@@ -919,7 +927,7 @@ may not start at all, and the ordinary day is then "not scored".
 - **Versions.** In each phase of the seal from the segmentation on,
   `agent_control` on the manager is run again, and the manager and every agent
   must report the pinned version.
-- **Delivery.** Where the path of published tests will run, the engine makes a
+- **Delivery.** Just before the path of published tests runs, the engine makes a
   few harmless marks on each agent host: three lines sent to syslog, a file
   created and then changed in each folder watched in real time, and one
   program start, and records when each reached the archive. After the seal is
@@ -986,7 +994,7 @@ inotify queue); the agent's logcollector had not written its counters yet and
 [`range/range-one.yaml`](range/range-one.yaml) describes a small network: a
 shop's web server, its database and its build server, watched by Wazuh, with
 an attacker, the shop's customers and a stand-in internet outside. Each host
-is built from the spec with what the path of published tests will need
+is built from the spec with what the path of published tests needs
 planted in it. The network has no route out: everything outside is in the
 range too.
 
@@ -1009,7 +1017,7 @@ included, so ranges built from the same stage share them; `inet`'s
 certificate is kept the same way.
 
 ```bash
-bluefire-lab range run lab/range/range-one.yaml --out <new folder> --hold 90
+bluefire-lab range run lab/range/range-one.yaml --out <new folder>
 bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files change
 ```
 
@@ -1100,7 +1108,7 @@ and `backup` none. That is one run of 2.44 minutes. What the stock rules
 raised on the jobs is scored in
 [the ordinary day](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
-- **Apart from the path.** The score will tell the path from ordinary activity
+- **Apart from the path.** The score tells the path from ordinary activity
   by account and address, so the loader refuses a job that runs as, or logs
   in as, an account the path uses (`webadmin` on `web`, and `deploy`, which a
   step's arguments name), and a job on or toward `attacker`, the host the path
@@ -1170,15 +1178,16 @@ raised on the jobs is scored in
   the first go to the last stop. Each job's last output and its own state are
   copied out of `/run/bluefire` into `raw/hosts/<host>/`.
 
-The `range-one` job holds the range 90 s where the path will run, since no
-path runs yet, so that the activity lasts more than two minutes and cron
-starts each cron job at least once. It shows `activity.md` in its summary and
+The `range-one` job runs the path between the activity's warm-up and its tail,
+so that the activity lasts more than two minutes and cron starts each cron job
+at least once. It shows `activity.md` in its summary and
 fails unless every job ran at least once and the line of at least one of its
 runs reached the archive. The delivery counts of the same run are taken with
 the jobs running, so the job's check for a delivery gap also shows whether
 every line still reaches the manager under that load. In
 [run 45337096555](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45337096555)
-on a GitHub-hosted runner the range was sealed and every job ran in the 2.4
+on a GitHub-hosted runner, made before the path existed with the range held
+90 s in its place, the range was sealed and every job ran in the 2.4
 minutes from the first go to the last stop: `browse` 15 times, `admin` twice,
 `cache` and `build` three times each and `backup` once. The line of every one
 of those runs reached the manager's archive, and the run had no delivery gap.
@@ -1231,7 +1240,9 @@ where the line says so. `labels.*` holds keyword values only:
   always the time the manager raised it.
 - `labels.origin`, and `labels.job` for an ordinary line, by the first rule
   that holds (`lab/bluefire_lab/range/score.py`): `engine` when snoopy tagged
-  the program start `engine:*` or the line holds the run's ID, which every
+  the program start `engine:*` (a program start snoopy logged is decided by
+  its tag alone, since a step's own command can name a mark file, as `s08`'s
+  tar of `/etc` on `build` does), or another line holds the run's ID, which every
   nonce and mark of the engine and the name of every mark file it makes carry
   (what the plant checks and the seal's probes leave behind, such as a login's
   session lines or a PHP session file, carries no ID); `cleanup` when snoopy
@@ -1315,19 +1326,21 @@ request reached the manager after the go and was counted as `browse`'s.)
 Zero false alerts here is a result about those 2.44 minutes and that work
 only.
 
-The engine's own seal probes and plant checks before the go and after the
-stop are not marked by the engine's tag or the run's ID, so they count as
-unattributed, as do the hosts' own start-up lines. Wazuh's stateful rules (a
+The lines that the engine's own seal probes and plant checks leave behind
+before the go and after the stop, such as a login's session lines, carry
+neither the engine's tag nor the run's ID, so they count as unattributed, as
+do the hosts' own start-up lines. Wazuh's stateful rules (a
 first time, a frequency, a rule that follows another) have already seen the
 plant checks' logins and sudo before the go, so a rule that fires only on a
 first occurrence may not fire on the jobs: in this run the plant check's sudo
 raised 5403 "First time user executed sudo." and `admin`'s sudo only 5402.
-Nothing here ties an event to a step of the path yet.
+This section does not tie events to steps of the path:
+[the score and the recording](#range-one-the-score-and-the-recording) does.
 
 ## Range one: the path
 
-`lab/range/range-one.yaml` holds the path of range one: eleven steps made of ten
-published tests. `bluefire-lab atomic argv lab/range/range-one.yaml --atomics
+`lab/range/range-one.yaml` holds the path of range one: eleven steps, which run
+ten published tests (the port scan runs twice, against two hosts). `bluefire-lab atomic argv lab/range/range-one.yaml --atomics
 <atomics folder> --out argv.json` writes, for each step, the argument vectors of
 its attack, its prereq checks and its cleanup, read from the pinned YAML as
 Invoke-AtomicRedTeam reads it. The job `atomic-parity` in
@@ -1379,8 +1392,20 @@ published cleanup where the spec asks for one. What happened is one of four:
 The path goes on after a step that failed. After the last step, the goal
 check reads files copied out of the range: `inet`'s first upload came from
 `web`, holds `tmp/stage/etc.tar.gz`, and that archive holds
-`buildbot/signing.env` byte for byte as it is on `build`. An event on the
-range that the engine did not cause stops the path and makes the run invalid.
+`buildbot/signing.env` byte for byte as it is on `build`. Three things stop
+the path and make the run invalid: an event on the range that the engine did
+not cause; an event watch that has stopped; and one that has not reported the
+start and end of a step's own command (its prerequisite check, its test or
+its cleanup) within 30 s after the command returned (the 15 s the engine
+always waits for them, and 15 s more, the time the watch is given to settle),
+so that nothing watched the seal. A slow daemon or runner is given
+that time: in runs
+[45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968),
+[45521926761](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45521926761)
+and
+[45524094071](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45524094071)
+every step's test and every cleanup was timed by the daemon's events, so the
+watch reported each of them within the first 15 s.
 A run leaves `raw/steps/<id>/` (the command, its standard output and error,
 and what the prerequisite check, the effect check and the cleanup printed),
 the steps and the goal in `manifest.json`, and `path.md`.
@@ -1406,8 +1431,12 @@ Limits:
   recognises: the step's `to`, a URL with a scheme, `user@host`,
   `/dev/tcp/<host>` and `/dev/udp/<host>`. It refuses an address that
   Python's `ipaddress` reads. It does not recognise a bare host name, nor an
-  address in a short, integer or hex form. This is an early, plain refusal of
-  mistakes; the seal is what keeps a step inside the range.
+  address in a short, integer or hex form. It refuses a step on a host that
+  runs a pinned image, which carries none of the published files, and a step
+  with a `to` whose command reaches, in those forms, a host its `to` does not
+  name, since the score ties a step's events on the hosts of its `to`. This is
+  an early, plain refusal of mistakes; the seal is what keeps a step inside the
+  range.
 - `blocked` cannot occur: range one configures no active response.
 
 In [run 45464907926](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45464907926),
@@ -1515,6 +1544,11 @@ a recording, and the single page plays it:
 bluefire-lab replay <run folder>/recording.json --template bluefire/ui/replay.html --out replay.html
 ```
 
+A page made so from a downloaded recording reads it as imported: it says that
+the file names a CI run which was not checked, and it does not link that run.
+Only the page the `range-one` job writes inside the very run the recording
+names says that run made it.
+
 The format counts an alert from level 12, so a run of a spec whose
 `defense.wazuh.alert_level` is another level writes no recording (set the
 level back to 12, or read the score without a recording), and nor does a run
@@ -1525,13 +1559,13 @@ The `range-one` job keeps `recording.json`, the three ECS files and
 `replay.html` in its artifact, and shows the path's score in its summary.
 
 **What a run shows.** In
-[run 45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968)
+[run 45546532335](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45546532335)
 on a hosted runner (its job "range one's path, sealed and watched", and the
 artifact `range-one-run`), the stock rules raised their first alert at level
-12 or higher 61.56 s after the first step started: rule 40112, "Multiple
+12 or higher 69.46 s after the first step started: rule 40112, "Multiple
 authentication failures followed by a success", on `s01`. The path reached its
-goal 628.44 s after that start, so the alert came 566.88 s before the goal.
-Beside it, on the ordinary day of 11.48 minutes: 0 false alerts at level 12 or
+goal 724.59 s after that start, so the alert came 655.13 s before the goal.
+Beside it, on the ordinary day of 13.11 minutes: 0 false alerts at level 12 or
 higher. The clock check held: 19 program starts in the steps' sessions, none
 outside its step's daemon times.
 
@@ -1545,31 +1579,51 @@ outside its step's daemon times.
 | s05b | web to db | 1 event | db | address 1 | none | seen |
 | s06 | web | 1 event | web | session 1 | none | seen |
 | s07 | web | 3 events | web | account 1, session 2 | none | seen |
-| s08 | web to build | 19 events | web 3, build 16 | account 17, session 1, address 1 | none | seen |
+| s08 | web to build | 20 events | web 3, build 17 | account 18, address 1, session 1 | none | seen |
 | s09 | web | 5 events | web | account 2, session 3 | none | seen |
 | s10 | web to inet | 1 event | web | session 1 | none | seen |
 
-One step alerted and ten were seen with no alert; none was unseen. **The two
-port scans are seen by one line each, and by nothing else.** On `build` it is
-sshd's line about a connection from `web`'s address that sent no SSH banner;
-on `db` it is MariaDB's line about a connection from `web`'s container that
-closed without authentication. Each is tied by the `address` rule because its
-text names `web`. The range has no network sensor, so a scan of every port
-shows only where an open port's service logs a broken connection. One run is
-one sample: how much this varies between runs is not yet shown.
+One step alerted and ten were seen with no alert; none was unseen. **Each of
+the two port scans is tied by one line only.** On `build` it is sshd's line
+saying that a connection from `web`'s address sent a banner in an invalid
+format (`banner exchange: ... invalid format`: the scan writes a bare newline
+to each port). Two more lines of the same sshd process, its start and a broken
+pipe, are in the archive but count only as coincident, since their text does
+not name `web`. On `db` it is MariaDB's line about a connection from `web`'s
+container that closed without authentication. Each is tied by the `address`
+rule because its text names `web`. Where a step is tied by the `address`
+rule alone, `score.md` and the recording quote its lines (up to three) in
+that step's own sentence, as this run's summary does for both scans. The
+range has no network sensor, so a scan of every port shows only where an open
+port's service logs a broken connection.
+
+One run is one sample. Three earlier hosted runs of the same job,
+[45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968),
+[45521926761](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45521926761)
+and
+[45524094071](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45524094071),
+gave the same outcome for every step, with the first alert after 61.56 s,
+77.05 s and 76.58 s and the goal after 628.44 s, 731.31 s and 730.87 s. They
+were scored before a program start that snoopy logged was counted for the
+engine by its tag alone, so `s08` has 19 events there: its own archive of
+`/etc` was counted as the engine's. Four runs do not say how far the times
+can vary.
 
 ## Not yet shown
 
-- Tests on Windows, and a lab on a local machine.
+- Tests on Windows.
 
 ## How to run it
 
-The workflow runs on pull requests that change `lab/`, on a weekly schedule,
-and by hand from the Actions tab. Attack tests run on GitHub-hosted runners
-only: `bluefire-lab run` refuses to start unless `RUNNER_ENVIRONMENT` is
-`github-hosted`, which GitHub sets on its own runners. That guards against
-starting it by mistake anywhere else; it cannot stop someone who sets the
-variable on purpose.
+The one-host bench's workflow runs on pull requests that change `lab/`, on a
+weekly schedule, and by hand from the Actions tab. Its attack tests run on
+the runner itself, so they run on GitHub-hosted runners only: `bluefire-lab
+run` refuses to start unless `RUNNER_ENVIRONMENT` is `github-hosted`, which
+GitHub sets on its own runners. That guards against starting it by mistake
+anywhere else; it cannot stop someone who sets the variable on purpose. A
+range is different: `bluefire-lab range run` runs its path of published tests
+in Docker on any machine, in CI or on a developer's, but only inside the
+sealed range's own containers (see [a range and its seal](#a-range-and-its-seal)).
 
 The answers can be computed again from a run's artifact, on any machine:
 

@@ -48,10 +48,25 @@ def replay(recording: Path, template: Path, out: Path, *more: str) -> int:
     return main(["replay", str(recording), "--template", str(template), "--out", str(out), *more])
 
 
-def test_the_page_holds_the_recording_and_the_lab_run_that_made_it(tmp_path: Path) -> None:
-    recording, template, out = write(tmp_path, a_recording())
+def in_run(monkeypatch: pytest.MonkeyPatch, run_id: str | None) -> None:
+    """Run the command as GitHub Actions would in the run with this ID, or outside any run."""
 
-    assert replay(recording, template, out, "--run-url", RUN_URL) == 0
+    for name in ("GITHUB_ACTIONS", "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
+        monkeypatch.delenv(name, raising=False)
+    if run_id is not None:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "example/lab")
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+
+
+def test_the_page_holds_the_recording_and_the_lab_run_that_made_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recording, template, out = write(tmp_path, a_recording())
+    in_run(monkeypatch, "123")
+
+    assert replay(recording, template, out) == 0
 
     page = out.read_text(encoding="utf-8")
     assert json.loads(element(page, "bluefire-recording")) == a_recording()
@@ -68,22 +83,19 @@ def test_the_page_holds_the_recording_and_the_lab_run_that_made_it(tmp_path: Pat
     assert page.endswith("<script>/* the page's own script */</script></body></html>")
 
 
-@pytest.mark.parametrize(
-    "more",
-    [[], ["--run-url", "https://github.com/example/lab/actions/runs/456"]],
-    ids=["by hand", "another run"],
-)
-def test_a_page_made_outside_the_run_that_recorded_it_only_says_where_the_recording_comes_from(
-    tmp_path: Path, more: list[str]
+@pytest.mark.parametrize("run_id", [None, "456"], ids=["outside CI", "another run"])
+def test_a_page_made_outside_the_run_the_file_names_says_that_run_was_not_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_id: str | None
 ) -> None:
     recording, template, out = write(tmp_path, a_recording())
+    in_run(monkeypatch, run_id)
 
-    assert replay(recording, template, out, *more) == 0
+    assert replay(recording, template, out) == 0
 
+    # The page reads an imported origin as the app does: it does not link the run the file names.
     assert json.loads(element(out.read_text(encoding="utf-8"), "bluefire-origin")) == {
-        "kind": "lab run",
-        "run_url": RUN_URL,
-        "note": f"Recorded by this repository's lab workflow in the CI run at {RUN_URL}.",
+        "kind": "imported",
+        "note": "Written by bluefire-lab replay from a file; the CI run it names was not checked.",
     }
 
 
@@ -138,8 +150,9 @@ def test_a_recording_that_names_no_run_gets_no_origin(tmp_path: Path) -> None:
     assert element(out.read_text(encoding="utf-8"), "bluefire-origin") == "null"
 
 
-def test_the_apps_own_template_is_filled(tmp_path: Path) -> None:
+def test_the_apps_own_template_is_filled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recording, _, out = write(tmp_path, a_recording())
+    in_run(monkeypatch, "123")
 
     assert replay(recording, TEMPLATE, out) == 0
 

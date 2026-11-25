@@ -50,10 +50,6 @@ def main(arguments: list[str] | None = None) -> int:
     paging.add_argument(
         "--out", type=Path, required=True, help="the page to write, a file that does not exist"
     )
-    paging.add_argument(
-        "--run-url",
-        help="address of the CI run writing the page; the page says that run made it if it made the recording",
-    )
 
     comparing = commands.add_parser(
         "compare", help="say what differs between two recordings, and whether one declared change explains it"
@@ -104,17 +100,25 @@ def main(arguments: list[str] | None = None) -> int:
     vectors.add_argument("--out", type=Path, required=True, help="the JSON file to write")
 
     ranging = commands.add_parser(
-        "range", help="bring a range up from its spec file, seal it, and take it down"
+        "range",
+        help="bring a range up from its spec file, seal it, run its path of published tests, and take it down",
     )
     actions = ranging.add_subparsers(dest="action", required=True)
     bringing = actions.add_parser(
-        "run", help="create the range, prove it is sealed, and take it down again (exit 3: the seal failed)"
+        "run",
+        help="create the range, prove it is sealed, run the spec's path of published tests inside it when the "
+        "spec has one and score what the defense saw, then take it down again (exit 1: refused, not ready, an "
+        "engine error or plants not in place; 3: the seal failed; 4: the run was made invalid)",
     )
     bringing.add_argument(
         "spec", type=Path, help="the range's spec file, for example lab/range/seal-check.yaml"
     )
     bringing.add_argument(
-        "--out", type=Path, required=True, help="new folder for seal.json and manifest.json"
+        "--out",
+        type=Path,
+        required=True,
+        help="new folder for seal.json and manifest.json; with a defense also score.md, and with a path "
+        "path.md and, when it can be written, recording.json",
     )
     bringing.add_argument(
         "--hold",
@@ -196,7 +200,7 @@ def main(arguments: list[str] | None = None) -> int:
     if options.command == "recording":
         return recording.main(options.folder, options.run_url, options.tests)
     if options.command == "replay":
-        return replay.main(options.recording, options.template, options.out, options.run_url)
+        return replay.main(options.recording, options.template, options.out)
     return report.main(options.folder)
 
 

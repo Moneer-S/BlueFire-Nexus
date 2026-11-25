@@ -391,7 +391,8 @@ jobs:
           done
 
       # What the defense made of each step is scored, and recording.json, the run in the format the
-      # app's live view plays, was written; the single replay page is made from it. The clock check must
+      # app's live view plays, was written; the single replay page is made from it, and says this run
+      # made it because the command reads this run from GitHub's own variables. The clock check must
       # pass, or the race is not a result and the job fails rather than show it.
       - name: Every step is scored, and the recording plays
         run: |
@@ -405,8 +406,7 @@ jobs:
             exit 1
           fi
           "$LAB" replay "$OUT/run/recording.json" --template bluefire/ui/replay.html \
-            --out "$OUT/run/replay.html" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            --out "$OUT/run/replay.html"
 
       - name: Summary
         if: always()
