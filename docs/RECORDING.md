@@ -248,9 +248,18 @@ how: `session` (in the test's login session), `launcher` (done by the shell
 that carried the test itself, such as a file it wrote), `account` (a program
 the test's account started during the step outside the lab's own sessions, such
 as one cron ran),
-`systemd` (started by systemd during a root test's window) or `window` (only
-inside the step's time window). `systemd` and `window` are ties by time, not by
-which process started which; `lab/README.md` gives the rules. Events tied to no
+`systemd` (started by systemd during a root test's window), `address` (the
+event's own source address is an address of the host the step ran on, as
+sshd's lines on web from the attacker's machine during a range's first step,
+or, on a host the step reached, its text names that address or that host's
+container name),
+`content` (the event names a path the step was given, such as a file
+integrity event for the file the step wrote) or `window` (only inside the
+step's time window). `address` and `content` are a range's ties, and like
+`account` they hold only inside the step's window. `systemd` and `window` are
+ties by time, not by which process started which; `lab/README.md` gives the
+rules. A range never writes an event tied by `window`: such an event is
+coincident with a step and does not count for it. Events tied to no
 step are not in the recording: the engine's own output holds them. For a step
 with very many events the recording keeps the first of them in time order and
 every event a rule matched, and the step's `visibility.kept` says how many it

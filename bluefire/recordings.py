@@ -103,7 +103,7 @@ _LEVELS = ("informational", "low", "medium", "high", "critical")
 _COUNTING_LEVELS = ("high", "critical")
 _TOOL_ROLES = ("tests", "executor", "sensor", "rules", "rule engine")
 _STEP_ROLES = ("test", "canary", "control", "hardened", "variant")
-_TIES = ("session", "launcher", "account", "systemd", "window")
+_TIES = ("session", "launcher", "account", "systemd", "address", "content", "window")
 # The largest whole number a browser's JSON reader holds exactly; past it a field's value
 # would be read as another number, and past about 10**308 as infinity, which it refuses.
 _MAX_FIELD_NUMBER = 2**53

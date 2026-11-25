@@ -7,8 +7,10 @@ holds where ECS has a clear home for it. The line itself stays whole under
 `event.ingested` for an event, `@timestamp` for an alert), so that each
 mapping can be checked against the line it came from.
 
-`labels.*` holds keyword values only: `labels.origin` and `labels.job` (see
-`score`), and `labels.time_source`, which says where `@timestamp` comes from:
+`labels.*` holds keyword values only: `labels.origin` and `labels.job`, and for
+a line tied to a step of the path `labels.step_id` and `labels.tied_by` (see
+`score`); `labels.event_id` on an alert names the `event.id` of its event in
+the archive; and `labels.time_source`, which says where `@timestamp` comes from:
 
 - `rsyslog`: the time rsyslog wrote on the line, in microseconds, which the
   manager decoded into `predecoder.timestamp`;
@@ -17,6 +19,10 @@ mapping can be checked against the line it came from.
   zone is the container's, which is UTC;
 - `manager`: the manager's own time of the event, for lines with no time of
   their source, such as file integrity events.
+
+`step` writes one line for each step of the path, at the Docker daemon's time
+of its test's start (`daemon`), or the engine's own where the daemon's was not
+matched (`engine clock`).
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ import gzip
 import ipaddress
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 VERSION = "8.17.0"
@@ -46,6 +52,12 @@ FIELDS = {
     "message": "match_only_text",
     "ecs.version": "keyword",
     "event.kind": "keyword",
+    "event.id": "keyword",
+    "event.action": "keyword",
+    "event.reason": "keyword",
+    "event.start": "date",
+    "event.end": "date",
+    "event.duration": "long",
     "event.category": "keyword",
     "event.type": "keyword",
     "event.outcome": "keyword",
@@ -73,7 +85,10 @@ FIELDS = {
     "related.user": "keyword",
     "related.ip": "ip",
     "related.hash": "keyword",
+    "related.hosts": "keyword",
     "process.command_line": "wildcard",
+    "process.args": "keyword",
+    "process.exit_code": "long",
     "process.working_directory": "keyword",
     "file.path": "keyword",
     "file.owner": "keyword",
@@ -100,8 +115,10 @@ CATEGORIES = {
     "event.kind": ("event", "alert"),
     "event.category": ("authentication", "file", "process", "web"),
     "event.type": ("info", "creation", "change", "deletion", "start", "access"),
-    "event.outcome": ("success", "failure"),
+    "event.outcome": ("success", "failure", "unknown"),
 }
+# A step's outcome in ECS's words: its effect check passed, failed, or neither was known.
+STEP_OUTCOMES = {"took effect": "success", "attempted without effect": "failure"}
 
 
 class ConversionError(ValueError):
@@ -272,30 +289,49 @@ def _common(raw: dict, document: dict) -> None:
     document["wazuh"] = {key: value for key, value in raw.items() if key not in ("full_log", "timestamp")}
 
 
-def _labels(document: dict, origin: str, job: str | None, time_source: str) -> None:
+def _labels(document: dict, origin: str, job: str | None, time_source: str, **more: str | None) -> None:
     labels = {"origin": origin, "time_source": time_source}
     if job:
         labels["job"] = job
+    labels.update({name: value for name, value in more.items() if value})
     document["labels"] = labels
 
 
-def event(raw: dict, origin: str, job: str | None = None) -> dict:
-    """One line of the manager's archive as an ECS event."""
+def event(
+    raw: dict,
+    origin: str,
+    job: str | None = None,
+    step: str | None = None,
+    tied_by: str | None = None,
+    event_id: str | None = None,
+) -> dict:
+    """One line of the manager's archive as an ECS event; `event_id` is its place in the archive."""
 
     moment, time_source = chosen_time(raw)
     document: dict = {"@timestamp": iso(moment)}
     _put(document, "ecs.version", VERSION)
     _put(document, "event.kind", "event")
+    _put(document, "event.id", event_id)
     _put(document, "event.dataset", "wazuh.archives")
     _put(document, "event.ingested", iso(manager_time(raw)))
     _put(document, "message", raw.get("full_log"))
     _common(raw, document)
-    _labels(document, origin, job, time_source)
+    _labels(document, origin, job, time_source, step_id=step, tied_by=tied_by)
     return checked(document)
 
 
-def alert(raw: dict, origin: str, job: str | None = None) -> dict:
-    """One line of the manager's alerts as an ECS alert, at the time the manager raised it."""
+def alert(
+    raw: dict,
+    origin: str,
+    job: str | None = None,
+    step: str | None = None,
+    tied_by: str | None = None,
+    event_id: str | None = None,
+) -> dict:
+    """One line of the manager's alerts as an ECS alert, at the time the manager raised it.
+
+    `event_id` is the `event.id` of the alert's event in the archive, when it has one there.
+    """
 
     raised = iso(manager_time(raw))
     document: dict = {"@timestamp": raised}
@@ -305,7 +341,90 @@ def alert(raw: dict, origin: str, job: str | None = None) -> dict:
     _put(document, "event.created", raised)
     _put(document, "message", (raw.get("rule") or {}).get("description"))
     _common(raw, document)
-    _labels(document, origin, job, "manager")
+    _labels(document, origin, job, "manager", step_id=step, tied_by=tied_by, event_id=event_id)
+    return checked(document)
+
+
+def nanoseconds(value: int) -> str:
+    """A time in nanoseconds since the epoch, to the microsecond, as ECS writes a date."""
+
+    seconds, rest = divmod(int(value), 1_000_000_000)
+    return iso(datetime.fromtimestamp(seconds, tz=timezone.utc) + timedelta(microseconds=rest // 1000))
+
+
+# A step whose record holds daemon times with the end before the start. The executor times such a step by the
+# engine's clock; a manifest that still holds them is read with this label, and its times are not used.
+END_BEFORE_START = "daemon, its end before its start"
+
+
+def step_clock(record: dict) -> str | None:
+    """The clock of a step's times: its `time_source`, or END_BEFORE_START for daemon times out of order."""
+
+    source = record.get("time_source")
+    started, ended = record.get("started_ns"), record.get("ended_ns")
+    if source == "daemon" and started is not None and ended is not None and int(ended) < int(started):
+        return END_BEFORE_START
+    return source
+
+
+def step(record: dict) -> dict:
+    """One step of the path as an ECS event: its times, host, account, test, exit code and outcome.
+
+    `record` is the step as the manifest's `path` holds it, with `visibility`
+    and `outcome` from the score when the run was scored. A step is never
+    written with its end before its start.
+    """
+
+    technique = str(record.get("technique") or "")
+    started, ended = record.get("started_ns"), record.get("ended_ns")
+    source = step_clock(record)
+    if started is not None:
+        stamp = nanoseconds(started)
+    else:
+        # The attack did not start: the engine's time of the step, labelled.
+        stamp = str(record.get("handled") or "")
+    argv = [str(part) for part in record.get("argv") or []]
+    document: dict = {"@timestamp": stamp}
+    _put(document, "ecs.version", VERSION)
+    _put(document, "event.kind", "event")
+    _put(document, "event.id", record.get("id"))
+    _put(document, "event.dataset", "bluefire.steps")
+    _put(document, "event.module", "bluefire-lab")
+    _put(document, "event.action", "published test")
+    _put(document, "event.category", ["process"])
+    _put(document, "event.type", ["info"])
+    _put(document, "event.outcome", STEP_OUTCOMES.get(record.get("happened"), "unknown"))
+    _put(document, "event.reason", record.get("why"))
+    if started is not None and ended is not None and int(ended) >= int(started):
+        _put(document, "event.start", stamp)
+        _put(document, "event.end", nanoseconds(ended))
+        _put(document, "event.duration", int(ended) - int(started))
+    _put(document, "host.name", record.get("host"))
+    _put(document, "related.hosts", list(dict.fromkeys([record.get("host"), *(record.get("to") or [])])))
+    _put(document, "user.name", record.get("account"))
+    _put(document, "related.user", [record.get("account")] if record.get("account") else None)
+    _put(document, "process.args", argv)
+    _put(document, "process.command_line", argv[-1] if argv else None)
+    _put(document, "process.working_directory", record.get("workdir"))
+    exit_code = record.get("exit_code")
+    _put(document, "process.exit_code", exit_code if isinstance(exit_code, int) else None)
+    if technique:
+        _put(document, "threat.framework", FRAMEWORK)
+        _put(document, "threat.technique.id", [technique.split(".")[0]])
+        _put(document, "threat.technique.subtechnique.id", [technique] if "." in technique else None)
+    _labels(
+        document,
+        "step",
+        None,
+        source if source in ("daemon", END_BEFORE_START) else "engine clock",
+        step_id=record.get("id"),
+        test_guid=record.get("guid"),
+        test_name=record.get("name"),
+        happened=record.get("happened"),
+        check=(record.get("check") or {}).get("result") or "not run",
+        visibility=record.get("visibility"),
+        outcome=record.get("outcome"),
+    )
     return checked(document)
 
 

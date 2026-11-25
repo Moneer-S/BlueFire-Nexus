@@ -142,11 +142,19 @@ def main(arguments: list[str] | None = None) -> int:
         help="fetch the published files the spec's hosts carry, at its commit, and write their SHA-256 to its lock",
     )
     locking.add_argument("spec", type=Path, help="the range's spec file")
+    scoring = actions.add_parser(
+        "score",
+        help="write a run folder's ECS lines, score and recording.json again from its own files; "
+        "starts nothing",
+    )
+    scoring.add_argument("folder", type=Path, help="the folder a run of `range run` wrote")
 
     options = parser.parse_args(arguments)
     if options.command == "range":
         if options.action == "down":
             return range_engine.down(options.spec)
+        if options.action == "score":
+            return range_engine.rescore(options.folder)
         if options.action == "render":
             return range_engine.render(options.spec, options.out)
         if options.action == "lock":

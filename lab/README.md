@@ -11,7 +11,7 @@ In this document:
 - [Hardening that blocks a technique](#hardening-that-blocks-a-technique), and [the lab's own detection rules](#detection-rules-of-the-labs-own).
 - [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - [The range and its seal](#a-range-and-its-seal): a network of throwaway containers with no route out.
-- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity) and [its path of published tests](#range-one-the-path).
+- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity), [its path of published tests](#range-one-the-path) and [the path's score and recording](#range-one-the-score-and-the-recording).
 - [Comparing two runs](#comparing-two-recordings).
 - [The defender loop](#the-defender-loop-so-far): a test nobody saw, a sensor change, then a new rule.
 - [How to run it](#how-to-run-it).
@@ -1069,7 +1069,8 @@ The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 every plant check that uses them passed there.
 
 The path of published tests runs through the range, and a CI run shows it
-([the path](#range-one-the-path)). Not yet shown: the scoring of its steps.
+([the path](#range-one-the-path)), and what the defense made of each step
+([the score](#range-one-the-score-and-the-recording)).
 The ordinary day is scored, and shown,
 [below](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day).
 
@@ -1233,7 +1234,9 @@ where the line says so. `labels.*` holds keyword values only:
   the program start `engine:*` or the line holds the run's ID, which every
   nonce and mark of the engine and the name of every mark file it makes carry
   (what the plant checks and the seal's probes leave behind, such as a login's
-  session lines or a PHP session file, carries no ID); `ordinary` when the
+  session lines or a PHP session file, carries no ID); `cleanup` when snoopy
+  tagged it `cleanup:<id>`, or it is a file event inside a step's published
+  cleanup for a file the cleanup's command names; `ordinary` when the
   line is a job's as the [activity's counts](#range-one-ordinary-activity)
   sort it (tag, address, the path of a request, account, the files the job
   writes, inside the job's window), or when snoopy tagged it `job:<name>`; a
@@ -1242,9 +1245,13 @@ where the line says so. `labels.*` holds keyword values only:
   fetches is no job's, so it is `unattributed`; cron's session lines of a
   cron job's account inside the job's window are `ordinary` with no
   `labels.job`, since they do not tell one cron entry of the account from
-  another; `unattributed` for everything else, which is counted and listed
-  and never called ordinary. An alert takes the origin of its event in the archive (the
-  same agent, location, line and manager time).
+  another; `step`, with `labels.step_id` and `labels.tied_by`, for a line
+  tied to a step of the path (see
+  [the score](#range-one-the-score-and-the-recording)); `unattributed` for
+  everything else, which is counted and listed and never called ordinary. An
+  alert takes the origin of its event in the archive (the same agent,
+  location, line and manager time), and `labels.event_id` names that event's
+  `event.id`.
 
 Loading them into a tool, here [DuckDB](https://duckdb.org/) 1.4.1 from PyPI,
 run in a run folder (on the files of the run below it lists `ordinary`,
@@ -1387,6 +1394,9 @@ Limits:
 - A step's start and end are the Docker daemon's times of its exec, not the
   engine's; where those events were not matched, the engine's own clock is
   used and `path.md` marks it.
+- A loaded daemon can stamp an exec's `exec_die` before its `exec_start`; the
+  daemon's two times are used only in order, and otherwise the step is timed
+  by the engine's clock and labelled so, which fails the score's clock check.
 - The published port scan tries every port, so s05a and s05b may run until
   the step's timeout of 300 s. At a timeout the engine kills what the step
   started, as the step's account, and the effect check still decides what
@@ -1425,7 +1435,128 @@ could not read every file of `/etc` on `build` as `deploy`; the archive holds
 | s09 | web | T1560.001 | Data Compressed - nix - tar Folder or File | 0.031 | 0 | took effect | pass |
 | s10 | web | T1048.002 | Exfiltrate data in a file over HTTPS using wget | 0.042 | 0 | took effect | pass |
 
-Not yet shown: whether the defense saw, alerted on or stopped each step.
+Whether the defense saw or alerted on each step is the next section, from a
+later run.
+
+## Range one: the score and the recording
+
+After the collection, a run of a range with a path says, for every step, what
+the defense made of it, into `manifest.json` (`score.path`), `score.md` and
+`steps.ecs.ndjson` (one ECS line per step: its daemon times, host, account,
+technique, the test's name and GUID, the exit code, what happened, the
+check's result, and the outcome below), and it writes `recording.json`, the
+run in the [recording format](../docs/RECORDING.md) that the app's live view
+plays. `bluefire-lab range score <run folder>` writes all of these again from
+a run folder's own files, with the spec the run's manifest holds, and starts
+nothing.
+
+**Ties.** Each archived event and each alert is the engine's, a cleanup's, a
+job's of the ordinary activity, a step's, or unattributed, by the first rule
+that holds (`lab/bluefire_lab/range/score.py`). What is neither the engine's,
+a cleanup's nor a job's is a step's only on evidence the run holds, by the
+first of: `session`, snoopy tagged the program start `step:<id>`; `account`,
+the line names an account only the path uses on its host (`webadmin` on
+`web`, `deploy` on `build`; the activity's loader refuses a job that uses
+one), on a host the step ran on or reached, inside its window; `address`, the
+line's own source address is an address of the host the step ran on, inside
+its window (sshd's lines on `web` from `attacker` in `s01`'s), or the line is
+on a host the step reached and its text names an address or the container
+name of the host the step ran on (sshd's and MariaDB's lines often carry the
+address only in their text); `content`, a file event for a path the step was
+given, or a line that names one, on a host the step ran on or reached, inside
+its window. A step's window runs from the Docker daemon's start of its
+test to 5 s after the daemon's end (a second longer, from the start of its
+second, for a line whose time is to the second). An event that only falls
+inside a window, on a host the step ran on or reached, is coincident: it
+keeps the origin `unattributed`, carries the step with `tied_by` `window`, is
+counted apart and never counts for the step. An alert takes the tie of the
+line it was raised on, so a correlation rule such as 40112 is tied by its own
+line and not by the lines before it. The counts of each origin add up to the
+raw lines.
+
+**What the defense made of each step**, in the words of the recording format:
+`alert` when an alert of the stock rules at level 12 or higher is tied to the
+step, `telemetry only` when an event is, `no telemetry` otherwise, and `not
+applicable` when the test did not start; the outcome follows the format's
+order (`alerted`, `seen`, `unseen`, `no effect`, `inconclusive`). A step
+cannot be `stopped` in range one: it configures no active response. The score
+also lists, per step, which agents recorded it, the rules that matched with
+their levels and first times, and the rules the spec expects of the step
+(`expect`) that did not appear.
+
+**The race.** The time from the start of the first step to the first alert at
+level 12 or higher on a step, against the time from the same start to the end
+of the step after which the goal check passed. One clock: a step's times are
+the Docker daemon's `exec_start` and `exec_die`, an alert's the manager's time
+of it, and both read the kernel clock of the machine that runs the
+containers; the engine's own clock is not used. Each run checks it: every
+program start snoopy logged in a step's session, at rsyslog's time in its
+container, must fall inside its step's daemon times, and every step's times
+must be the daemon's, in order. When the check fails, the race is labelled
+"not a result" in the score, no recording is written, and the CI job fails.
+The manager's own time of a line can run seconds behind the time rsyslog
+wrote on it, so an alert counts from the manager's time of it, or from its
+line's time when that is later, and the score gives the spread it measured.
+Beside the race stand the ordinary day's false alerts and their denominators
+([above](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day)).
+
+**The recording.** The seven hosts with their roles and addresses, a link
+between every two that share a network, the three Wazuh agents as sensors,
+the manager's stock rules as the detector `pinned` that ran live, each step
+with its published name and one plain sentence (`plain` in the spec), its
+command and output, and the events and alerts tied to it, at most 300 events
+of a step and every one an alert was raised on; a step that went to another
+host (`to` in the spec) is on that host, `from` its own. An alert has the time
+of its line and `raised`, the manager's time of it. Two words joined the
+format's ties for this: `address` and `content`. The app's import accepts such
+a recording, and the single page plays it:
+
+```bash
+bluefire-lab replay <run folder>/recording.json --template bluefire/ui/replay.html --out replay.html
+```
+
+The format counts an alert from level 12, so a run of a spec whose
+`defense.wazuh.alert_level` is another level writes no recording (set the
+level back to 12, or read the score without a recording), and nor does a run
+with an alert at level 12 or higher whose archived line is not in the archive:
+the manifest says why, and `bluefire-lab range score` exits 1.
+
+The `range-one` job keeps `recording.json`, the three ECS files and
+`replay.html` in its artifact, and shows the path's score in its summary.
+
+**What a run shows.** In
+[run 45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968)
+on a hosted runner (its job "range one's path, sealed and watched", and the
+artifact `range-one-run`), the stock rules raised their first alert at level
+12 or higher 61.56 s after the first step started: rule 40112, "Multiple
+authentication failures followed by a success", on `s01`. The path reached its
+goal 628.44 s after that start, so the alert came 566.88 s before the goal.
+Beside it, on the ordinary day of 11.48 minutes: 0 false alerts at level 12 or
+higher. The clock check held: 19 program starts in the steps' sessions, none
+outside its step's daemon times.
+
+| Step | Host | Recorded | By | Tied by | First alert | Outcome |
+|---|---|---|---|---|---|---|
+| s01 | attacker to web | alert, 1,857 events | web | address 1,841, account 16 | 40112, level 12 | alerted |
+| s02 | web | 4 events | web | account 1, session 3 | none | seen |
+| s03 | web | 7 events | web | account 1, session 6 | none | seen |
+| s04 | web | 3 events | web | account 1, session 2 | none | seen |
+| s05a | web to build | 1 event | build | address 1 | none | seen |
+| s05b | web to db | 1 event | db | address 1 | none | seen |
+| s06 | web | 1 event | web | session 1 | none | seen |
+| s07 | web | 3 events | web | account 1, session 2 | none | seen |
+| s08 | web to build | 19 events | web 3, build 16 | account 17, session 1, address 1 | none | seen |
+| s09 | web | 5 events | web | account 2, session 3 | none | seen |
+| s10 | web to inet | 1 event | web | session 1 | none | seen |
+
+One step alerted and ten were seen with no alert; none was unseen. **The two
+port scans are seen by one line each, and by nothing else.** On `build` it is
+sshd's line about a connection from `web`'s address that sent no SSH banner;
+on `db` it is MariaDB's line about a connection from `web`'s container that
+closed without authentication. Each is tied by the `address` rule because its
+text names `web`. The range has no network sensor, so a scan of every port
+shows only where an open port's service logs a broken connection. One run is
+one sample: how much this varies between runs is not yet shown.
 
 ## Not yet shown
 
