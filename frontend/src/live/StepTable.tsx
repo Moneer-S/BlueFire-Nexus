@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
 import type { Outcome, Recording, Sensor, Step, StepRole } from "./recording";
-import { OUTCOME_ORDER, ROLE_ORDER, roleCount, tableRows } from "./analyse";
+import { OUTCOME_ORDER, ROLE_ORDER, roleCount, ruleCounts, tableRows } from "./analyse";
 import type { SortKey, StepRow } from "./analyse";
 import { capital, count, outcomeClass, outcomeWords, plural, sensorLabel, stepLabel, stepShortName, testNumbers, unitWord } from "./format";
 import type { StyleVars } from "./motion";
@@ -60,20 +60,17 @@ function notStopped(step: Step): boolean {
 }
 
 function MatchCell({ row }: { row: StepRow }) {
-  const m = row.matches;
-  // Informational matches are listed apart: nobody reviews them, so they do not swell "review".
-  const reviewing = [...m.review, ...m.labReview];
-  const info = reviewing.filter((alert) => alert.rule.level === "informational").length;
-  const review = reviewing.length - info;
+  // Each part counts rules, each once however often it matched, as the step's sentence does.
+  const { alert, labAlert, review, info, launcher } = ruleCounts(row.matches);
   const parts = [
-    m.alert.length > 0 ? (
+    alert > 0 ? (
       <span key="a" className="is-alert">
-        {m.alert.length} alert{m.alert.length === 1 ? "" : "s"}
+        {alert} alert{alert === 1 ? "" : "s"}
       </span>
     ) : null,
-    m.labAlert.length > 0 ? (
+    labAlert > 0 ? (
       <span key="l" className="is-lab" title="The lab's own rules at alert level, which the score does not count">
-        {m.labAlert.length} lab alert{m.labAlert.length === 1 ? "" : "s"}
+        {labAlert} lab alert{labAlert === 1 ? "" : "s"}
       </span>
     ) : null,
     review > 0 ? (
@@ -87,9 +84,9 @@ function MatchCell({ row }: { row: StepRow }) {
         {info} info
       </span>
     ) : null,
-    m.launcher.length > 0 ? (
+    launcher > 0 ? (
       <span key="x" className="is-launcher" title="Matched only the shell command that carried the test, which never counts">
-        {m.launcher.length} launcher
+        {launcher} launcher
       </span>
     ) : null,
   ].filter((part) => part !== null);

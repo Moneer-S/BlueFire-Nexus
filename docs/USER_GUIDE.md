@@ -270,7 +270,11 @@ after, its price in the words the comparison's own page gives it, and links to i
 the after run. Then the evidence: every event the recording holds of the step,
 by sensor; under **How we know**, the recording's own reason and the SHA-256 of
 each sensor's settings; for a step with no event, the other runs of the same
-technique; and the rules that matched it. Last come, for a rule, an empty draft
+technique; and the rules that matched it, every one of them, also on the page
+of a step a rule alerted on (all nine on step 1 of the attack path), with how
+the run judged the lab's own rules: from each rule's verdict where the
+recording carries one, or else, in an older recording such as the run on one
+Linux machine, from its own note on them, shown whole. Last come, for a rule, an empty draft
 kept in this browser only; the model's place, which says that nothing was sent;
 and what a rerun is (a pull request whose CI runs the list before and after,
 or for a range builds the range and runs the path through it again).

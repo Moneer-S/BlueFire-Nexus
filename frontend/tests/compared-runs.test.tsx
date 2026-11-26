@@ -168,7 +168,7 @@ function Address() {
 type Files = Map<string, unknown>;
 
 /** Mounts the page of `delta`, with `loop` the comparisons the service lists, and the recording files by SHA-256. */
-function mount(delta: Delta, { files, loop = [] as DeltaSummary[], id = ID }: { files?: Files; loop?: DeltaSummary[]; id?: string } = {}) {
+function mount(delta: Delta, { files, loop = [] as DeltaSummary[], id = ID, search = "" }: { files?: Files; loop?: DeltaSummary[]; id?: string; search?: string } = {}) {
   vi.spyOn(api, "recordingDelta").mockResolvedValue({ summary: pairSummary(delta, id), delta });
   vi.spyOn(api, "recordingDeltas").mockResolvedValue({ deltas: loop, unreadable_count: 0, omitted_count: 0 });
   const fetched = vi.spyOn(api, "recordingFile").mockImplementation(async (recordingId, sha256) => {
@@ -177,7 +177,7 @@ function mount(delta: Delta, { files, loop = [] as DeltaSummary[], id = ID }: { 
     return { summary: summaryOf(recordingId), recording: file };
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runs", `/runs/compared/${id}`]} initialIndex={1}>
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/runs", `/runs/compared/${id}${search}`]} initialIndex={1}>
     <Routes>
       <Route path="/runs/compared/:deltaId" element={<ComparedRunsPage />} />
       <Route path="*" element={<p>Elsewhere</p>} />
@@ -574,6 +574,38 @@ describe("the two comparisons shipped with the app", () => {
     expect(screen.getByRole("region", { name: "What comes next" })).toHaveTextContent("Its score counts only published rules: 57 with no alert.");
     // Each evaluation is read by its own file.
     expect(new Set(fetched.mock.calls.map(([, sha256]) => sha256))).toEqual(new Set([delta.before.sha256, delta.after.sha256]));
+  }, 30_000);
+
+  it("on a step whose only published match is on its launcher line, says so on both stages and in the detail below them", async () => {
+    // Process Discovery - ps: in both evaluations, the one published rule that matched it matched only the line that started it.
+    const { delta, files } = shippedRule();
+    mount(delta, { files, search: "?step=test%3A4ff64f0b&detail=1" });
+    const stages = await screen.findByRole("group", { name: "Process Discovery - ps, before and after" });
+    const words = "Sysmon for Linux recorded 5 events, auditd recorded 2 events. 1 rule matched only the launcher line, which never counts.";
+    for (const name of [/^Before/, /^After/]) {
+      const stage = await within(stages).findByRole("article", { name });
+      expect(stage).toHaveTextContent(words);
+      expect(stage).toHaveTextContent("Published rulesmatched only the launcher line");
+      expect(stage).not.toHaveTextContent("No rule matched it.");
+    }
+    const detail = await screen.findByRole("region", { name: "Process Discovery - ps, every detail before and after" });
+    const articles = await within(detail).findAllByRole("article");
+    expect(articles).toHaveLength(2);
+    for (const article of articles) {
+      expect(article).toHaveTextContent("7 events recorded, 1 rule matched only the launcher line, which never counts.");
+      expect(article).toHaveTextContent("No rule matched what the step itself did: start by writing one.");
+    }
+  }, 30_000);
+
+  it("sends the reader to the run after without promising a list of the tests still without an alert", async () => {
+    const { delta, files } = shippedRule();
+    mount(delta, { files, loop: [pairSummary(delta, ID)] });
+    const next = await screen.findByRole("region", { name: "What comes next" });
+    expect(await within(next).findByRole("link", { name: "See the run after" })).toHaveAttribute("href", expect.stringMatching(/\?mode=analyse$/));
+    expect(within(next).queryByRole("link", { name: /See them/ })).toBeNull();
+    const card = screen.getByRole("link", { name: /^Next change, not made yet/ });
+    expect(card).toHaveTextContent("41 tests still raised no alert, with the lab's own rules tooSee the run after: each of them has Fix this there. Its score counts only published rules: 57 with no alert");
+    expect(card).not.toHaveTextContent("See them");
   }, 30_000);
 
   it("keeps the price not counted when no rule the run after accepted stands behind the comparison", async () => {

@@ -2,7 +2,7 @@
 
 import type { Alert, Outcome, Recording, RecordingEvent, Step, StepRole } from "./recording";
 import { alertsByStep, countsAsAlert, countsForScore, eventsByStep } from "./recording";
-import { onlyItsLaunch, plural, stepLabel, unseenWords } from "./format";
+import { launcherRules, onlyItsLaunch, plural, stepLabel, unseenWords } from "./format";
 import { stepEnd, stepMatchesInFiringOrder } from "./playback";
 import type { Timeline } from "./playback";
 
@@ -30,6 +30,33 @@ export function groupMatches(alerts: readonly Alert[]): MatchGroups {
     else groups.review.push(alert);
   }
   return groups;
+}
+
+/** How many rules, each counted once however often it matched, are in each part of a step's matches, as the table counts them. */
+export interface RuleCounts {
+  alert: number;
+  labAlert: number;
+  /** Published and lab rules below alert level, informational ones apart. */
+  review: number;
+  info: number;
+  launcher: number;
+}
+
+function distinctRules(alerts: readonly Alert[]): number {
+  return new Set(alerts.map((alert) => alert.rule.id)).size;
+}
+
+export function ruleCounts(groups: MatchGroups): RuleCounts {
+  // Informational rules are counted apart: nobody reviews them, so they do not swell "review".
+  const reviewing = [...groups.review, ...groups.labReview];
+  const info = reviewing.filter((alert) => alert.rule.level === "informational");
+  return {
+    alert: distinctRules(groups.alert),
+    labAlert: distinctRules(groups.labAlert),
+    review: distinctRules(reviewing.filter((alert) => alert.rule.level !== "informational")),
+    info: distinctRules(info),
+    launcher: distinctRules(groups.launcher),
+  };
 }
 
 /** One row of the table of every step. */
@@ -74,9 +101,10 @@ export const ROLE_ORDER: readonly StepRole[] = ["test", "canary", "control", "ha
 
 export type SortKey = "order" | "outcome" | "title" | "technique" | "events" | "matches";
 
+/** The column "Rules matched" sorts by the rules it shows: alerts first, then lab alerts, then rules below alert level, then the launcher line. */
 function matchWeight(row: StepRow): number {
-  const m = row.matches;
-  return m.alert.length * 1e6 + m.labAlert.length * 1e4 + (m.review.length + m.labReview.length) * 1e2 + m.launcher.length;
+  const m = ruleCounts(row.matches);
+  return m.alert * 1e6 + m.labAlert * 1e4 + (m.review + m.info) * 1e2 + m.launcher;
 }
 
 function sortValue(row: StepRow, key: SortKey): number | string {
@@ -211,7 +239,8 @@ export function fixHint(recording: Recording, step: Step, matches?: MatchGroups)
   for (const alert of matches?.review ?? []) if (!rules.has(alert.rule.id)) rules.set(alert.rule.id, alert);
   const quiet = (alert: Alert) => ordinaryMatches(recording, alert.rule.title) ?? 0;
   const top = [...rules.values()].sort((a, b) => (LEVEL_RANK[b.rule.level] ?? 0) - (LEVEL_RANK[a.rule.level] ?? 0) || quiet(a) - quiet(b))[0];
-  if (!top) return "No rule matched this step: start by writing one.";
+  // A published match on the launcher line alone, which the sentence above names, says nothing of what the step did.
+  if (!top) return launcherRules(matches?.launcher ?? []) > 0 ? "No rule matched what the step itself did: start by writing one." : "No rule matched this step: start by writing one.";
   const ordinary = ordinaryMatches(recording, top.rule.title);
   const noise = ordinary === null ? "" : ordinary === 0 ? ", and nothing in ordinary activity" : `, and ${plural(ordinary, "event")} of ordinary activity too`;
   // The rule's own title is quoted whole, its closing full stop left to the sentence.

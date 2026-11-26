@@ -11,11 +11,12 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type RecordingSummary } from "../lib/api";
-import { activeProviderKind, backPath, browserStorage, candidates, defenseHome, draftKey, hasStableIds, keepDraft, labRulesCommit, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type DefenseHome, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
+import { activeProviderKind, backPath, browserStorage, candidates, defenseHome, draftKey, hasStableIds, keepDraft, labRulesCommit, labRulesNote, modelWords, notAccepted, otherRunsOf, readDraft, sensorsOf, startWith, stepMoment, tieOf, triedFor, type DefenseHome, type FileHere, type RuleMatch, type SensorFacts, type StartWith, type Tie, type Tried } from "../lib/fix-step";
 import { originWords, recordedRunPath, RUNNING_POLL_MS } from "../lib/recorded-runs";
 import { alertedByLabOnly, chipField, codeSpans, isOneRun, pairChangeWords, priceWords, resultWords, verdictParts } from "../lib/recording-pairs";
 import { fixHint, stepRows, type StepRow } from "../live/analyse";
 import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, sensorColours, stepLabel, unitWord } from "../live/format";
+import { FreeText } from "../live/FreeText";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
 import { readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
@@ -280,22 +281,30 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
   if (start.kind === "sensor" || start.kind === "nothing") return null;
   const declined = notAccepted(recording);
   const labCommit = labRulesCommit(recording);
+  // An older recording says how the run judged the lab's own rules only in a note: shown whole, as the recording's own words.
+  const note = labRulesNote(recording);
   return <section className="cmp-sec fx-matched" aria-labelledby="fx-matched">
     <h2 id="fx-matched">Rules that matched it</h2>
     {start.kind === "rule" ? <>
       {start.review.length ? <PublishedBelow matches={start.review} /> : <RuleGroup title="Published rules below alert level" empty="No published rule matched it, at any level." matches={[]} />}
-      <RuleGroup title="The lab's own rules that matched" empty={recording.network.detectors.some((detector) => detector.id === "lab") ? "None of the lab's own rules matched it." : "This run did not try the lab's own rules."} matches={start.lab} />
+      <RuleGroup title="The lab's own rules that matched" empty={recording.network.detectors.some((detector) => detector.id === "lab") ? "None of the lab's own rules matched it." : "This run did not try the lab's own rules."} matches={start.lab} noted={note !== null} />
       {start.launcher.length ? <RuleGroup title="Matched only the line that starts the test, which never counts" matches={start.launcher} /> : null}
-    </> : start.kind === "lab alerted" ? <>
-      <RuleGroup title={`The rule that raised the ${MARK_WORDS.lab}`} matches={start.alerted} />
-      {labCommit ? <p className="fx-why">The run loaded it from commit <code>{labCommit.slice(0, 8)}</code>.</p> : null}
-      <PublishedBelow matches={start.review} />
     </> : <>
-      <RuleGroup title="The rule that raised the alert" matches={start.alerted} />
-      {start.lab.length ? <RuleGroup title="The lab's own rules that matched" matches={start.lab} /> : null}
+      {/* An alerted step has nothing to fix: every rule that matched it is listed, each group only where it holds a rule. */}
+      {start.kind === "lab alerted" ? <>
+        <RuleGroup title={`The rule that raised the ${MARK_WORDS.lab}`} matches={start.alerted} noted={note !== null} />
+        {labCommit ? <p className="fx-why">The run loaded it from commit <code>{labCommit.slice(0, 8)}</code>.</p> : null}
+      </> : <RuleGroup title="The rule that raised the alert" matches={start.alerted} />}
+      <RuleGroup title="The lab's own rules that matched" matches={start.lab} noted={note !== null} />
+      <PublishedBelow matches={start.review} />
+      <RuleGroup title="Matched only the line that starts the test, which never counts" matches={start.launcher} />
     </>}
     {(start.kind === "rule" || start.kind === "lab alerted") && declined.length ? <p className="fx-declined">
       Rules this run did not accept, so their matches are left out: {declined.map((verdict, index) => <span key={verdict.rule}>{index ? "; " : ""}<b>{verdict.title}</b>{verdict.reason ? <> ({verdict.reason})</> : null}</span>)}.
+    </p> : null}
+    {/* The note says how the run judged the lab's own rules: it ends the section of a step to start a rule for, of a lab-alerted step, and of any step with a card of one of them. */}
+    {(start.kind === "rule" || start.kind === "lab alerted" || start.lab.length > 0) && note !== null ? <p className="fx-declined">
+      This recording says of the lab&apos;s own rules: <FreeText text={note} />
     </p> : null}
   </section>;
 }
@@ -312,11 +321,12 @@ function isInformational(match: RuleMatch): boolean {
   return match.rule.level === "informational";
 }
 
-function RuleGroup({ title, empty, matches }: { title: string; empty?: string; matches: RuleMatch[] }) {
+/** `noted`: the recording says how the run judged the lab's own rules in a note, which the section shows at its end. */
+function RuleGroup({ title, empty, matches, noted = false }: { title: string; empty?: string; matches: RuleMatch[]; noted?: boolean }) {
   if (matches.length === 0) return empty ? <div className="fx-rules"><h3>{title}</h3><p className="cmp-empty">{empty}</p></div> : null;
   return <div className="fx-rules">
     <h3>{title}</h3>
-    <ul>{matches.map((match) => <li key={`${match.rule.origin}:${match.rule.id}`}><RuleCard match={match} /></li>)}</ul>
+    <ul>{matches.map((match) => <li key={`${match.rule.origin}:${match.rule.id}`}><RuleCard match={match} noted={noted} /></li>)}</ul>
   </div>;
 }
 
@@ -329,7 +339,7 @@ function matchChip(match: RuleMatch): { words: string; className: string; title?
   return { words: first?.counts ? `alert · ${match.rule.level}` : `review · ${match.rule.level}`, className: first?.counts ? "is-alert" : "is-review" };
 }
 
-function RuleCard({ match }: { match: RuleMatch }) {
+function RuleCard({ match, noted }: { match: RuleMatch; noted: boolean }) {
   const chip = matchChip(match);
   const events = new Set(match.alerts.flatMap((alert) => alert.events)).size;
   const verdict = match.verdict;
@@ -353,7 +363,7 @@ function RuleCard({ match }: { match: RuleMatch }) {
         <figcaption>The rule's text, as this recording carries it</figcaption>
         <pre tabIndex={0} aria-label={`The text of the rule ${match.rule.title}`}>{verdict.lines.join("\n")}</pre>
       </figure> : <p className="cmp-empty">This recording does not carry the rule's text.</p>}
-    </> : <p className="cmp-empty">This recording does not say how the run judged this rule.</p> : null}
+    </> : noted ? null : <p className="cmp-empty">This recording does not say how the run judged this rule.</p> : null}
   </article>;
 }
 

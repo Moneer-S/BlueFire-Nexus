@@ -526,7 +526,7 @@ function Next({ delta, moved, next, after }: { delta: Delta; moved: readonly Del
       <p className="cmp-next-lead">{counts.left === 0 ? `${none.lead}.` : `${leftWords(counts.left)}.`}</p>
       <p>In the run after, with the lab's own rules too{counts.left === 0 ? `.${none.rest ? ` ${none.rest}.` : ""}` : counts.unseen ? `; ${count(counts.unseen)} of them went unseen.` : "; none went unseen."}</p>
       {next ? <NextLink next={next} /> : null}
-      {counts.left ? <Link className="cmp-go" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>See them in the run after<ArrowRight aria-hidden="true" /></Link> : null}
+      {counts.left ? <Link className="cmp-go" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>See the run after<ArrowRight aria-hidden="true" /></Link> : null}
       <p className="cmp-small">{counts.scored !== counts.left ? `Its score counts only published rules: ${count(counts.scored)} with no alert. ` : ""}Each test counted once, as published, each with Fix this.</p>
     </>;
   }
@@ -722,7 +722,7 @@ function GoFrom({ delta, previous, next, place, after }: { delta: Delta; previou
         </Link> : place < 0 ? null : <Link className="cmp-turn-card is-todo" to={`${recordedRunPath(delta.after.id, delta.after.sha256)}?mode=analyse`}>
           <small>Next change, not made yet</small>{none
             ? <><b>{none.lead}</b><span>See the run after{none.rest ? `. ${none.rest}` : ""}</span></>
-            : <><b>{counts === null ? "The tests with no alert" : `${leftWords(counts.left)}, with the lab's own rules too`}</b><span>See them in the run after, each with Fix this{counts && counts.scored !== counts.left ? `. Its score counts only published rules: ${count(counts.scored)} with no alert` : ""}</span></>}
+            : <><b>{counts === null ? "The tests with no alert" : `${leftWords(counts.left)}, with the lab's own rules too`}</b><span>See the run after: each of them has Fix this there{counts && counts.scored !== counts.left ? `. Its score counts only published rules: ${count(counts.scored)} with no alert` : ""}</span></>}
         </Link>}
       </div>
     </div>

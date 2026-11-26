@@ -437,16 +437,24 @@ export function titleInSentence(title: string): string {
   return title.replace(/\.$/, "");
 }
 
+/** How many published rules, by distinct rule, matched only the line that started the step, which never counts. */
+export function launcherRules(alerts: readonly Alert[]): number {
+  return new Set(alerts.filter((alert) => alert.launcher_only === true && alert.rule.origin === "pinned").map((alert) => alert.rule.id)).size;
+}
+
 /**
  * A seen step in one sentence: "24 events recorded, 1 rule matched for
  * review, none at alert level." Where one of the lab's own rules alerted, the
  * last words say they speak of the published rules; where no rule matched,
- * they are left out.
+ * they are left out. Where the only published match was on the launcher line,
+ * the sentence says so: "1 rule matched only the launcher line, which never counts."
  */
 export function seenWords(events: number, alerts: readonly Alert[]): string {
   const { review, info } = belowAlert(alerts);
   const lab = alerts.some((alert) => matchKind(alert) === "lab");
   const matched = review + info > 0;
+  const launcher = launcherRules(alerts);
+  if (!matched && launcher > 0) return `${plural(events, "event")} recorded, ${plural(launcher, lab ? "published rule" : "rule")} matched only the launcher line, which never counts.`;
   if (!matched) return `${plural(events, "event")} recorded, ${lab ? "no published rule matched" : "no rule matched"}.`;
   return `${plural(events, "event")} recorded, ${belowAlertWords(alerts)}, ${lab ? "none of the published rules at alert level" : "none at alert level"}.`;
 }

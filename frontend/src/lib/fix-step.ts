@@ -69,6 +69,18 @@ export function labVerdicts(recording: Recording): RuleVerdict[] {
   return recording.network.detectors.find((detector) => detector.id === "lab")?.verdicts ?? [];
 }
 
+/**
+ * How the run judged the lab's own rules, in the one note the lab writes of
+ * them ("The run accepted 8 of the 9 rules written in this repository. ..."),
+ * for a recording whose detector `lab` carries no verdicts: an older one says
+ * it only there. Returned whole, never taken apart; null when the recording
+ * carries verdicts or holds no such note.
+ */
+export function labRulesNote(recording: Recording): string | null {
+  if (labVerdicts(recording).length > 0) return null;
+  return recording.notes.find((note) => note.startsWith("The run accepted ")) ?? null;
+}
+
 /** The commit the run loaded the lab's own rules from: the detector `lab`'s own, or the defense's, or null when the recording names neither. */
 export function labRulesCommit(recording: Recording): string | null {
   return recording.network.detectors.find((detector) => detector.id === "lab")?.commit ?? recording.source.defense_commit ?? null;
@@ -118,12 +130,15 @@ export function notAccepted(recording: Recording): RuleVerdict[] {
  * - `lab alerted`: no published rule alerted, and a rule of the lab's own did;
  * - `alerted`: a published rule alerted;
  * - `nothing`: there is no gap to fix, and why.
+ * Each kind that names rules names every rule that matched the step: the one
+ * that alerted, the lab's own rules besides it, the published ones below alert level,
+ * and those that matched only the launcher line.
  */
 export type StartWith =
   | { kind: "sensor"; basis: string; launcher: boolean }
   | { kind: "rule"; review: RuleMatch[]; lab: RuleMatch[]; launcher: RuleMatch[] }
-  | { kind: "lab alerted"; alerted: RuleMatch[]; review: RuleMatch[] }
-  | { kind: "alerted"; alerted: RuleMatch[]; lab: RuleMatch[] }
+  | { kind: "lab alerted"; alerted: RuleMatch[]; lab: RuleMatch[]; review: RuleMatch[]; launcher: RuleMatch[] }
+  | { kind: "alerted"; alerted: RuleMatch[]; lab: RuleMatch[]; review: RuleMatch[]; launcher: RuleMatch[] }
   | { kind: "nothing"; why: string };
 
 export function startWith(recording: Recording, step: Step, matches: MatchGroups): StartWith {
@@ -133,12 +148,13 @@ export function startWith(recording: Recording, step: Step, matches: MatchGroups
     // The recording's own words for why nothing counts as recorded; the launcher, when it says so, is the lab's own harness.
     return { kind: "sensor", basis: step.visibility.basis, launcher: /\blauncher\b/.test(step.visibility.basis) };
   }
-  if (step.outcome === "alerted") return { kind: "alerted", alerted: byRule(recording, matches.alert), lab: byRule(recording, [...matches.labAlert, ...matches.labReview]) };
+  const below = { review: byRule(recording, matches.review), launcher: byRule(recording, matches.launcher) };
+  if (step.outcome === "alerted") return { kind: "alerted", alerted: byRule(recording, matches.alert), lab: byRule(recording, [...matches.labAlert, ...matches.labReview]), ...below };
   if (step.outcome === "seen" && step.outcome_with_lab_rules === "alerted") {
-    return { kind: "lab alerted", alerted: byRule(recording, matches.labAlert), review: byRule(recording, matches.review) };
+    return { kind: "lab alerted", alerted: byRule(recording, matches.labAlert), lab: byRule(recording, matches.labReview), ...below };
   }
   if (step.outcome === "seen") {
-    return { kind: "rule", review: byRule(recording, matches.review), lab: byRule(recording, matches.labReview), launcher: byRule(recording, matches.launcher) };
+    return { kind: "rule", ...below, lab: byRule(recording, matches.labReview) };
   }
   if (step.outcome === "stopped") return { kind: "nothing", why: `The defense stopped it: ${step.happened.basis}.` };
   if (step.outcome === "no effect") return { kind: "nothing", why: `It did not take effect: ${step.happened.basis}.` };
