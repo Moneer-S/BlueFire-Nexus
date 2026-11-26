@@ -8,6 +8,12 @@ step's outcome with what the step says happened and with its events and alerts,
 times inside the run, and references that exist. It cannot check that the steps
 ran, where, or which sensor produced an event, and every entry says so.
 
+A recording can hold one run judged by several defenses (``defenses``). Each
+defense names its sensors and its rule sets and gives its own verdict on every
+step. Its view, the recording with only that defense's events and alerts and
+with its verdicts, is checked as a recording without defenses is. The top level
+holds the first defense's verdicts and the events and alerts of every defense.
+
 Two kinds of recording are listed. A recording shipped with BlueFire is a file
 under ``bluefire/data/recordings/`` that a workflow of this repository recorded;
 it is read-only. A recording a user imported is a file under
@@ -46,7 +52,7 @@ from datetime import datetime
 from http import HTTPStatus
 from importlib import resources
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, NamedTuple
 
 from .application_errors import APIError
 from .local_lock import (
@@ -69,6 +75,10 @@ MAX_LINKS = 16
 MAX_SENSORS = 16
 MAX_SENSORS_ON_A_HOST = 4
 MAX_DETECTORS = 4
+# A recording with defenses holds one run judged by each of them. A defense has at most
+# MAX_DETECTORS rule sets, which the map draws at once, and the network holds those of all.
+MAX_DEFENSES = 8
+MAX_DETECTORS_WITH_DEFENSES = 8
 _MAP_DRAWS = "are allowed, the most the live view's map draws"
 MAX_LISTED = 200
 # The files kept for one id: the first, and the other evaluations of the same run.
@@ -103,8 +113,13 @@ _RERUNS = ("hardened", "variant")
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _TOP_LEVEL = {
     "schema", "id", "title", "kind", "source", "network", "attacker",
-    "steps", "events", "alerts", "ordinary", "score", "notes",
+    "steps", "events", "alerts", "ordinary", "score", "defenses", "notes",
 }  # fmt: skip
+_OPTIONAL = {"ordinary", "defenses"}
+# What a defense made of a step. A recording with defenses holds these keys once for each
+# defense, by step id, and the step's own are the first defense's.
+_FIRST_TIMES = ("first_event", "first_alert", "first_alert_with_lab_rules")
+_VERDICT = ("visibility", "outcome", "outcome_with_lab_rules", *_FIRST_TIMES)
 _OUTCOMES = ("stopped", "no effect", "alerted", "seen", "unseen", "inconclusive")
 _HAPPENED = ("took effect", "attempted without effect", "blocked", "not attempted", "inconclusive")
 _VISIBILITY = ("alert", "telemetry only", "no telemetry", "inconclusive", "not applicable")
@@ -187,6 +202,14 @@ class _Checker:
     def fail(self, where: str, message: str) -> None:
         if len(self.problems) < _MAX_PROBLEMS:
             self.problems.append(f"{where} {message}")
+
+    def once(self, problems: list[str]) -> None:
+        """Add the problems that are not said yet: what does not depend on a defense, such
+        as an event outside the run, is found in the view of each defense that holds it."""
+
+        for problem in problems:
+            if problem not in self.problems and len(self.problems) < _MAX_PROBLEMS:
+                self.problems.append(problem)
 
     def obj(self, value: Any, where: str) -> Mapping[str, Any]:
         if isinstance(value, Mapping):
@@ -325,6 +348,19 @@ class _Checker:
             shown = repr(value) if isinstance(value, str) else "a value"
             self.fail(where, f"names {what} {shown[:80]} that the recording does not have.")
 
+    def refs(
+        self, parent: Mapping[str, Any], key: str, where: str, known: set[str], what: str
+    ) -> list[Any] | None:
+        """A list of ids that exist, such as the sensors of a defense; None when it is no list."""
+
+        value = parent.get(key)
+        if not isinstance(value, list):
+            self.fail(f"{where}.{key}", f"must be a list of {what} ids.")
+            return None
+        for item in value:
+            self.ref(item, known, f"{where}.{key}", what)
+        return value
+
     def unique_ids(self, rows: list[Mapping[str, Any]], where: str) -> set[str]:
         seen: set[str] = set()
         for index, row in enumerate(rows):
@@ -365,6 +401,107 @@ def _verdicts(check: _Checker, value: Any, where: str) -> None:
                            f"at most {_MAX_LINE} characters.")  # fmt: skip
 
 
+def _verdict_words(check: _Checker, holder: Mapping[str, Any], where: str) -> None:
+    """The visibility and the score words of a step: the step's own, or a defense's for it."""
+
+    visibility = check.obj(holder.get("visibility"), f"{where}.visibility")
+    check.text(visibility, "answer", f"{where}.visibility", choices=_VISIBILITY)
+    check.text(visibility, "basis", f"{where}.visibility", limit=_MAX_LINE)
+    check.count(visibility, "events", f"{where}.visibility", required=False)
+    check.count(visibility, "kept", f"{where}.visibility", required=False)
+    check.text(holder, "outcome", where, choices=_OUTCOMES)
+    check.text(holder, "outcome_with_lab_rules", where, required=False, choices=_OUTCOMES)
+
+
+def _ordinary_and_score(check: _Checker, holder: Mapping[str, Any], own: str = "") -> None:
+    """The ordinary activity and the score: the recording's own, or those of the defense
+    whose keys are at ``own``."""
+
+    if "ordinary" in holder:
+        ordinary = check.obj(holder.get("ordinary"), f"{own}ordinary")
+        check.count(ordinary, "events", f"{own}ordinary", required=True)
+        if check.present(ordinary, "matches", f"{own}ordinary", required=True):
+            for index, match in enumerate(
+                check.items(ordinary["matches"], f"{own}ordinary.matches", 1_000)
+            ):
+                check.text(match, "rule", f"{own}ordinary.matches[{index}]", limit=500)
+                check.text(match, "level", f"{own}ordinary.matches[{index}]", choices=_LEVELS)
+                check.count(match, "count", f"{own}ordinary.matches[{index}]", required=True)
+
+    score = check.obj(holder.get("score"), f"{own}score")
+    for key in ("steps", "took_effect", "alerted", "seen", "unseen", "stopped"):
+        check.count(score, key, f"{own}score", required=True)
+    for key in ("alerted_with_lab_rules", "false_alerts"):
+        check.count(score, key, f"{own}score", required=False)
+    for key in ("first_alert_seconds", "goal_seconds"):
+        check.seconds(score, key, f"{own}score")
+
+
+def _defenses(
+    check: _Checker,
+    value: Any,
+    sensor_ids: set[str],
+    detector_ids: set[str],
+    steps: list[Mapping[str, Any]],
+) -> None:
+    """The defenses of a recording that has them: what each is, and what it made of the run.
+
+    Each has an id, a name, the sensors it records with, the rule sets it runs, its verdict
+    on every step by the step's id, and its ordinary activity and score.
+    """
+
+    defenses = check.items(value, "defenses", MAX_DEFENSES)
+    if isinstance(value, list) and not value:
+        check.fail("defenses", "is empty; a recording with defenses has at least one.")
+    step_ids = [step["id"] for step in steps if isinstance(step.get("id"), str)]
+    known = set(step_ids)
+    seen: set[str] = set()
+    for index, defense in enumerate(defenses):
+        where = f"defenses[{index}]"
+        identifier = defense.get("id")
+        if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
+            check.fail(f"{where}.id", "must be 1 to 64 letters, digits, '-' or '_'.")
+        elif identifier in seen:
+            check.fail(f"{where}.id", f"repeats the id {identifier!r}.")
+        else:
+            seen.add(identifier)
+        check.text(defense, "name", where)
+        sensors = check.refs(defense, "sensors", where, sensor_ids, "sensor")
+        if sensors is not None and not sensors:
+            check.fail(f"{where}.sensors", "is empty; a defense records with at least one sensor.")
+        detectors = check.refs(defense, "detectors", where, detector_ids, "detector")
+        distinct = len({item for item in detectors or [] if isinstance(item, str)})
+        if distinct > MAX_DETECTORS:
+            check.fail(
+                f"{where}.detectors",
+                f"names {distinct} detectors; at most {MAX_DETECTORS} {_MAP_DRAWS}.",
+            )
+        verdicts = defense.get("steps")
+        if not isinstance(verdicts, Mapping):
+            check.fail(
+                f"{where}.steps",
+                "must be an object: the defense's verdict on each step, by the step's id.",
+            )
+            verdicts = {}
+        else:
+            for step_id in step_ids:
+                if step_id not in verdicts:
+                    check.fail(
+                        f"{where}.steps",
+                        f"has no entry for the step {step_id[:80]!r}; a defense judges every step.",
+                    )
+        for step_id, item in verdicts.items():
+            check.ref(step_id, known, f"{where}.steps", "step")
+            if step_id not in known:
+                continue
+            at = f"{where}.steps.{step_id}"
+            verdict = check.obj(item, at)
+            for key in _FIRST_TIMES:
+                check.time(verdict, key, at, required=False)
+            _verdict_words(check, verdict, at)
+        _ordinary_and_score(check, defense, f"{where}.")
+
+
 def validate_recording(value: Any) -> Mapping[str, Any]:
     """Return the recording unchanged, or raise ``RecordingError`` naming each problem."""
 
@@ -376,7 +513,7 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
     _walk(value, check)
     for key in sorted(set(value) - _TOP_LEVEL):
         check.fail(key, "is not a key of the recording format.")
-    for key in sorted(_TOP_LEVEL - {"ordinary"} - set(value)):
+    for key in sorted(_TOP_LEVEL - _OPTIONAL - set(value)):
         check.fail(key, "is missing.")
     if not isinstance(value.get("id"), str) or not _ID.fullmatch(value["id"]):
         check.fail("id", "must be 1 to 64 letters, digits, '-' or '_'.")
@@ -453,7 +590,12 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
                 f"has {count} sensors on the host {host_id[:80]!r}; the map draws at most "
                 f"{MAX_SENSORS_ON_A_HOST} on one host.",
             )
-    detectors = check.items(network.get("detectors"), "network.detectors", MAX_DETECTORS, why=_MAP_DRAWS)
+    if "defenses" in value:
+        # The map draws one defense's rule sets at a time, and each defense has its own limit.
+        most, why = MAX_DETECTORS_WITH_DEFENSES, "are allowed in a recording with defenses"
+    else:
+        most, why = MAX_DETECTORS, _MAP_DRAWS
+    detectors = check.items(network.get("detectors"), "network.detectors", most, why=why)
     detector_ids = check.unique_ids(detectors, "network.detectors")
     for index, detector in enumerate(detectors):
         where = f"network.detectors[{index}]"
@@ -495,20 +637,14 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
         check.ref(step.get("host"), host_ids, f"{where}.host", "host")
         if "from" in step:
             check.ref(step.get("from"), host_ids, f"{where}.from", "host")
-        for key in ("started", "ended", "first_event", "first_alert", "first_alert_with_lab_rules"):
+        for key in ("started", "ended", *_FIRST_TIMES):
             check.time(step, key, where, required=False)
         for key in ("command", "output", "plain"):
             check.text(step, key, where, required=False, limit=_MAX_LINE, empty=True)
         happened = check.obj(step.get("happened"), f"{where}.happened")
         check.text(happened, "answer", f"{where}.happened", choices=_HAPPENED)
         check.text(happened, "basis", f"{where}.happened", limit=_MAX_LINE)
-        visibility = check.obj(step.get("visibility"), f"{where}.visibility")
-        check.text(visibility, "answer", f"{where}.visibility", choices=_VISIBILITY)
-        check.text(visibility, "basis", f"{where}.visibility", limit=_MAX_LINE)
-        check.count(visibility, "events", f"{where}.visibility", required=False)
-        check.count(visibility, "kept", f"{where}.visibility", required=False)
-        check.text(step, "outcome", where, choices=_OUTCOMES)
-        check.text(step, "outcome_with_lab_rules", where, required=False, choices=_OUTCOMES)
+        _verdict_words(check, step, where)
         if "compared_with" in step:
             check.ref(step.get("compared_with"), step_ids, f"{where}.compared_with", "step")
 
@@ -567,24 +703,9 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
             for event_id in matched:
                 check.ref(event_id, event_ids, f"{where}.events", "event")
 
-    if "ordinary" in value:
-        ordinary = check.obj(value.get("ordinary"), "ordinary")
-        check.count(ordinary, "events", "ordinary", required=True)
-        if check.present(ordinary, "matches", "ordinary", required=True):
-            for index, match in enumerate(
-                check.items(ordinary["matches"], "ordinary.matches", 1_000)
-            ):
-                check.text(match, "rule", f"ordinary.matches[{index}]", limit=500)
-                check.text(match, "level", f"ordinary.matches[{index}]", choices=_LEVELS)
-                check.count(match, "count", f"ordinary.matches[{index}]", required=True)
-
-    score = check.obj(value.get("score"), "score")
-    for key in ("steps", "took_effect", "alerted", "seen", "unseen", "stopped"):
-        check.count(score, key, "score", required=True)
-    for key in ("alerted_with_lab_rules", "false_alerts"):
-        check.count(score, key, "score", required=False)
-    for key in ("first_alert_seconds", "goal_seconds"):
-        check.seconds(score, key, "score")
+    _ordinary_and_score(check, value)
+    if "defenses" in value:
+        _defenses(check, value["defenses"], sensor_ids, detector_ids, steps)
 
     notes = value.get("notes")
     if not isinstance(notes, list) or any(not isinstance(note, str) for note in notes):
@@ -594,10 +715,157 @@ def validate_recording(value: Any) -> Mapping[str, Any]:
             if len(note) > _MAX_LINE:
                 check.fail(f"notes[{index}]", f"is longer than {_MAX_LINE} characters.")
     if not check.problems and started is not None:
-        _check_agreement(value, started, finished, check)
+        if "defenses" in value:
+            _check_defenses(value, started, finished, check)
+        else:
+            _check_agreement(value, _whole(value), started, finished, check)
     if check.problems:
         raise RecordingError(check.problems)
     return value
+
+
+class _View(NamedTuple):
+    """What the checks of agreement read: all of a recording without defenses, or the view
+    of one defense of a recording with them.
+
+    A defense's view holds the events of its sensors, the alerts of its rule sets that rest
+    on those events alone, and each step with the defense's verdict in place of the step's
+    own. ``events`` and ``alerts`` keep each one's place in the recording's own list, and
+    ``own`` is where the view's verdicts, ordinary activity and score are, so that a problem
+    names the place a reader finds in the file.
+    """
+
+    steps: list[Mapping[str, Any]]
+    events: list[tuple[int, Mapping[str, Any]]]
+    alerts: list[tuple[int, Mapping[str, Any]]]
+    ordinary: Mapping[str, Any] | None
+    score: Mapping[str, Any]
+    own: str
+
+    def verdict(self, index: int) -> str:
+        """Where the view's verdict on the step at ``index`` is: on the step, or in the defense."""
+
+        return f"{self.own}steps.{self.steps[index]['id']}" if self.own else f"steps[{index}]"
+
+
+def _whole(value: Mapping[str, Any]) -> _View:
+    """A recording without defenses, which is one view: all of it."""
+
+    events, alerts = list(enumerate(value["events"])), list(enumerate(value["alerts"]))
+    return _View(value["steps"], events, alerts, value.get("ordinary"), value["score"], "")
+
+
+def _view(value: Mapping[str, Any], index: int) -> _View:
+    """The view of the defense at ``index`` of a well-formed recording."""
+
+    defense = value["defenses"][index]
+    sensors, detectors = set(defense["sensors"]), set(defense["detectors"])
+    events = [item for item in enumerate(value["events"]) if item[1]["sensor"] in sensors]
+    held = {event["id"] for _, event in events}
+    alerts = [
+        item
+        for item in enumerate(value["alerts"])
+        if item[1]["detector"] in detectors and held.issuperset(item[1]["events"])
+    ]
+    steps: list[Mapping[str, Any]] = []
+    for step in value["steps"]:
+        verdict = defense["steps"][step["id"]]
+        own = {key: item for key, item in step.items() if key not in _VERDICT}
+        steps.append({**own, **{key: verdict[key] for key in _VERDICT if key in verdict}})
+    return _View(
+        steps, events, alerts, defense.get("ordinary"), defense["score"], f"defenses[{index}]."
+    )
+
+
+def _check_defenses(
+    value: Mapping[str, Any], started: datetime, finished: datetime | None, check: _Checker
+) -> None:
+    """Check a well-formed recording with defenses: its events and alerts are in time order,
+    every event and alert belongs to a defense, the top level holds the first defense's
+    verdicts, and the view of each defense agrees with itself as a recording without
+    defenses does."""
+
+    defenses = value["defenses"]
+    # The recording's own lists are in time order, as each view's part of them is. Said first,
+    # a view that finds the same is not said again.
+    for key in ("events", "alerts"):
+        _in_order(check, key, [_time(item["time"]) for item in value[key]], "time")
+    views = [_view(value, index) for index in range(len(defenses))]
+    # An event or an alert that no view holds is judged by no defense. Each sensor and each
+    # rule set that no defense has is named once, at the first event or alert of it.
+    held = {place for view in views for place, _ in view.events}
+    said: set[str] = set()
+    for index, event in enumerate(value["events"]):
+        if index not in held and event["sensor"] not in said:
+            said.add(event["sensor"])
+            check.fail(
+                f"events[{index}].sensor",
+                f"is {event['sensor'][:80]!r}, a sensor of no defense: every event of a "
+                "recording with defenses is of a sensor that one of them has.",
+            )
+    held = {place for view in views for place, _ in view.alerts}
+    run = {detector for defense in defenses for detector in defense["detectors"]}
+    said = set()
+    for index, alert in enumerate(value["alerts"]):
+        detector = alert["detector"]
+        if index in held:
+            continue
+        if detector in run:
+            check.fail(
+                f"alerts[{index}]",
+                f"is in no defense's view: no defense has its detector, {detector[:80]!r}, and "
+                "the sensor of every event it names.",
+            )
+        elif detector not in said:
+            said.add(detector)
+            check.fail(
+                f"alerts[{index}].detector",
+                f"is {detector[:80]!r}, a detector of no defense: every alert of a recording "
+                "with defenses is of a rule set that one of them has.",
+            )
+
+    first = defenses[0]
+    for index, step in enumerate(value["steps"]):
+        verdict = first["steps"][step["id"]]
+        for key in _VERDICT:
+            if not _same(step.get(key), verdict.get(key)):
+                check.fail(
+                    f"steps[{index}].{key}",
+                    f"differs from defenses[0].steps.{step['id']}.{key}: the top level of a "
+                    "recording with defenses holds the verdicts of its first defense.",
+                )
+    for key in ("ordinary", "score"):
+        if not _same(value.get(key), first.get(key)):
+            check.fail(
+                key,
+                f"differs from defenses[0].{key}: the top level of a recording with defenses "
+                "holds the verdicts of its first defense.",
+            )
+
+    for view in views:
+        found = _Checker()
+        _check_agreement(value, view, started, finished, found)
+        check.once(found.problems)
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Whether two values of a recording are the same JSON value, as the interface's reader
+    compares them: true and false are never the numbers 1 and 0."""
+
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return a.keys() == b.keys() and all(_same(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    return bool(a == b)
+
+
+def _in_order(check: _Checker, where: str, keys: list[Any], by: str) -> None:
+    """A list of the recording is sorted: its steps by order, its events and alerts by time."""
+
+    if any(later < earlier for earlier, later in zip(keys, keys[1:], strict=False)):
+        check.fail(where, f"must be sorted by {by}.")
 
 
 def _outcome(happened: str, visibility: str) -> str:
@@ -617,17 +885,22 @@ def _outcome(happened: str, visibility: str) -> str:
 
 
 def _check_agreement(
-    value: Mapping[str, Any], started: datetime, finished: datetime | None, check: _Checker
+    value: Mapping[str, Any],
+    view: _View,
+    started: datetime,
+    finished: datetime | None,
+    check: _Checker,
 ) -> None:
-    """Check that the score, outcomes, events, alerts and times of a well-formed recording agree."""
+    """Check that the score, outcomes, events, alerts and times of one view of a well-formed
+    recording agree: of a recording without defenses, or of what one of its defenses judged."""
 
-    steps, events, alerts = value["steps"], value["events"], value["alerts"]
+    steps, events, alerts = view.steps, view.events, view.alerts
     sensor_hosts = {sensor["id"]: sensor["host"] for sensor in value["network"]["sensors"]}
     detector_when = {item["id"]: item["when"] for item in value["network"]["detectors"]}
-    event_steps = {event["id"]: event["step"] for event in events}
-    event_hosts = {event["id"]: event["host"] for event in events}
-    event_times = {event["id"]: (_time(event["time"]), event["time"]) for event in events}
-    held = Counter(event["step"] for event in events)
+    event_steps = {event["id"]: event["step"] for _, event in events}
+    event_hosts = {event["id"]: event["host"] for _, event in events}
+    event_times = {event["id"]: (_time(event["time"]), event["time"]) for _, event in events}
+    held = Counter(event["step"] for _, event in events)
     # The earliest time of each kind on each step, as (time, the recording's own text).
     # An alert counts from its moment: when it was raised, for a live detector, and
     # otherwise the time of its activity. The step's first alert and the race agree.
@@ -651,22 +924,18 @@ def _check_agreement(
         ):
             check.fail(where, "falls outside the run's start and end.")
 
-    def in_order(where: str, keys: list[Any], by: str) -> None:
-        if any(later < earlier for earlier, later in zip(keys, keys[1:], strict=False)):
-            check.fail(where, f"must be sorted by {by}.")
-
-    in_order("steps", [step["order"] for step in steps], "order")
-    in_order("events", [_time(event["time"]) for event in events], "time")
-    in_order("alerts", [_time(alert["time"]) for alert in alerts], "time")
-    _check_steps_run_forward(steps, events, alerts, check)
+    _in_order(check, "steps", [step["order"] for step in steps], "order")
+    _in_order(check, "events", [_time(event["time"]) for _, event in events], "time")
+    _in_order(check, "alerts", [_time(alert["time"]) for _, alert in alerts], "time")
+    _check_steps_run_forward(view, check)
     _check_reruns(steps, check)
-    _check_ordinary(value, check)
-    for index, event in enumerate(events):
+    _check_ordinary(view, check)
+    for index, event in events:
         inside(f"events[{index}].time", event["time"])
         earliest(first_event, event["step"], event["time"])
         if event["host"] != sensor_hosts[event["sensor"]]:
             check.fail(f"events[{index}].host", "is not the host its sensor runs on.")
-    for index, alert in enumerate(alerts):
+    for index, alert in alerts:
         where = f"alerts[{index}]"
         inside(f"{where}.time", alert["time"])
         origin, detector = alert["rule"]["origin"], alert["detector"]
@@ -738,11 +1007,13 @@ def _check_agreement(
                     f"is {given}, but the step's first {what} is at {expected[1]}.",
                 )
 
+    of_sensors = " of the defense's sensors" if view.own else ""
     for index, step in enumerate(steps):
-        where = f"steps[{index}]"
+        # What a step did is the step's own; what was made of it is the view's.
+        where = view.verdict(index)
         step_id = step["id"]
-        inside(f"{where}.started", step.get("started"))
-        inside(f"{where}.ended", step.get("ended"))
+        inside(f"steps[{index}].started", step.get("started"))
+        inside(f"steps[{index}].ended", step.get("ended"))
         first_time(step, where, "first_event", first_event.get(step_id), "sensor event")
         first_time(
             step, where, "first_alert", first_pinned.get(step_id),
@@ -800,7 +1071,7 @@ def _check_agreement(
         if (tied if kept is None else kept) != held[step_id]:
             check.fail(
                 f"{where}.visibility",
-                f"counts events the recording does not hold ({held[step_id]}).",
+                f"counts events the recording does not hold{of_sensors} ({held[step_id]}).",
             )
     tests = [step for step in steps if step["role"] == "test"]
     took = [step for step in tests if step["happened"]["answer"] == "took effect"]
@@ -813,40 +1084,41 @@ def _check_agreement(
         },
         "stopped": sum(step["outcome"] == "stopped" for step in steps),
     }
-    score = value["score"]
+    score = view.score
     if "alerted_with_lab_rules" in score:
         expected_score["alerted_with_lab_rules"] = sum(
             step.get("outcome_with_lab_rules", step["outcome"]) == "alerted" for step in took
         )
-    if "false_alerts" in score and "ordinary" not in value:
+    if "false_alerts" in score and view.ordinary is None:
         check.fail(
-            "score.false_alerts",
-            "is set, but the recording has no ordinary activity to count it from.",
+            f"{view.own}score.false_alerts",
+            f"is set, but the {'defense' if view.own else 'recording'} has no ordinary activity "
+            "to count it from.",
         )
-    elif "false_alerts" in score:
+    elif "false_alerts" in score and view.ordinary is not None:
         # Each rule that alerted on ordinary activity is one false alert.
         expected_score["false_alerts"] = len(
             {
                 match["rule"]
-                for match in value["ordinary"]["matches"]
+                for match in view.ordinary["matches"]
                 if match["level"] in _COUNTING_LEVELS
             }
         )
     for key, number in expected_score.items():
         if score[key] != number:
-            check.fail(f"score.{key}", f"is {score[key]}, but the steps give {number}.")
-    _check_race(value, first_pinned, check)
+            check.fail(f"{view.own}score.{key}", f"is {score[key]}, but the steps give {number}.")
+    _check_race(value, view, first_pinned, check)
 
 
-def _check_ordinary(value: Mapping[str, Any], check: _Checker) -> None:
+def _check_ordinary(view: _View, check: _Checker) -> None:
     """Each rule of ordinary activity is listed once, with no more events than there were."""
 
-    ordinary = value.get("ordinary")
+    ordinary = view.ordinary
     if ordinary is None:
         return
     listed: set[str] = set()
     for index, match in enumerate(ordinary["matches"]):
-        where = f"ordinary.matches[{index}]"
+        where = f"{view.own}ordinary.matches[{index}]"
         if match["rule"] in listed:
             check.fail(
                 f"{where}.rule", f"names {match['rule'][:80]!r} again; each rule is listed once."
@@ -892,22 +1164,19 @@ def _check_reruns(steps: list[Mapping[str, Any]], check: _Checker) -> None:
             )
 
 
-def _check_steps_run_forward(
-    steps: list[Mapping[str, Any]],
-    events: list[Mapping[str, Any]],
-    alerts: list[Mapping[str, Any]],
-    check: _Checker,
-) -> None:
+def _check_steps_run_forward(view: _View, check: _Checker) -> None:
     """Steps run forward in their order, one after another, and none ends before it starts.
 
     Playback gives each step the stretch of the run from its start, or its earliest event
     or alert, to its end, or its latest event or alert: a sensor stamps its own records, a
     little before a step's start or after its end. Those stretches follow one another in
-    the steps' order, so no step's window is moved or squeezed to fit.
+    the steps' order, so no step's window is moved or squeezed to fit. A defense's view is
+    played with its own events and alerts, so its stretches are its own.
     """
 
+    steps = view.steps
     stamps: dict[str, list[tuple[datetime, str]]] = {step["id"]: [] for step in steps}
-    for item in [*events, *alerts]:
+    for _, item in [*view.events, *view.alerts]:
         stamps[item["step"]].append((_time(item["time"]), item["time"]))
     last_start: tuple[int, tuple[datetime, str]] | None = None
     last_end: tuple[int, tuple[datetime, str]] | None = None
@@ -941,7 +1210,7 @@ def _check_steps_run_forward(
         first = min(starts) if starts else (min(ends) if ends else None)
         if first is not None and last_window is not None and first[0] < last_window[1][0]:
             check.fail(
-                where,
+                view.verdict(index),
                 f"begins at {first[1]}, before steps[{last_window[0]}] ends at "
                 f"{last_window[1][1]}: a step's events and alerts come after those of the step "
                 "before it.",
@@ -956,7 +1225,10 @@ def _check_steps_run_forward(
 
 
 def _check_race(
-    value: Mapping[str, Any], first_raised: Mapping[str, tuple[datetime, str]], check: _Checker
+    value: Mapping[str, Any],
+    view: _View,
+    first_raised: Mapping[str, tuple[datetime, str]],
+    check: _Checker,
 ) -> None:
     """Check the goal and the two times of an attack path's race against its steps.
 
@@ -968,17 +1240,17 @@ def _check_race(
     reached the goal, so that is not checked.
     """
 
-    score, steps = value["score"], value["steps"]
+    score, steps, at = view.score, view.steps, f"{view.own}score"
     goal = value["attacker"]["goal"]
     if value["kind"] == "test list":
         if goal is not None:
             check.fail("attacker.goal", "is set, but a test list has no goal: it is null.")
         for key in ("first_alert_seconds", "goal_seconds"):
             if key in score:
-                check.fail(f"score.{key}", "is written only for an attack path.")
+                check.fail(f"{at}.{key}", "is written only for an attack path.")
         return
     if "goal_seconds" in score and goal is None:
-        check.fail("score.goal_seconds", "is set, but the attacker has no goal.")
+        check.fail(f"{at}.goal_seconds", "is set, but the attacker has no goal.")
     origin: datetime | None = None
     if steps:
         first = steps[0]
@@ -1003,7 +1275,7 @@ def _check_race(
     if "first_alert_seconds" in score:
         if not test_alerts:
             check.fail(
-                "score.first_alert_seconds",
+                f"{at}.first_alert_seconds",
                 "is set, but no step of role test has a counting alert of a published rule.",
             )
         elif origin is not None:
@@ -1011,7 +1283,7 @@ def _check_race(
             expected = max(0.0, (min(test_alerts) - origin).total_seconds())
             if abs(score["first_alert_seconds"] - expected) > 0.001:
                 check.fail(
-                    "score.first_alert_seconds",
+                    f"{at}.first_alert_seconds",
                     f"is {score['first_alert_seconds']}, but the steps give {expected:.3f}.",
                 )
     # With no steps there is no step end to reach the goal at; with a first step that is
@@ -1024,7 +1296,7 @@ def _check_race(
         ]
         if not any(abs(score["goal_seconds"] - end) <= 0.001 for end in ends):
             check.fail(
-                "score.goal_seconds",
+                f"{at}.goal_seconds",
                 f"is {score['goal_seconds']}, but no step ends that long after the first "
                 "step started.",
             )

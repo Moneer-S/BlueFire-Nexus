@@ -19,7 +19,7 @@ import { stepRows } from "../live/analyse";
 import { capital, count, MARK_WORDS, plural, sensorColours, sensorShortName, testNumbers } from "../live/format";
 import { runFacts } from "../live/moment";
 import { buildTimeline } from "../live/playback";
-import { readRecording, RecordingError, type Recording, type RecordingEvent } from "../live/recording";
+import { firstView, readRecording, RecordingError, type Recording, type RecordingEvent } from "../live/recording";
 import { StepDetail } from "../live/StepDetail";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import { OutcomeMark, SideMark, Stages, type StageLinks } from "../components/PairStages";
@@ -71,9 +71,10 @@ function ComparedBar({ summary, place = -1 }: { summary?: DeltaSummary; place?: 
   </header>;
 }
 
+/** The recording as its own page plays it: one with defenses as its first defense judged the run. */
 function read(value: unknown): { recording: Recording } | { problem: string } {
   try {
-    return { recording: readRecording(value) };
+    return { recording: firstView(readRecording(value)) };
   } catch (error) {
     return { problem: error instanceof RecordingError ? error.message : "The recording could not be read." };
   }
