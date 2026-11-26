@@ -204,6 +204,9 @@ export function fixHint(recording: Recording, step: Step, matches?: MatchGroups)
     return `Start with a sensor: ${why}. Other runs of ${step.technique.id} were recorded: ${named.join(", ")}${more}.`;
   }
   if (step.outcome !== "seen") return null;
+  // One of the lab's own rules alerted here, as the line above the hint says: no published rule is the place to start, and
+  // what is left is the score, in the fix page's words.
+  if (matches ? matches.labAlert.length > 0 : step.outcome_with_lab_rules === "alerted") return "The score counts published rules only, and none of those alerted.";
   const rules = new Map<string, Alert>();
   for (const alert of matches?.review ?? []) if (!rules.has(alert.rule.id)) rules.set(alert.rule.id, alert);
   const quiet = (alert: Alert) => ordinaryMatches(recording, alert.rule.title) ?? 0;
