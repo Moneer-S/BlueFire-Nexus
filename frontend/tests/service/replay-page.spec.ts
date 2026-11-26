@@ -250,7 +250,7 @@ test("the unseen test says it took effect and what the recording says of it, and
   await expect(detail.getByRole("heading", { name: UNSEEN })).toBeVisible();
   await expect(detail).toBeFocused();
   await expect(detail).toContainText(`It took effect, and ${basis}.`);
-  await expect(detail.getByRole("status")).toContainText("Start with a sensor: its only record is the harness's own launch of its command, which never counts. Other runs of T1070.003 were recorded");
+  await expect(detail.getByRole("status")).toContainText("Start with a sensor: its only record is its launcher's start, which never counts. Other runs of T1070.003 were recorded");
   // The page has no app to fix in, so the detail offers no second "Fix this".
   await expect(detail.getByRole("button", { name: "Fix this" })).toHaveCount(0);
 

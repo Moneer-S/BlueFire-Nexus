@@ -150,9 +150,12 @@ Linux machine shipped with the app is
   appears when it fires. Analyse mode shows the whole run at once and lists a
   step's matches in firing order.
 - **The score is the recording's.** While watching, the score counts a step
-  once the screen has told its outcome; at the end of the run it is the
-  recording's `score`. False alerts, on ordinary activity outside every step,
-  have no times in a recording, so watch mode shows them only at the end. In
+  as alerted, seen or unseen once the screen has told its outcome, and as
+  stopped from its recorded end on, when its host's badge and the log say it
+  was stopped, as the race line's count of stopped reruns does; at the end of
+  the run it is the recording's `score`. False alerts, on ordinary activity
+  outside every step, have no times in a recording, so watch mode shows them
+  only at the end. In
   analyse mode it is the whole run's score from the start. False alerts are
   shown only with the ordinary activity they are counted from. The time to the
   first alert on a test (on an attack path, on a step) is read from the alerts

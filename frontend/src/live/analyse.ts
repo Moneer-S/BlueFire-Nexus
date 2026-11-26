@@ -196,8 +196,8 @@ export function fixHint(recording: Recording, step: Step, matches?: MatchGroups)
     const recorded = otherRuns(recording, step)
       .filter((other) => other.outcome === "alerted" || other.outcome === "seen")
       .sort((a, b) => Number(b.outcome === "alerted") - Number(a.outcome === "alerted") || a.order - b.order);
-    // Why a sensor is the place to start, in the recording's own words; for the lab, its one record is the harness's own start of the command.
-    const why = onlyItsLaunch(step) ? "its only record is the harness's own launch of its command, which never counts" : unseenWords(step);
+    // Why a sensor is the place to start, in the recording's own words; for the lab, its one record is its launcher's start, named as the recording names it.
+    const why = onlyItsLaunch(step) ? "its only record is its launcher's start, which never counts" : unseenWords(step);
     if (recorded.length === 0) return `Start with a sensor: ${why}.`;
     const named = recorded.slice(0, 3).map((other) => `${stepLabel(recording, other)} ${other.outcome === "seen" ? "seen" : "alerted"}`);
     const more = recorded.length > 3 ? ` and ${recorded.length - 3} more` : "";

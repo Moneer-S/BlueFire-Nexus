@@ -198,14 +198,14 @@ describe("the Runs screen's recorded runs", () => {
     // The headline names the one test, and no line under it names it again.
     expect(within(watch).getAllByText(/Clear Bash history \(echo\)/)).toHaveLength(1);
     expect(within(watch).getByText("unseen")).toBeVisible();
-    // The price in plain words, not the lab's log line.
-    expect(within(watch).getByText("Price").parentElement).toHaveTextContent("Price2 published rules alert on ordinary activity, before and after");
+    // The price in plain words, not the lab's log line, under the label the comparison's page heads it with.
+    expect(within(watch).getByText("What it cost").parentElement).toHaveTextContent("What it cost2 published rules alert on ordinary activity, before and after");
     expect(within(rule).getByText("A new rule")).toBeVisible();
     expect(within(rule).getByText("Shell History File Truncated In Place")).toBeVisible();
     expect(within(rule).getByText("One run evaluated with two rule sets, 24 Nov 2026")).toBeVisible();
     expect(within(rule).getByText("Clear Bash history (echo) and (cat dev/null), each also with other arguments")).toBeVisible();
     // The price its page gives: the run after kept the one new rule, which it does only for a rule that alerted on no ordinary activity.
-    expect(within(rule).getByText("Price").parentElement).toHaveTextContent("PriceNone in this run: the new rule alerted on no ordinary activity, which the lab requires before it keeps a rule");
+    expect(within(rule).getByText("What it cost").parentElement).toHaveTextContent("What it costNone in this run: the new rule alerted on no ordinary activity, which the lab requires before it keeps a rule");
     // Alerted by the lab's rules alone, and said so.
     expect(within(rule).getByText("alerted")).toBeVisible();
     expect(within(rule).getByText("with the lab's rules")).toBeVisible();

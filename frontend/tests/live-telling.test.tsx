@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { refusalOf } from "../src/live/EventLog";
 import { LiveView } from "../src/live/LiveView";
 import type { LiveViewProps } from "../src/live/LiveView";
-import { momentOf, scoreOnScreen, stepMatches } from "../src/live/moment";
-import { buildTimeline, frameAt, seekStep, stepEnd, stepMatchesInFiringOrder } from "../src/live/playback";
+import { momentOf, revealTime, scoreOnScreen, stepMatches } from "../src/live/moment";
+import { buildTimeline, endedAt, frameAt, seekStep, stepEnd, stepMatchesInFiringOrder } from "../src/live/playback";
 import { readRecording } from "../src/live/recording";
 import type { Recording } from "../src/live/recording";
 import { alert, at, event, recording, step } from "./live-fixture";
@@ -170,4 +171,54 @@ describe("the shipped recordings, step by step", () => {
     }
     expect(found).toEqual([]);
   });
+
+  it("lab-linux-host: at each hardened rerun's recorded end and a moment after, the host's badge, the log's mark, the score and the race line say the same of whether it was stopped", () => {
+    const shipped = readRecording(JSON.parse(readFileSync(resolve(process.cwd(), "../bluefire/data/recordings/lab-linux-host.json"), "utf-8")));
+    const timeline = buildTimeline(shipped);
+    const reruns = timeline.segments.filter((segment) => segment.step.role === "hardened");
+    expect(reruns.length).toBeGreaterThan(0);
+    const found: string[] = [];
+    let stoppedSeen = 0;
+    for (const segment of reruns) {
+      const stopped = segment.step.outcome === "stopped";
+      // Not every stopped rerun recorded the host's refusal: the log can mark only a line it has.
+      const refusal = refusalOf(shipped.events.filter((event) => event.step === segment.step.id)) !== undefined;
+      // Every rerun before this one has left the screen and is counted; this one counts from its recorded end on.
+      const before = reruns.filter((other) => other.end <= segment.start && other.step.outcome === "stopped").length;
+      const length = segment.end - segment.start;
+      const ended = (endedAt(segment) - segment.start) / length;
+      const told = (revealTime(timeline, segment) - segment.start) / length;
+      const moments: [string, number, boolean][] = [
+        ["just before its end", ended - 1e-4, false],
+        ["at its end", ended + 1e-9, true],
+        ["a moment after its end", (ended + told) / 2, true],
+        ["when its outcome is told", told + 1e-9, true],
+      ];
+      for (const [words, place, over] of moments) {
+        if (place < 0 || place > 1) continue;
+        const { container, unmount } = open(shipped, { step: segment.step.id, at: place, paused: true });
+        const where = `rerun ${segment.step.id} ${words}`;
+        const badge = text(container, ".lv-badge");
+        const marked = [...container.querySelectorAll(".lv-log-mark")].some((mark) => mark.textContent === "stopped");
+        const header = Number.parseInt(text(container, ".lv-score-reruns b") ?? "", 10);
+        const race = Number(text(container, ".lv-phase b") ?? "NaN");
+        const expected = before + (stopped && over ? 1 : 0);
+        if (over && stopped) {
+          stoppedSeen += 1;
+          if (badge !== "stopped") found.push(`${where}: the badge reads ${badge}`);
+          if (refusal && !marked) found.push(`${where}: the log marks no line stopped`);
+          if (!refusal && marked) found.push(`${where}: the log marks a line stopped that is not the refusal`);
+        } else {
+          if (badge === "stopped") found.push(`${where}: the badge reads stopped`);
+          if (marked) found.push(`${where}: the log marks a line stopped`);
+        }
+        if (header !== expected) found.push(`${where}: the score reads ${header} stopped, not ${expected}`);
+        if (race !== expected) found.push(`${where}: the race line reads ${race} stopped, not ${expected}`);
+        unmount();
+      }
+    }
+    expect(found).toEqual([]);
+    // The recording has stopped reruns, so the walk read them.
+    expect(stoppedSeen).toBeGreaterThan(0);
+  }, 180_000);
 });

@@ -510,6 +510,10 @@ describe("the two comparisons shipped with the app", () => {
 
     const cost = screen.getByRole("region", { name: "What it cost" });
     expect(cost).toHaveTextContent("2 before, 2 after");
+    // Under the figure of two rules, each rule's matches on ordinary activity are events, as the rest of the app calls them, never alerts.
+    const rules = within(cost).getAllByRole("listitem").map((item) => item.textContent);
+    expect(rules).toEqual(["Binary Padding - Linux: 3 events before, 3 after", "History File Deletion: 1 event before, 1 after"]);
+    expect(cost).not.toHaveTextContent(/\d+ alerts? before/);
     const others = screen.getByRole("region", { name: "What else moved" });
     expect(others).toHaveTextContent("1 of 91 steps moved. 90 are the same.");
     const next = screen.getByRole("region", { name: "What comes next" });

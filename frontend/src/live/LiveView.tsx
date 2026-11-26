@@ -598,7 +598,7 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
         </div>
       ) : mode === "watch" ? (
         <>
-          <RaceLine recording={recording} timeline={timeline} frame={frame} facts={facts} score={score} revealed={moment?.revealed ?? false} />
+          <RaceLine recording={recording} timeline={timeline} frame={frame} facts={facts} score={score} revealed={moment?.revealed ?? false} ended={moment?.ended ?? false} />
           <div className="lv-main">
             <NetworkMap
               recording={recording}

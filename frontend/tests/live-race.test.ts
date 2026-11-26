@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { buildTimeline, frameAt } from "../src/live/playback";
+import { buildTimeline, endedAt, frameAt } from "../src/live/playback";
 import type { Timeline } from "../src/live/playback";
 import { firstAlertClock, revealTime, runFacts } from "../src/live/moment";
 import { placeFlags, RaceLine, whoIsWinning } from "../src/live/RaceLine";
@@ -91,7 +91,8 @@ describe("the race sentence on an attack path", () => {
       const timeline = buildTimeline(value);
       const frame = frameAt(timeline, screen);
       const revealed = frame.ended || (frame.segment !== null && screen >= revealTime(timeline, frame.segment));
-      const { container, unmount } = render(createElement(RaceLine, { recording: value, timeline, frame, facts: runFacts(value, timeline), score: frame.score, revealed }));
+      const ended = frame.ended || (frame.segment !== null && screen >= endedAt(frame.segment));
+      const { container, unmount } = render(createElement(RaceLine, { recording: value, timeline, frame, facts: runFacts(value, timeline), score: frame.score, revealed, ended }));
       // The flags as a user and a screen reader get them: not the hidden copies the race line measures.
       const left = (selector: string) => {
         const flag = [...container.querySelectorAll<HTMLElement>(selector)].find((node) => !node.closest("[aria-hidden='true']"));

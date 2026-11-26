@@ -15,7 +15,7 @@ Each step is drawn on a map and marked alerted, seen (recorded, no alert) or uns
 
 Download [`docs/live-view/attack-path.html`](docs/live-view/attack-path.html) and open it in a browser; it holds this recording and works offline.
 
-Or run `docker compose up app`, open the address it prints, then **Runs** in the menu: the app replays the recorded runs and attacks nothing on your machine. With Docker Desktop, switch on "Enable host networking" in its settings first.
+Or run `docker compose up app`, open the address it prints, and choose **Runs** in the menu, then the attack path: the app replays the recorded runs and attacks nothing on your machine. With Docker Desktop, switch on "Enable host networking" in its settings first.
 
 The network is seven containers built from one spec file, on networks with no route out, and it was recorded on a GitHub-hosted runner. Each step runs a test from Atomic Red Team, a public library of attack tests. [How the network is built and run](lab/README.md#range-one-its-hosts) names each host and gives the command that runs the path in Docker.
 
@@ -23,7 +23,7 @@ The network is seven containers built from one spec file, on networks with no ro
 
 ### Read what no rule alerted on
 
-Every step after the password guessing was recorded, and no rule alerted on any of them. Drag the timeline to step 9, pictured: every stock rule that matched it was below alert level, and the screen names the one to start from.
+Every step after the password guessing was recorded, and no rule alerted on any of them. In the recording, drag the timeline to step 9, pictured: every stock rule that matched it was below alert level, and the screen names the one to start from.
 
 ![The live view late in the step that logs in to the build server with the key it found and copies files back: the hop from the web server to the build server lit, the step told seen with two rules matched for review and none at alert level, Fix this beside it, and a hint to start from the rule "Integrity checksum changed"](docs/assets/front/path-no-alert.png)
 
