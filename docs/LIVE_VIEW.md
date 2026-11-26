@@ -341,13 +341,13 @@ A map of one host is drawn as before.
   [RECORDING.md](RECORDING.md)). A link from a host to itself, or one given
   twice, is refused the same way.
 - The map uses the room the screen gives it. A network that needs more room
-  than that makes the map taller, and the view then grows and scrolls as it
-  does in a small window (see [Two modes](#two-modes)), with the play button,
-  the speeds, the clock and the timeline kept at the foot of the window, and
-  the step's words below the fold as a whole (see
-  [What gives way in a short room](#what-gives-way-in-a-short-room)). A map
-  squeezed to no height by the rows around it still claims the least height
-  it needs.
+  than that makes the map taller, and the view then grows and the page
+  scrolls as in a small window: [Two modes](#two-modes) says where the play
+  button, the speeds, the clock and the timeline then stand, in the single
+  page and in the app, and
+  [What gives way in a short room](#what-gives-way-in-a-short-room) what goes
+  below the fold first. A map squeezed to no height by the rows around it
+  still claims the least height it needs.
 - **Columns fit the window.** Two columns stand at least 112 pixels apart, and
   far enough apart for a stack of sensors' names and counts beside a host. The
   last column stands far enough from a defense host for its sensors' words.
@@ -420,15 +420,17 @@ A map of one host is drawn as before.
   goes back to watch mode at that step. The table opens on the tests, or on
   every step when the chosen step is not a test (as at the start of a run,
   where the first canary is chosen) or the recording has no test. No cell of
-  the table is cut: a long title or a long list of the rules that matched wraps onto a second
-  line, and a hardened rerun's "not stopped" stands under its outcome. The title takes the room the other columns leave, each as wide as its
+  the table is cut: a long title wraps onto a second line, a list of the rules
+  that matched breaks between its counts where the column is narrow, and a
+  hardened rerun's "not stopped" stands under its outcome. The title takes the room the other columns leave, each as wide as its
   contents need, and where the recording keeps fewer of a step's events than
   were recorded, how many it keeps of how many were recorded stands under the
   title, not beside it ("1,439 of 1,857 events kept"): the sensors' columns
   count the kept events, as their tooltips say. The column of rules matched
   counts rules, each once however often it matched, as the step's sentence
-  does: step 1 of the attack path reads "1 alert · 6 review · 2 info", though
-  its six rules for review matched 1,361 times. The table and the detail beside it let their last visible lines fade
+  does: step 1 of the attack path shows "1 alert", "6 review" after a dot of
+  its colour, and "2 info", one under the other where the column is narrow,
+  though its six rules for review matched 1,361 times. The table and the detail beside it let their last visible lines fade
   out at their foot, with as much room after their end, so no row or line is
   cut hard by an edge. When the table scrolls to the chosen row, it stands at
   a row's edge under its head with the chosen row whole, and it finds that
@@ -440,21 +442,40 @@ A map of one host is drawn as before.
 
 In a small window, or a large one zoomed in, and wherever a network's map
 needs more height than the window gives, the view grows with what it holds
-and the page scrolls; at phone width its bands stack. While watching, the
-transport (the play button, the speeds, the clock and the timeline) stays at
-the foot of the window as the rest scrolls under it, so playing, pausing and
-moving on the timeline stay in reach. The network map keeps its least width
-and scrolls sideways inside its own box; nothing else scrolls sideways.
-Nothing is cut off beyond reach. The app's page of a recorded run does the
-same at the same window sizes.
+and the page scrolls; at phone width its bands stack. The network map keeps
+its least width and scrolls sideways inside its own box; nothing else scrolls
+sideways. Nothing is cut off beyond reach.
+
+On the single replay page, from 1280 by 720 up to 1920 by 1080, the step's
+words and the transport (the play button, the speeds, the clock and the
+timeline) stand in the window without scrolling, the transport at its foot.
+In a lower window the page scrolls wherever the view needs more height than
+the window gives, and while watching the transport stays at the foot of the
+window as the rest scrolls under it, so playing, pausing and moving on the
+timeline stay in reach.
+
+The app's page of a recorded run stands under the app's top bar and a line
+that names the run, and needs a window 860 pixels high. At 1440 by 900 and
+1920 by 1080 it does not scroll, and shows the step's words and the transport
+as the single page does. In a lower window the page scrolls by what it lacks,
+and the transport reaches below the window until the page is scrolled: at
+1366 by 768 the page scrolls by 92 pixels and the transport is below the
+window, and on some steps the hint too; at 1280 by 720 it scrolls by 140
+pixels, and the hint is below the window with the transport, the outcome's
+line at the window's edge or below it. Scrolled to its end, the page shows the transport whole at the
+foot of the window. In a window 700 pixels high or lower the app's page takes
+the small window's layout of the single page: the transport stays at the foot
+of the window from the start, and what does not fit of the step's words is
+below the fold.
 
 ### What gives way in a short room
 
 The step's sentence, the line with its outcome (and "Fix this" where the step
 has it) and the hint under it never give way: in watch mode they stand whole
-above the transport, without scrolling, in the room the app gives the view on
-a laptop or a desktop window (1280 by 720 up to 1920 by 1080, less the app's
-own bars). The band that holds them keeps the height of its eyebrow, a
+above the transport, without scrolling, on the single page in a window from
+1280 by 720 up to 1920 by 1080, and in the app at 1440 by 900 and 1920 by
+1080; in a lower window the app's page scrolls, as said above. The band that
+holds them keeps the height of its eyebrow, a
 sentence of two lines, the outcome's line and the hint at every step, so the
 map and the log stand still from step to step; a step whose words need more
 makes the band taller, never cut. When the room is short, the parts give way
@@ -478,7 +499,10 @@ in this order:
    more than at the roomier one.
 3. **Only then does the page scroll.** The map keeps its least height and
    reaches down to the transport, so what does not fit, the step's words, is
-   below the fold as a whole and never cut in half by the transport.
+   below the fold as a whole and never cut in half by the transport. This is
+   the single page in a short window, and the app's page in a window 700
+   pixels high or lower; between that and 860 pixels the app's page scrolls
+   for its own least height, as said above.
 
 The view measures its parts to decide this (`room.ts`); in a short window the
 band's words stand a little closer.
@@ -618,9 +642,12 @@ both recorded runs, its part "Before against after" with the two comparisons
 shipped with the app (`app-runs-pair.png`), the page of the pair of runs
 (`app-pair.png`) and the page of the run evaluated with two rule sets
 (`app-rule-pair.png`), each with both stages drawn, the run on one Linux
-machine opened from the Runs screen, with Analyse pressed and the first row of
-the table clicked, the unseen test, its detail beside the table with "Fix
-this" (`app-analyse.png`, 1440 by 900), then the Hardened tab and "Watch from
+machine opened from the Runs screen, with Analyse pressed once the first test
+is playing (pressed in the first seconds, while the first canary plays,
+Analyse opens on every step), so that the table stands on its tab of the
+tests ("60 of 91"), and with its first row clicked, the unseen test, whose
+detail stands beside the table with "Fix this" (`app-analyse.png`, 1440 by
+900), then the Hardened tab and "Watch from
 here" on a rerun that was stopped, paused late in it, the rerun told stopped
 with its hardening change named and what the same test did without it
 (`app-watch-stopped.png`, 1440 by 900), and that run's page on the first
@@ -663,7 +690,10 @@ in every file but the artifact's own note of its commit.
 The script fails if a page prints an error, if a replay page asks for anything
 beyond its own file or the app for anything beyond the service, if a picture
 or the page at 1440 by 900 would show a rule title cut short or a wrapped one
-reaching the next rule engine, if the host's label reaches below the map, if
+reaching the next rule engine, if a rule's title or its line of counts in a
+step's detail in analyse mode is cut short at 1440 by 900, in the page or in
+the app (each rule title of the run on one Linux machine, on the first step
+that lists it), if the host's label reaches below the map, if
 the race line of a watched moment is cut short, if the lanes' time axis has
 no label past its middle, or if a cell of the analyse table it pictures is cut
 short or a title there takes more than two lines (three where the live view
@@ -695,7 +725,8 @@ run that made it, and the commit the pictures were made from.
 
 The pictures of the [README](../README.md) in `docs/assets/front/`, the
 pictures of [the run on the front page](#the-run-on-the-front-page) and of
-[the run on one Linux machine](#the-run-on-one-linux-machine) in
+[the run on one Linux machine](#the-run-on-one-linux-machine) and the
+Overview that [the tour](WORKSPACE.md) shows in
 `docs/assets/screenshots/`, and the pages
 [`docs/live-view/attack-path.html`](live-view/attack-path.html) and
 [`docs/live-view/replay.html`](live-view/replay.html) are files of that

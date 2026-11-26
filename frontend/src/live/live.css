@@ -3923,7 +3923,7 @@
 }
 
 .lv-dt-mnote {
-  grid-column: 2 / 4;
+  grid-column: 2;
   font-size: 12px;
   color: var(--lv-muted-strong);
 }
@@ -4099,10 +4099,21 @@
 
 .lv-dt-match {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr);
+  /* The chip stands on the title's first line, also where the counts go under it. */
+  align-items: baseline;
   gap: 10px;
   padding: 3px 0;
+}
+
+/* The title and its counts: on one line where both fit, the counts at the right; where they do not, the counts go under the title and start where it starts. */
+.lv-dt-mline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
 }
 
 .lv-dt-match.is-dim {
@@ -4140,11 +4151,10 @@
 }
 
 .lv-dt-rule {
-  overflow: hidden;
+  min-width: 0;
   font-size: 12.5px;
   color: var(--lv-text-soft);
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .lv-dt-mmeta {
@@ -4706,17 +4716,7 @@
   }
 
   /* A step's matches and other runs: what follows a title wraps under it, so the title keeps its width. */
-  .lv-dt-match {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .lv-dt-mmeta,
-  .lv-dt-mnote {
-    grid-column: 2 / -1;
-  }
-
-  .lv-dt-mmeta,
-  .lv-dt-rule {
+  .lv-dt-mmeta {
     white-space: normal;
   }
 

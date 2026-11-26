@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -576,9 +576,11 @@ describe("the two comparisons shipped with the app", () => {
     expect(new Set(fetched.mock.calls.map(([, sha256]) => sha256))).toEqual(new Set([delta.before.sha256, delta.after.sha256]));
   }, 30_000);
 
-  it("on a step whose only published match is on its launcher line, says so on both stages and in the detail below them", async () => {
+  it("on a listed step whose only published match is on its launcher line, says so on both stages and in the detail below them", async () => {
     // Process Discovery - ps: in both evaluations, the one published rule that matched it matched only the line that started it.
-    const { delta, files } = shippedRule();
+    // No shipped comparison lists that step, and the stages show only a step the page lists: here it is listed as one that changed without a cause.
+    const { delta: shipped, files } = shippedRule();
+    const delta: Delta = { ...shipped, steps: shipped.steps.map((step) => (step.id === "test:4ff64f0b" ? { ...step, result: "without cause" } : step)) };
     mount(delta, { files, search: "?step=test%3A4ff64f0b&detail=1" });
     const stages = await screen.findByRole("group", { name: "Process Discovery - ps, before and after" });
     const words = "Sysmon for Linux recorded 5 events, auditd recorded 2 events. 1 rule matched only the launcher line, which never counts.";
@@ -594,6 +596,20 @@ describe("the two comparisons shipped with the app", () => {
     for (const article of articles) {
       expect(article).toHaveTextContent("7 events recorded, 1 rule matched only the launcher line, which never counts.");
       expect(article).toHaveTextContent("No rule matched what the step itself did: start by writing one.");
+    }
+  }, 30_000);
+
+  it("opened at a step the change did not move, shows the step that moved, as it does with no step named", async () => {
+    // Process Discovery - ps was seen with no alert in both runs of the change of auditd's settings: the page lists it
+    // nowhere, so its stages would stand beside the move of another step and under what made that step's difference.
+    const { delta, files } = shippedSensor();
+    for (const search of ["?step=test%3A4ff64f0b&detail=1", ""]) {
+      mount(delta, { files, search });
+      expect(await screen.findByRole("group", { name: "Clear Bash history (echo), before and after" })).toBeVisible();
+      expect(screen.queryByRole("group", { name: "Process Discovery - ps, before and after" })).toBeNull();
+      expect(screen.getByRole("region", { name: "What made the difference" })).toHaveTextContent("Clear Bash history (echo)");
+      expect(screen.getByRole("region", { name: "What made the difference" })).not.toHaveTextContent("Process Discovery - ps");
+      cleanup();
     }
   }, 30_000);
 

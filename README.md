@@ -37,7 +37,7 @@ On the Runs screen, **Before against after** holds two changes to a Linux machin
 
 On the Runs screen, open the run on one Linux machine and press **Analyse**: the table lists first the one unseen test, "Clear Bash history (echo)". Click it: the panel beside the table says what happened and where to start.
 
-![The app's Analyse screen of the run on one Linux machine: the table of all 91 steps with the unseen test, Clear Bash history (echo), first and chosen, and beside the table its detail, which says it took effect and nothing of the test was recorded besides its launcher's start, with Fix this and the advice to start with a sensor](docs/assets/front/app-analyse.png)
+![The app's Analyse screen of the run on one Linux machine: the table of the 60 tests with the unseen test, Clear Bash history (echo), first and chosen, and beside the table its detail, which says it took effect and nothing of the test was recorded besides its launcher's start, with Fix this and the advice to start with a sensor](docs/assets/front/app-analyse.png)
 
 ### See what hardening stopped
 

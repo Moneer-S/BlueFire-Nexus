@@ -462,8 +462,40 @@ describe("the page for fixing a step", () => {
       ["The lab's own rules that matched", []],
       ["Matched only the line that starts the test, which never counts", ["Execution Of Script Located In Potentially Suspicious Directory"]],
     ]);
+    // The published rule under them matched only that line: the empty group says it matched nothing the test itself did, not that none matched.
+    expect(matched).toHaveTextContent("No published rule matched what the test itself did, at any level.");
+    expect(matched).not.toHaveTextContent("No published rule matched it, at any level.");
+    expect(matched).toHaveTextContent("None of the lab's own rules matched it.");
+  });
+
+  it("says no published rule matched a seen test nothing matched at all", async () => {
+    // Test 8 (step 11) of the run on one Linux machine: seen, and no rule matched it, not even on its launcher line.
+    mount("11", { recording: shipped("lab-linux-host"), pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(groupsOf(matched)).toEqual([
+      ["Published rules below alert level", []],
+      ["The lab's own rules that matched", []],
+    ]);
     expect(matched).toHaveTextContent("No published rule matched it, at any level.");
     expect(matched).toHaveTextContent("None of the lab's own rules matched it.");
+  });
+
+  it("says none of the lab's own rules matched what the test itself did when one of them matched only its launcher line", async () => {
+    const base = smallRecording();
+    const launcherOnly = alert("l1", "2", 3.2, ["2-2"], { detector: "lab", counts: false, launcher_only: true, rule: { id: "lab-medium", title: "A Lab Rule Below Alert Level", level: "medium", origin: "lab" } });
+    // Step 2 with only that match: nothing published, nothing of the lab's on what the test did.
+    const recording: Recording = { ...base, alerts: [...base.alerts.filter((item) => item.step !== "2"), launcherOnly] };
+    mount("2", { recording, pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(groupsOf(matched)).toEqual([
+      ["Published rules below alert level", []],
+      ["The lab's own rules that matched", []],
+      ["Matched only the line that starts the test, which never counts", ["A Lab Rule Below Alert Level"]],
+    ]);
+    expect(matched).toHaveTextContent("None of the lab's own rules matched what the test itself did.");
+    expect(matched).not.toHaveTextContent("None of the lab's own rules matched it.");
+    // No published rule matched at all, so that group keeps its sentence.
+    expect(matched).toHaveTextContent("No published rule matched it, at any level.");
   });
 
   it("for a step of a range, says that its sensors and rules are set in the range's spec and images, not in the lab's folders", async () => {
