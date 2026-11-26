@@ -146,7 +146,7 @@ function Verdict({ step, row }: { step: Step; row: StepRow }) {
       </>
     );
   }
-  if (step.outcome === "seen") return <>{seenWords(row.recorded ?? row.events.length, [...m.review, ...m.labAlert])}</>;
+  if (step.outcome === "seen") return <>{seenWords(row.recorded ?? row.events.length, [...m.review, ...m.labAlert, ...m.launcher])}</>;
   if (step.outcome === "unseen") {
     return (
       <>

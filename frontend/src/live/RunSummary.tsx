@@ -91,7 +91,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
           <>
             <dt>Lab rules</dt>
             <dd className="lv-sum-lab" title="Rules written in this repository. They are shown apart and never counted in the score.">
-              lab alerts on {lab} of {score.steps} {unit}s <small>not scored</small>
+              with the lab&apos;s own rules too, {lab} of {score.steps} {unit}s alerted <small>not&nbsp;scored</small>
             </dd>
           </>
         ) : null}

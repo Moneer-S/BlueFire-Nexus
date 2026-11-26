@@ -5,7 +5,7 @@
 // out between them.
 
 import { countsAsAlert, countsForScore, type Alert, type Outcome, type Recording, type RecordingEvent, type Step } from "../live/recording";
-import { capital, isLabDetector, outcomeWords, plural, sensorColours, sensorShortName } from "../live/format";
+import { capital, isLabDetector, launcherRules, outcomeWords, plural, sensorColours, sensorShortName } from "../live/format";
 
 /** What a rule engine made of the step: an alert of a published rule, an alert of the lab's own rules, a match below alert level, or nothing. */
 export type EngineState = "alert" | "lab" | "review" | "none";
@@ -31,6 +31,8 @@ export interface StageEngine {
   lab: boolean;
   state: EngineState;
   matches: StageMatch[];
+  /** How many published rules of the engine matched only the launcher line: not drawn, and named in words. */
+  launcher: number;
 }
 
 export interface StageSide {
@@ -41,6 +43,8 @@ export interface StageSide {
   engines: StageEngine[];
   events: RecordingEvent[];
   alerts: Alert[];
+  /** How many published rules matched only the step's launcher line, which never counts. */
+  launcher: number;
 }
 
 const RANK: Record<EngineState, number> = { none: 0, review: 1, lab: 2, alert: 3 };
@@ -64,8 +68,9 @@ export function stageSide(recording: Recording, stepId: string): StageSide | nul
   const step = recording.steps.find((item) => item.id === stepId);
   if (!step) return null;
   const events = recording.events.filter((event) => event.step === stepId);
-  // A match on the launcher line alone is not drawn on a stage: it says nothing of what the test did.
-  const alerts = recording.alerts.filter((alert) => alert.step === stepId && alert.launcher_only !== true);
+  // A match on the launcher line alone is not drawn on a stage: it says nothing of what the test did. The words name it.
+  const own = recording.alerts.filter((alert) => alert.step === stepId);
+  const alerts = own.filter((alert) => alert.launcher_only !== true);
   const colours = sensorColours(recording.network.sensors);
   const sensors = recording.network.sensors
     .filter((sensor) => sensor.host === step.host)
@@ -73,10 +78,11 @@ export function stageSide(recording: Recording, stepId: string): StageSide | nul
   const engines = recording.network.detectors.map((detector) => {
     const matches = alerts.filter((alert) => alert.detector === detector.id).map((alert) => ({ id: alert.id, rule: alert.rule.id, title: alert.rule.title, level: alert.rule.level, state: matchState(alert) }));
     const state = matches.reduce<EngineState>((best, match) => (RANK[match.state] > RANK[best] ? match.state : best), "none");
-    return { id: detector.id, name: engineName(recording, detector.id, detector.name), lab: isLabDetector(recording, detector.id), state, matches };
+    const launcher = launcherRules(own.filter((alert) => alert.detector === detector.id));
+    return { id: detector.id, name: engineName(recording, detector.id, detector.name), lab: isLabDetector(recording, detector.id), state, matches, launcher };
   });
   const host = recording.network.hosts.find((item) => item.id === step.host)?.name ?? step.host;
-  return { step, host, outcome: step.outcome_with_lab_rules ?? step.outcome, sensors, engines, events, alerts };
+  return { step, host, outcome: step.outcome_with_lab_rules ?? step.outcome, sensors, engines, events, alerts, launcher: launcherRules(own) };
 }
 
 /** The sensors and engines that read the same on both stages, drawn dim: the same number of events, the same rules matched. */
@@ -90,7 +96,7 @@ export function sameOnBoth(before: StageSide, after: StageSide): { sensors: Set<
   const rules = (engine: StageEngine) => engine.matches.map((match) => `${match.rule}:${match.state}`).sort().join(",");
   for (const engine of after.engines) {
     const was = before.engines.find((item) => item.id === engine.id);
-    if (was && was.state === engine.state && rules(was) === rules(engine)) engines.add(engine.id);
+    if (was && was.state === engine.state && was.launcher === engine.launcher && rules(was) === rules(engine)) engines.add(engine.id);
   }
   return { sensors, engines };
 }
@@ -116,6 +122,8 @@ export function stageSentence(side: StageSide, newRules: ReadonlySet<string> = n
   }
   if (outcome === "seen") {
     const review = matches.find((match) => match.state === "review");
+    // As the step's sentence in the live view words it.
+    if (!review && side.launcher > 0) return `${lead} ${capital(plural(side.launcher, "rule"))} matched only the launcher line, which never counts.`.trim();
     if (!review) return `${lead} No rule matched it.`.trim();
     return `${lead} No alert: ${review.title} matched at level ${review.level}, below the alert level.`.trim();
   }

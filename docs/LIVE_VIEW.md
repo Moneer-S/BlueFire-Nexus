@@ -28,7 +28,11 @@ Linux machine shipped with the app is
 - **A match is not an alert.** An alert is a match of a published rule at level
   `high` or `critical` on an event of the step. A match below that level is
   shown for review, and a match on the shell command that carried the test only
-  is shown as a launcher match. Neither counts. A match at level
+  is shown as a launcher match. Neither counts. A seen step whose only
+  published match is on its launcher line says so ("7 events recorded, 1 rule
+  matched only the launcher line, which never counts."), and its hint reads
+  "No rule matched what the step itself did: start by writing one."; a
+  comparison's stages word it the same way. A match at level
   `informational` is shown as "informational" and is not counted for review, in the
   table and in the run's summary alike.
 - **A step nobody saw is told in the recording's words.** Its `visibility`
@@ -250,7 +254,12 @@ same things as on one host, laid out for a network:
   mgmt." That line never lies on a host's circle, words or badge: where the
   foot of the defense's side has no room clear of them, it is left out. An
   engine shows at most two matches whole, and fewer where two would not fit
-  above that line; the rest are counted ("+ 6 more rules for review").
+  above that line; the rest are counted ("+ 6 more rules for review"). A
+  match on the launcher line is named among them in a few words ("launcher
+  line, not counted", or "launcher line (2 rules), not counted"), and on a
+  map of one host "more" is said once ("+ 3 more for review · 1
+  informational · launcher line, not counted"), so that the line keeps its
+  reason inside the engine's box.
 - **The attack's path is the strongest line.** The hop of the step on screen
   glows, with an arrowhead; each earlier hop keeps its arrowhead and grows
   fainter the longer ago it was crossed. Beside each hop, never on its line and
@@ -416,7 +425,10 @@ A map of one host is drawn as before.
   contents need, and where the recording keeps fewer of a step's events than
   were recorded, how many it keeps of how many were recorded stands under the
   title, not beside it ("1,439 of 1,857 events kept"): the sensors' columns
-  count the kept events, as their tooltips say. The table and the detail beside it let their last visible lines fade
+  count the kept events, as their tooltips say. The column of rules matched
+  counts rules, each once however often it matched, as the step's sentence
+  does: step 1 of the attack path reads "1 alert · 6 review · 2 info", though
+  its six rules for review matched 1,361 times. The table and the detail beside it let their last visible lines fade
   out at their foot, with as much room after their end, so no row or line is
   cut hard by an edge. When the table scrolls to the chosen row, it stands at
   a row's edge under its head with the chosen row whole, and it finds that

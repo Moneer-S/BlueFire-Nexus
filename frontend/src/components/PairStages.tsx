@@ -77,9 +77,14 @@ function shortCommand(command: string | undefined): string {
   return file?.[1] ? `> ${file[1]}` : command;
 }
 
+/** An engine with no match drawn: a match on the launcher line alone is named, as the step's sentence names it. */
+function noMatchWords(engine: StageEngine): string {
+  return engine.launcher > 0 ? "matched only the launcher line" : "no rule matched";
+}
+
 function engineLine(engine: StageEngine): ReactNode {
   const [first] = engine.matches;
-  if (!first) return <span className="pst-none">no rule matched</span>;
+  if (!first) return <span className="pst-none">{noMatchWords(engine)}</span>;
   const more = engine.matches.length - 1;
   return <>
     {/* As analyse mode words it: a match below alert level at informational level is not one for review. */}
@@ -191,7 +196,7 @@ export function Stages({ before, after, words, runs, links, newRules, judged, fo
   const still = all ? { sensors: new Set<string>(), engines: new Set<string>() } : same;
   const named = [
     ...after.sensors.filter((sensor) => still.sensors.has(sensor.id)).map((sensor) => `${sensor.name}, ${plural(sensor.events, "event")}`),
-    ...after.engines.filter((engine) => still.engines.has(engine.id)).map((engine) => `${engine.name}, ${engine.matches.length ? `${engine.matches[0]?.state === "review" ? "a match below alert level" : engine.matches[0]?.state === "lab" ? `a ${MARK_WORDS.lab}` : "an alert"}` : "no rule matched"}`),
+    ...after.engines.filter((engine) => still.engines.has(engine.id)).map((engine) => `${engine.name}, ${engine.matches.length ? `${engine.matches[0]?.state === "review" ? "a match below alert level" : engine.matches[0]?.state === "lab" ? `a ${MARK_WORDS.lab}` : "an alert"}` : noMatchWords(engine)}`),
   ];
   return <div className={`pst${judged ? "" : " is-unjudged"}`}>
     <div className="pst-pair">

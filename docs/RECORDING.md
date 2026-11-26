@@ -125,7 +125,9 @@ in this repository, `{ "rule", "title", "digest", "accepted", "reason" }`, its
 id and title, the SHA-256 of the file that holds it, whether the run accepted
 it, and why. A run decides that anew each time, from ordinary activity and from
 the runs with changed input arguments, so an unchanged rule can be accepted in
-one run and not in the next.
+one run and not in the next. An older recording has no `verdicts` and says the
+same only in one of its `notes`, the one that starts "The run accepted"; the
+app's page for fixing a step shows that note whole for such a recording.
 
 So that a reader can show a rule beside the step it alerted on, each verdict
 can also hold, optional, the rule itself: `file`, the path of its file in the

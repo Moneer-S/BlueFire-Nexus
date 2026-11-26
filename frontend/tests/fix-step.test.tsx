@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { activeProviderKind, backPath, candidates, draftKey, fixPath, modelWords, tieOf, triedFor } from "../src/lib/fix-step";
 import { RUNNING_POLL_MS } from "../src/lib/recorded-runs";
-import type { Recording, RuleLevel } from "../src/live/recording";
+import { readRecording, type Recording, type RuleLevel } from "../src/live/recording";
 import { FixStepPage } from "../src/pages/FixStep";
 import type { CatalogResponse } from "../src/types";
 import { alert, at, event, recording as fixture, step } from "./live-fixture";
@@ -61,6 +63,20 @@ function smallRecording(options: { stable?: boolean } = {}): Recording {
       } : detector),
     },
   };
+}
+
+/** A recording shipped with the app. */
+function shipped(name: string): Recording {
+  return readRecording(JSON.parse(readFileSync(resolve(process.cwd(), `../bluefire/data/recordings/${name}.json`), "utf-8")));
+}
+
+/** The groups of rules a section shows, in order: each heading, with the titles of its cards sorted. */
+function groupsOf(section: HTMLElement): [string, string[]][] {
+  return within(section).getAllByRole("heading", { level: 3 }).map((heading) => {
+    const box = heading.parentElement;
+    const titles = box ? within(box).queryAllByRole("article").map((card) => card.getAttribute("aria-label") ?? "") : [];
+    return [heading.textContent ?? "", titles.sort()];
+  });
 }
 
 function summaryOf(id: string): RecordingSummary {
@@ -350,12 +366,104 @@ describe("the page for fixing a step", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("for a step a lab rule alerted on in an older recording that says how the run judged the lab's rules only in a note, shows that note whole and no card says the recording is silent", async () => {
+    // The run on one Linux machine: its detector `lab` carries no verdicts, and one of its notes says how the run judged its rules.
+    const linux = shipped("lab-linux-host");
+    const note = linux.notes.find((item) => item.startsWith("The run accepted "));
+    if (!note) throw new Error("The shipped run's notes should say how the run judged the lab's rules.");
+    mount("45", { recording: linux, pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(matched).toHaveTextContent("The rule that raised the lab alert");
+    expect(within(matched).getByText(/^This recording says of the lab's own rules:/)).toHaveTextContent(`This recording says of the lab's own rules: ${note}`);
+    expect(matched).not.toHaveTextContent("This recording does not say how the run judged this rule.");
+    // A step to start a rule for shows the same note.
+    cleanup();
+    mount("7", { recording: linux, pairs: [] });
+    const start = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(start).toHaveTextContent(`This recording says of the lab's own rules: ${note}`);
+    expect(start).not.toHaveTextContent("This recording does not say how the run judged this rule.");
+  });
+
+  it("for a step a lab rule alerted on in a recording that carries how the run judged each rule, shows that and not the note", async () => {
+    const head = shipped("lab-rule-history-truncated-head");
+    mount("test:cbf506a5", { recording: head, pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    const rule = within(matched).getByRole("article", { name: "Shell History File Truncated In Place" });
+    expect(rule).toHaveTextContent("accepted");
+    expect(within(rule).getByLabelText("The text of the rule Shell History File Truncated In Place")).toBeVisible();
+    expect(matched).toHaveTextContent("Rules this run did not accept, so their matches are left out: Program Named Like A System Daemon Run From A Temporary Folder");
+    expect(matched).not.toHaveTextContent("This recording says of the lab's own rules");
+    expect(matched).not.toHaveTextContent("This recording does not say how the run judged this rule.");
+  });
+
   it("for a step a published rule alerted on, shows the rule that alerted", async () => {
     mount("4");
     const start = await screen.findByRole("region", { name: "Where to start" });
     expect(start).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
     expect(within(screen.getByRole("region", { name: "Rules that matched it" })).getByRole("article", { name: "History File Deletion" })).toHaveTextContent("alert · high");
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("for step 1 of the attack path, which a published rule alerted on, lists all nine rules that matched it, each in its group", async () => {
+    mount("s01", { recording: shipped("lab-range-one-path"), pairs: [] });
+    const start = await screen.findByRole("region", { name: "Where to start" });
+    expect(start).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
+    expect(groupsOf(screen.getByRole("region", { name: "Rules that matched it" }))).toEqual([
+      ["The rule that raised the alert", ["Multiple authentication failures followed by a success."]],
+      ["Published rules below alert level: for review", [
+        "PAM: Multiple failed logins in a small period of time.",
+        "PAM: User login failed.",
+        "sshd: Attempt to login using a non-existent user",
+        "sshd: authentication failed.",
+        "sshd: brute force trying to get access to the system. Authentication failed.",
+        "sshd: brute force trying to get access to the system. Non existent user.",
+      ]],
+      ["Published rules at informational level: nobody reviews them", ["PAM: Login session closed.", "PAM: Login session opened."]],
+    ]);
+    expect(screen.getByRole("article", { name: "sshd: Attempt to login using a non-existent user" })).toHaveTextContent("review · low");
+  });
+
+  it("for a test of the run on one Linux machine a published rule alerted on, lists the rule below alert level and the lab's rule, and ends with the recording's note on the lab's rules", async () => {
+    const linux = shipped("lab-linux-host");
+    const note = linux.notes.find((item) => item.startsWith("The run accepted "));
+    if (!note) throw new Error("The shipped run's notes should say how the run judged the lab's rules.");
+    // Test 39 (step 42).
+    mount("42", { recording: linux, pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(groupsOf(matched)).toEqual([
+      ["The rule that raised the alert", ["Binary Padding - Linux"]],
+      ["The lab's own rules that matched", ["Shell History File Emptied"]],
+      ["Published rules below alert level: for review", ["Suspicious History File Operations - Linux"]],
+    ]);
+    expect(screen.getByRole("region", { name: "Where to start" })).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
+    // The lab's rule has a card: the section says how the run judged it, in the recording's note, as the other pages do.
+    expect(matched.lastElementChild).toHaveTextContent(`This recording says of the lab's own rules: ${note}`);
+    expect(matched).not.toHaveTextContent("This recording does not say how the run judged this rule.");
+  });
+
+  it("for a test a lab rule alerted on whose launcher line a published rule matched, lists that match last, as the page of a seen test does", async () => {
+    // Test 11 (step 14) of the run on one Linux machine.
+    mount("14", { recording: shipped("lab-linux-host"), pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(groupsOf(matched)).toEqual([
+      ["The rule that raised the lab alert", ["Systemd Unit File Written By A Shell"]],
+      ["Published rules below alert level: for review", ["Service Reload or Start - Linux"]],
+      ["Matched only the line that starts the test, which never counts", ["Execution Of Script Located In Potentially Suspicious Directory"]],
+    ]);
+    expect(within(matched).getByRole("article", { name: "Execution Of Script Located In Potentially Suspicious Directory" })).toHaveTextContent("launcher line");
+  });
+
+  it("keeps the groups of a seen test's page, empty ones and all", async () => {
+    // Test 4 (step 7) of the run on one Linux machine: matched only on its launcher line.
+    mount("7", { recording: shipped("lab-linux-host"), pairs: [] });
+    const matched = await screen.findByRole("region", { name: "Rules that matched it" });
+    expect(groupsOf(matched)).toEqual([
+      ["Published rules below alert level", []],
+      ["The lab's own rules that matched", []],
+      ["Matched only the line that starts the test, which never counts", ["Execution Of Script Located In Potentially Suspicious Directory"]],
+    ]);
+    expect(matched).toHaveTextContent("No published rule matched it, at any level.");
+    expect(matched).toHaveTextContent("None of the lab's own rules matched it.");
   });
 
   it("for a step of a range, says that its sensors and rules are set in the range's spec and images, not in the lab's folders", async () => {

@@ -276,7 +276,8 @@ function EngineMatches({
     const crowded = rest.length > 0 && launcher.length > 0;
     // On a network the rest are counted as rules, as the log counts them.
     const rules = (n: number): string => (inline ? (n === 1 ? " rule" : " rules") : "");
-    const more = [review ? `${review} more${rules(review)} for review` : "", info ? `${info} ${inline ? "informational" : "more informational"}` : "", other ? `${other} more` : "", crowded ? `the launcher line ${launcher.length === 1 ? "matched once" : `matched ${launcher.length} times`}, not counted` : ""].filter(Boolean).join(" · ");
+    // "more" is said once, at the head of the line, so that on one host the line keeps to the engine's box with its last words.
+    const more = [review ? `${review} more${rules(review)} for review` : "", info ? `${info} ${inline || review ? "informational" : "more informational"}` : "", other ? `${other} more` : "", crowded ? `launcher line${launcher.length === 1 ? "" : ` (${launcher.length} rules)`}, not counted` : ""].filter(Boolean).join(" · ");
     const firstLauncher = crowded ? undefined : launcher[0];
     // On a network each match is a block: its chip on a line of its own, then its title whole, then where and when an alert was raised.
     const rows = [
