@@ -82,17 +82,20 @@ function MatchGroup({ recording, title, alerts, ended }: { recording: Recording;
             <span className={`lv-mchip ${look.className}`} title={look.title}>
               {look.words}
             </span>
-            <span className="lv-dt-rule" title={alert.rule.id}>
-              {alert.rule.title}
-            </span>
-            <span className="lv-dt-mmeta">
-              {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(alertMoment(alert))}
-              {noise !== null ? (
-                <span className="lv-dt-noise" title="Events of ordinary activity, outside every step, that this rule matched">
-                  {" "}
-                  &middot; {noise === 0 ? "none" : count(noise)} in ordinary activity
-                </span>
-              ) : null}
+            {/* The title is whole: its counts stand beside it where both fit, and on a line of their own under it where they do not. */}
+            <span className="lv-dt-mline">
+              <span className="lv-dt-rule" title={alert.rule.id}>
+                {alert.rule.title}
+              </span>
+              <span className="lv-dt-mmeta">
+                {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(alertMoment(alert))}
+                {noise !== null ? (
+                  <span className="lv-dt-noise" title="Events of ordinary activity, outside every step, that this rule matched">
+                    {" "}
+                    &middot; {noise === 0 ? "none" : count(noise)} in ordinary activity
+                  </span>
+                ) : null}
+              </span>
             </span>
             {late ? <span className="lv-dt-mnote">{late}</span> : null}
             {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: one false alert.</span> : null}

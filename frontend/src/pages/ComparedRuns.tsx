@@ -176,7 +176,9 @@ function PairView({ delta, summary, loop, place }: { delta: Delta; summary: Delt
   const groups = stageable(delta);
   const candidates = [...groups.credited, ...groups.unjudged, ...groups.uncredited];
   const asked = params.get("step");
-  const staged = candidates.find((step) => step.id === asked) ?? delta.steps.find((step) => step.id === asked) ?? candidates[0] ?? null;
+  // The stages show a step the page lists. An address that names any other step, one the change did not move, opens the
+  // page as if it named none: its stages would stand beside the move of another step and under what made that difference.
+  const staged = candidates.find((step) => step.id === asked) ?? candidates[0] ?? null;
   const detailOpen = params.get("detail") === "1" && staged !== null;
   const recordings = usePairRecordings(delta);
   const next = place >= 0 ? loop[place + 1] ?? null : null;

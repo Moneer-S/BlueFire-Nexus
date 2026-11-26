@@ -141,6 +141,16 @@ function launcherLine(step: Step): boolean {
   return shipped.alerts.some((alert) => alert.step === step.id && alert.launcher_only);
 }
 
+/** For each rule title the recording holds, the first step in the run's order whose detail in analyse mode lists it. */
+function stepsOfEveryRule(recording: Shipped): Step[] {
+  const titles = new Set<string>();
+  return inOrder(recording).filter((step) => {
+    const fresh = recording.alerts.filter((alert) => alert.step === step.id && !titles.has(alert.rule.title));
+    for (const alert of fresh) titles.add(alert.rule.title);
+    return fresh.length > 0;
+  });
+}
+
 const firstAlert = first("test that alerted", (step) => step.role === "test" && step.outcome === "alerted");
 const unseen = first("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
 // Seen with no alert, while a rule written in this repository would have alerted: the gap and its fix in one picture.
@@ -417,6 +427,27 @@ async function expectWholeHostLabel(page: Page, step: Step): Promise<void> {
   expect(found.below, "the host's label ends this far below the map").toBeLessThanOrEqual(0);
 }
 
+/**
+ * In analyse mode, the chosen step's detail holds each matched rule's whole title, and its line of counts, inside the
+ * row: a title is never cut short, where a reader comes to read which rule it was. Gives what is cut, by step.
+ */
+async function cutRuleTitles(page: Page, step: Step): Promise<string[]> {
+  const detail = page.getByRole("article");
+  await expect(detail.getByRole("heading", { name: step.title, exact: true })).toBeVisible();
+  await settle(page);
+  return detail.locator(".lv-dt-match").evaluateAll((rows) =>
+    rows.flatMap((row) => {
+      const box = row.getBoundingClientRect();
+      return [...row.querySelectorAll<HTMLElement>(".lv-dt-rule, .lv-dt-mmeta")]
+        .filter((part) => {
+          const own = part.getBoundingClientRect();
+          return part.scrollWidth > part.clientWidth + 1 || own.right > box.right + 0.5 || own.left < box.left - 0.5;
+        })
+        .map((part) => `${part.classList.contains("lv-dt-rule") ? "title" : "counts"} "${part.textContent ?? ""}"`);
+    }),
+  );
+}
+
 /** The race line above the map holds its whole sentence: nothing of it is cut short. */
 async function expectWholeRaceLine(page: Page, name: string): Promise<void> {
   const cut = await page.evaluate(() => {
@@ -541,6 +572,15 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await expectWholeRows(page, "analyse-unseen.png");
   await picture(page, folder, "analyse-unseen.png");
 
+  // Every rule title of the recording, each on the first step that lists it, is whole in the step's detail at 1440 by 900.
+  const titled = stepsOfEveryRule(shipped);
+  const cutInPage: string[] = [];
+  for (const step of titled) {
+    await open(`mode=analyse&select=${encodeURIComponent(step.id)}`);
+    cutInPage.push(...(await cutRuleTitles(page, step)).map((cut) => `${step.title}: ${cut}`));
+  }
+  expect(cutInPage, "analyse at 1440 by 900, in the page: rule titles or counts cut short in the step's detail").toEqual([]);
+
   await page.setViewportSize({ width: 1920, height: 1080 });
   await open(`step=${firstAlert.id}&at=${LATE}&paused=1`);
   await expectWholeMoment(page, firstAlert);
@@ -612,10 +652,17 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
 
   // "Find what nobody saw" in the README: open the run on one Linux machine, press Analyse, and click the first row of
   // the table, which is the unseen test: its detail opens beside the table, with "Fix this". At 1440 by 900, the size
-  // of the README's other pictures, where the live view beside the app's rail is 1440 px less the rail.
+  // of the README's other pictures, where the live view beside the app's rail is 1440 px less the rail. The run plays
+  // as it opens, and Analyse opens on the step on screen: a person who reads the screen first presses it on a test,
+  // past the first canary, and lands on the tab of the tests. The picture is taken as that person gets there.
   await link.click();
+  const caption = page.getByRole("region", { name: "The step", exact: true });
+  await expect(caption.locator(".lv-step-chip:not(.lv-hop-chip)"), `${UNSEEN_SECTION}: no test came on screen while the run played`).toBeVisible({ timeout: 60_000 });
   await page.getByRole("button", { name: "Analyse", exact: true }).click();
   await expect(page.getByRole("button", { name: "Analyse", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const tests = every("test", (step) => step.role === "test").length;
+  await expect(page.getByRole("group", { name: "Role" }).getByRole("button", { name: /^Tests/ }), `${UNSEEN_SECTION}: pressing Analyse on a test does not open the tab of the tests`).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".lv-filter-count"), `${UNSEEN_SECTION}: the tab of the tests does not list ${tests} of ${shipped.steps.length}`).toHaveText(`${tests} of ${shipped.steps.length}`);
   const rows = page.locator(".lv-table tbody tr[data-step]");
   await expect(rows.first(), `${UNSEEN_SECTION}: pressing Analyse does not list "${unseen.title}" first`).toHaveAttribute("data-step", unseen.id);
   await rows.first().locator(".lv-row-button").click();
@@ -665,6 +712,15 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   if (!longest) throw new Error("The recording has no test with a command.");
   await moment(longest);
   await expectWholeHostLabel(page, longest);
+  // Inside the app too, where the live view is narrower beside the app's rail: every rule title whole in the step's detail.
+  const cutInApp: string[] = [];
+  for (const step of titled) {
+    await page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, `${runPath.slice(1)}?mode=analyse&select=${encodeURIComponent(step.id)}`);
+    cutInApp.push(...(await cutRuleTitles(page, step)).map((cut) => `${step.title}: ${cut}`));
+  }
+  expect(cutInApp, "analyse at 1440 by 900, in the app: rule titles or counts cut short in the step's detail").toEqual([]);
 
   await page.setViewportSize({ width: 1920, height: 1080 });
   await moment(firstAlert);

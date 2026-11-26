@@ -286,8 +286,9 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
   return <section className="cmp-sec fx-matched" aria-labelledby="fx-matched">
     <h2 id="fx-matched">Rules that matched it</h2>
     {start.kind === "rule" ? <>
-      {start.review.length ? <PublishedBelow matches={start.review} /> : <RuleGroup title="Published rules below alert level" empty="No published rule matched it, at any level." matches={[]} />}
-      <RuleGroup title="The lab's own rules that matched" empty={recording.network.detectors.some((detector) => detector.id === "lab") ? "None of the lab's own rules matched it." : "This run did not try the lab's own rules."} matches={start.lab} noted={note !== null} />
+      {/* Where a rule matched only the line that starts the test, which is listed below, an empty group says it matched nothing the test itself did. */}
+      {start.review.length ? <PublishedBelow matches={start.review} /> : <RuleGroup title="Published rules below alert level" empty={start.launcher.some((match) => match.rule.origin === "pinned") ? "No published rule matched what the test itself did, at any level." : "No published rule matched it, at any level."} matches={[]} />}
+      <RuleGroup title="The lab's own rules that matched" empty={!recording.network.detectors.some((detector) => detector.id === "lab") ? "This run did not try the lab's own rules." : start.launcher.some((match) => match.rule.origin === "lab") ? "None of the lab's own rules matched what the test itself did." : "None of the lab's own rules matched it."} matches={start.lab} noted={note !== null} />
       {start.launcher.length ? <RuleGroup title="Matched only the line that starts the test, which never counts" matches={start.launcher} /> : null}
     </> : <>
       {/* An alerted step has nothing to fix: every rule that matched it is listed, each group only where it holds a rule. */}
