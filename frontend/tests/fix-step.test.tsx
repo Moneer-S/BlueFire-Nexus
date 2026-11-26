@@ -458,6 +458,12 @@ describe("the page for fixing a step", () => {
     expect(screen.getByRole("article", { name: "sshd: Attempt to login using a non-existent user" })).toHaveTextContent("review · low");
   });
 
+  it("counts an event of a rule once where its match names it twice, as analyse mode's detail does", async () => {
+    // Test 42 of a later run of the 60 tests: its one match of this rule names the event 45-3 twice.
+    mount("test:23d348f3", { recording: shipped("lab-pair-history-watch-after"), pairs: [] });
+    expect(await screen.findByRole("article", { name: "Use Of Hidden Paths Or Files" })).toHaveTextContent("published · on 1 event · 3 events in ordinary activity");
+  });
+
   it("for a test of the run on one Linux machine a published rule alerted on, lists the rule below alert level and the lab's rule, and ends with the recording's note on the lab's rules", async () => {
     const linux = shipped("lab-linux-host");
     const note = linux.notes.find((item) => item.startsWith("The run accepted "));
