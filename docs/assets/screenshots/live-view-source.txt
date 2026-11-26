@@ -2,8 +2,8 @@ The live view's pictures in this folder (live-view-path-goal.png and
 live-view-first-alert.png) and the pages docs/live-view/attack-path.html and
 docs/live-view/replay.html are copied unchanged from the artifact
 live-view-pictures of the CI run
-https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45719783348
-made from the commit 1e12c90067547058f2733ff2db409c4ca09ab2d4, the head
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45737075430
+made from the commit 867e1e29130ab82aa92b5cd6ccbdc44a60ba1de4, the head
 commit of the pull request whose run that is.
 
 They show the two recordings shipped with BlueFire:
