@@ -14,6 +14,9 @@ disposable containers). Nothing in a recording is invented. A
 value the engine did not measure is left out, and the reader shows it as not
 known.
 
+A recording can hold one run judged by several defenses, each with its own
+sensors and rule sets: see [Defenses](#defenses).
+
 The format is JSON, UTF-8, one object. Its `schema` is `bluefire.recording/1`.
 Times are ISO 8601 in UTC with a `Z`, with up to six digits after the second
 where the source has them (`2026-11-17T17:07:23.834Z`). The app and the live
@@ -66,6 +69,7 @@ does this for every text and key it writes.
 | `alerts` | array | Every rule match on those events, in time order. See below. |
 | `ordinary` | object | Optional. What the defenses said about ordinary activity. See below. |
 | `score` | object | The totals. See below. |
+| `defenses` | array | Optional. The defenses that judged the run, each with its sensors, its rule sets and what it made of every step. With it, each step's verdict, `ordinary` and `score` above are the first defense's, and `events` and `alerts` hold those of every defense. See [Defenses](#defenses). |
 | `notes` | array of strings | Limits a reader must know, in plain sentences. May be empty. |
 
 ## `source`
@@ -100,17 +104,19 @@ runs must share.
 | `hosts` | array | Each host of the run. |
 | `links` | array | Optional. Each `{ "from", "to", "label" }` between host ids: who can reach whom. |
 | `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_watches`, an object that maps each audit key of its rules (the word after `-k`, or after `key=` in `-F`) to what the rules under that key watch, read from the rules as the run loaded them (after `-D`, `-d` and `-W`; `""` for the rules without a key). Each rule is a string in one fixed form, its keys taken out: `-a <list>,<action>` sorted, then `-S` with the system calls sorted and joined by commas, then each `-F` sorted, then each `-C`. A watch `-w <path> -p <perms>` is written as the rule it stands for, `-a always,exit -F path=<path> -F perm=<perms>` (`perm=arwx` without `-p`), `dir=` as `path=`, the letters of `perm` sorted, `arch=` left out, so that a rule for `b32` and the same one for `b64` are one, and an unset login uid (`-1`, `4294967295`) written `unset`. The forms of a key are sorted and each is there once. An older recording does not have it, and may have `audit_keys` instead: the audit keys of its rules, sorted, without what they watch. Nothing reads `audit_keys` now, and on two runners that differed a comparison of `sensors:auditd` refuses a recording that has only that (see Two runners that differed). |
-| `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. The detector `pinned` holds the published rules, and `lab` the rules written in this repository. |
+| `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. A detector's id is free, with two that are kept: `lab` is the id of the rules written in this repository, and a detector with the id `pinned` holds published rules only. Whether a rule is a published one or one of this repository's own is said by each alert's `rule.origin`, not by the detector's id. |
 
 A network holds at most 12 hosts, at most 3 of them of kind `defense`, at most
 16 links, at most 16 sensors with at most 4 on one host, and at most 4
 detectors: the most the live view's map draws readably (see
-[LIVE_VIEW.md](LIVE_VIEW.md)). A link joins two different hosts, and no link is
+[LIVE_VIEW.md](LIVE_VIEW.md)). A recording with defenses holds at most 8
+detectors, of which each defense has at most 4: the map draws one defense's
+view at a time. A link joins two different hosts, and no link is
 given twice with the same `from`, `to` and `label`. The service and the replay
 page both refuse a network beyond these, with a sentence that names the limit;
 the limits are `MAX_HOSTS`, `MAX_DEFENSE_HOSTS`, `MAX_LINKS`, `MAX_SENSORS`,
-`MAX_SENSORS_ON_A_HOST` and `MAX_DETECTORS` in `bluefire/recordings.py` and
-`frontend/src/live/recording.ts`.
+`MAX_SENSORS_ON_A_HOST`, `MAX_DETECTORS` and `MAX_DETECTORS_WITH_DEFENSES` in
+`bluefire/recordings.py` and `frontend/src/live/recording.ts`.
 
 A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
 sorted by their path inside the rule set's folder, so it can be checked from a
@@ -272,10 +278,17 @@ step's time window). `address` and `content` are a range's ties, and like
 ties by time, not by which process started which; `lab/README.md` gives the
 rules. A range never writes an event tied by `window`: such an event is
 coincident with a step and does not count for it. Events tied to no
-step are not in the recording: the engine's own output holds them. For a step
-with very many events the recording keeps the first of them in time order and
-every event a rule matched, and the step's `visibility.kept` says how many it
-kept.
+step are not in the recording: the engine's own output holds them.
+
+For a step with very many events the recording does not keep them all, and the
+step's `visibility.kept` says how many it kept. It keeps every event a rule
+matched. In a recording with defenses the cut is made for each sensor: the
+recording keeps the first events of each sensor in time order, up to that
+sensor's share, so that one busy sensor does not push out what another
+recorded, and each defense's view (see [Defenses](#defenses)) keeps the start
+of what its own sensors recorded. A recording without defenses may instead
+keep the first events of the step in time order, whichever sensor recorded
+them.
 
 ## An alert
 
@@ -322,6 +335,69 @@ alert.
 | `goal_seconds` | number | Optional, attack path only: seconds from the same start, the first step's `started`, to the end of the step that reached the goal. Written only with an `attacker.goal`. Not written for a test list. |
 | `false_alerts` | number | Optional, and only with `ordinary`. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
 
+## Defenses
+
+A defense is a named thing: the sensors it has and the rule sets it runs. A
+run is recorded once, with every sensor on, and each defense judges that same
+run, counting only what its own sensors recorded and only the alerts of its
+own rule sets. A recording with the optional key `defenses` holds one run and
+what each defense made of every step. A recording without it holds one
+defense, which has no name: every sensor and every detector of its network.
+
+`defenses` is an array of 1 to 8 objects, each:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Unique among the defenses. Letters, digits, `-` and `_`, at most 64. |
+| `name` | string | A few plain words, such as "Wazuh with its stock rules". |
+| `sensors` | array of strings | Ids of `network.sensors`: what this defense records with. At least one. |
+| `detectors` | array of strings | Ids of `network.detectors`: the rule sets this defense runs, at most 4. May be empty, for a defense that only records. |
+| `steps` | object | This defense's verdict on each step, by the step's `id`: `{ "visibility", "outcome", "first_event", "first_alert", "outcome_with_lab_rules", "first_alert_with_lab_rules" }`, each with the meaning and the rules the same key has on a step. `visibility` and `outcome` are always there, and the others as on a step. It has an entry for every step of the recording, and for no other id. |
+| `ordinary` | object | Optional, as the top-level `ordinary`: the events of ordinary activity this defense's sensors recorded, and the published rules of its rule sets that matched them. |
+| `score` | object | As the top-level `score`, counted from this defense's `steps` and `ordinary`. |
+
+**A defense is a view of the recording.** The view of a defense is the
+recording with:
+
+- only the events whose `sensor` is one of the defense's sensors;
+- only the alerts whose `detector` is one of the defense's detectors and whose
+  `events` were all recorded by the defense's sensors;
+- only those sensors and detectors in `network`;
+- each step's `visibility`, `outcome`, `first_event`, `first_alert`,
+  `outcome_with_lab_rules` and `first_alert_with_lab_rules` as the defense's
+  `steps` gives them, a key it leaves out being left out;
+- the defense's `ordinary` and `score`.
+
+A view is itself a recording without `defenses`, and everything this document
+says of a recording holds for each view. A step's `visibility.events` counts
+the events of the defense's sensors tied to the step, and its `kept`, when the
+recording holds fewer of them, the number the view holds. Its `first_event` is
+the earliest event the view holds of the step, and its `first_alert` the
+moment of the first counting alert of a published rule among the view's
+alerts on the step. Its `outcome` follows from the step's `happened` and the
+view's `visibility`. The score is counted from the view's steps,
+`false_alerts` from the view's `ordinary`, and the race from the view's first
+alert. Steps run forward among the view's own events and alerts.
+
+**The top level holds the first defense's verdicts.** Each step's
+`visibility`, `outcome`, `first_event`, `first_alert`,
+`outcome_with_lab_rules` and `first_alert_with_lab_rules`, and the top-level
+`ordinary` and `score`, are the same values as in the first entry of
+`defenses`: the baseline, which a reader shows first. `network`, `events` and
+`alerts` hold the sensors, the detectors, the events and the alerts of every
+defense, and `events` and `alerts` are in time order as a whole, as in any
+recording. So the top level, taken without `defenses`, is the first defense's
+view only when that defense has every sensor and every detector of the
+network. A reader that plays the first defense plays its view.
+
+What a step did does not depend on who judges it: its `happened`, `started`,
+`ended`, `command` and `output` are the step's own, and no defense repeats
+them.
+
+Every event is of a sensor that at least one defense has, and every alert is
+in the view of at least one defense: no alert names an event that no defense
+with its rule set recorded.
+
 ## A recording that is still running
 
 A recording without `source.finished` is still running: its engine has not
@@ -343,7 +419,11 @@ and `bluefire recordings import <file>` in [CLI.md](CLI.md).
 one finished recording, with the note on where it comes from
 ([LIVE_VIEW.md](LIVE_VIEW.md)). The Runs screen lists them, imports one from a
 file and plays one in the live view; the
-[user guide](USER_GUIDE.md#recorded-runs) says how. A recording shipped
+[user guide](USER_GUIDE.md#recorded-runs) says how. A recording with defenses
+is listed with its top-level score, which is its first defense's. The live
+view plays it as that defense judged the run, in the app and on the single
+page, and the page for fixing a step and the page of a pair of runs read it
+the same way: each takes the first defense's view. A recording shipped
 with the app is one that a workflow of this repository recorded in CI; it is
 kept unchanged under `bluefire/data/recordings/`. The single pages of the two
 the app ships, made in CI with that command, are in `docs/live-view/`:
@@ -357,7 +437,8 @@ follows this format and its parts agree with each other:
   optional is there with its type, in the objects inside too: a tool, a host, a
   link, a sensor, a detector, a step with its technique, published test,
   `happened`, `visibility` and hardening change, an event, an alert with its
-  rule, and `ordinary`. Every word is one the tables allow, and every time is a
+  rule, `ordinary`, and a defense with its verdict on each step, its `ordinary`
+  and its `score`. Every word is one the tables allow, and every time is a
   UTC time. An optional key is left out when it is not known, never null; only
   `attacker.goal` and the values of an event's `fields` may be null. A value of
   `fields` is text, a number no further than 2^53 from zero (written as a whole
@@ -409,6 +490,21 @@ follows this format and its parts agree with each other:
   alert's stamp is earlier than that start), and its `goal_seconds`, written
   only with a goal, the time from that start to the end of one of the steps.
   Which step reached the goal is not checked.
+- A recording with `defenses` has from 1 to 8 of them. Each has an id of its
+  own, sensors and detectors that the network has, at least one sensor, at most
+  4 detectors, and a verdict on every step and on no other id; the network has
+  at most 8 detectors. Every event is of a sensor that some defense has, and
+  every alert is in the view of some defense. Each step's verdict at the top
+  level, the top-level `ordinary` and the top-level `score` are the same values
+  as the first defense's. The recording's events and alerts are in time order.
+  Then every other check above that reads the events, the alerts, a step's
+  verdict, `ordinary` or `score` is made of each defense's view in place of the
+  whole recording: a step's `visibility.kept` is the number of its events the
+  view holds, steps run forward among the view's events and alerts, and each
+  defense's score is the one its own verdicts give. A problem names the defense
+  and the key, such as `defenses[1].steps.<step id>.outcome` or
+  `defenses[1].score.seen`. What does not depend on a defense, such as an event
+  outside the run, is named once.
 - The file is at most 8 MiB, with at most 2,000 steps, 20,000 events and 20,000
   alerts, nested at most 8 deep. Event `fields` hold at most 64 plain values.
   Numbers are finite, keys appear once in an object, and no text or key holds a

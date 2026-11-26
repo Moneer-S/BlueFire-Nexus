@@ -7,7 +7,10 @@ places: inside the app, where the Runs screen plays a recorded run (see the
 [user guide](USER_GUIDE.md#recorded-runs)), and as the single replay page: one
 HTML file that holds the view and one recording, and plays in a browser with
 nothing installed. A recording whose run is still going plays as far as it
-goes, and the view says the run is still running.
+goes, and the view says the run is still running. A recording that holds one
+run judged by several defenses plays as its first defense judged it: with that
+defense's sensors, rule engines, events and alerts (see
+[RECORDING.md](RECORDING.md#defenses)).
 
 The app ships a recorded attack path: eleven steps of ten published tests on a
 path through range one, a network of seven containers watched by Wazuh,
@@ -338,8 +341,9 @@ A map of one host is drawn as before.
   The map draws at most 12 hosts (3 of them defense hosts), 16 links, 16
   sensors with at most 4 on one host, and 4 rule engines; the service and the
   page refuse a recording beyond that, saying which limit it passes (see
-  [RECORDING.md](RECORDING.md)). A link from a host to itself, or one given
-  twice, is refused the same way.
+  [RECORDING.md](RECORDING.md)). A recording with defenses may hold 8 rule
+  engines, of which each defense has at most 4: the map draws one defense's.
+  A link from a host to itself, or one given twice, is refused the same way.
 - The map uses the room the screen gives it. A network that needs more room
   than that makes the map taller, and the view then grows and the page
   scrolls as in a small window: [Two modes](#two-modes) says where the play
