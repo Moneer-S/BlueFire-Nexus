@@ -195,6 +195,26 @@ def test_the_start_script_starts_syslog_the_services_and_the_agent_without_an_in
         assert not [line for line in script if "systemctl" in line or "systemd" in line]
 
 
+def test_a_packet_capture_starts_on_every_non_loopback_interface_before_the_services() -> None:
+    changed = copy.deepcopy(document())
+    changed["hosts"]["web"]["packages"].append("tcpdump")
+    changed["hosts"]["web"]["capture"] = "packets"
+
+    script = build.start_script(loaded(changed), "web")
+    lines = script.splitlines()
+    command = next(line for line in lines if "tcpdump -i" in line)
+
+    assert 'for path in /sys/class/net/*; do' in lines
+    assert '  iface=${path##*/}; [ "$iface" = lo ] && continue' in lines
+    assert '-i "$iface" -p -nn -s 0 -U -Z tcpdump' in command
+    assert build.CAPTURE_FILTER in command
+    assert f'-w "{build.CAPTURE_DIR}/$iface.pcap"' in command
+    assert f'2> "{build.CAPTURE_DIR}/$iface.log" &' in command
+    assert any(line.strip() == 'kill -0 "$pid"' for line in lines)
+    assert lines.index("rsyslogd") < lines.index(command) < lines.index("/usr/sbin/sshd")
+    assert "--cap-add" not in script
+
+
 def test_the_settings_of_each_agent_are_the_defense_watch_and_then_the_hosts_own() -> None:
     changed = copy.deepcopy(document())
     changed["hosts"]["web"]["watch"] = {

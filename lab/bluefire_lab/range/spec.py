@@ -34,7 +34,18 @@ import yaml
 KEYS = {"range", "version", "prefix", "docker", "networks", "hosts"}
 READ_KEYS = {"base", "defense", "atomic_red_team", "path", "activity", "rule_sets", "defenses"}
 LATER_KEYS = {"sentence", "executor"}
-HOST_KEYS = {"kind", "role", "networks", "listens", "image", "agent", "watch", "packages", "services"}
+HOST_KEYS = {
+    "kind",
+    "role",
+    "networks",
+    "listens",
+    "image",
+    "agent",
+    "watch",
+    "packages",
+    "services",
+    "capture",
+}
 PLANT_KEYS = {
     "accounts",
     "keys",
@@ -102,12 +113,13 @@ ENGINE_LOGS = ("/var/log/auth.log", "/var/log/snoopy.log")
 # The kinds of sensor a range can have, and what of the spec gives a range each one. A defense
 # names the kinds it records with.
 WAZUH_AGENT = "wazuh-agent"
-SENSORS = {WAZUH_AGENT: "defense.wazuh"}
+PACKET_CAPTURE = "packet-capture"
+SENSORS = {WAZUH_AGENT: "defense.wazuh", PACKET_CAPTURE: "a host with capture: packets"}
 # The rules the Wazuh manager of defense.wazuh runs live, as a defense names them.
 WAZUH_RULES = "wazuh"
 # The kinds of rule set the lab can give a recorded run to, and the kinds of sensor whose records
 # each kind reads. The live rules read what the agents send.
-RULE_KINDS = {"sigma": (WAZUH_AGENT,)}
+RULE_KINDS = {"sigma": (WAZUH_AGENT,), "suricata": (PACKET_CAPTURE,)}
 LIVE_RULES = {WAZUH_RULES: (WAZUH_AGENT,)}
 # A rule set's name is its detector's id in a recording, where these two ids are taken: `pinned` is
 # the manager's live rules, and `lab` the rules written in this repository.
@@ -306,6 +318,7 @@ class Host:
     watch: Watch = field(default_factory=Watch)
     packages: tuple[str, ...] = ()
     services: tuple[str, ...] = ()
+    capture: str | None = None
     accounts: tuple[Account, ...] = ()
     keys: tuple[Key, ...] = ()
     known_hosts: tuple[KnownHosts, ...] = ()
@@ -720,7 +733,7 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
 
     if image is None and base is None:
         raise SpecError(f"host {name} has no image, so the lab builds it from base, and the spec has no base")
-    built_keys = sorted(({"agent", "watch", "packages", "services"} | PLANT_KEYS) & set(settings))
+    built_keys = sorted(({"agent", "watch", "packages", "services", "capture"} | PLANT_KEYS) & set(settings))
     if image is not None and built_keys:
         raise SpecError(
             f"host {name} runs the pinned image unchanged, so it cannot have {', '.join(built_keys)}: "
@@ -754,6 +767,13 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
             )
     if len(set(services)) != len(services):
         raise SpecError(f"host {name} lists a service twice")
+    capture = settings.get("capture")
+    if capture not in (None, "packets"):
+        raise SpecError(f"host {name}: capture must be packets when the host records its network traffic")
+    if capture == "packets" and image is not None:
+        raise SpecError(f"host {name}: capture needs a host built from base, not a pinned image")
+    if capture == "packets" and "tcpdump" not in packages:
+        raise SpecError(f"host {name}: capture packets needs the package tcpdump in packages")
     if image is None:
         ports = sorted({port for service in services for port in SERVICE_PORTS.get(service, ())})
         if sorted(listens) != ports:
@@ -772,6 +792,7 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
         watch,
         tuple(packages),
         tuple(services),
+        capture,
     )
     return _plants(host, settings)
 

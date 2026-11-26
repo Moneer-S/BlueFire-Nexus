@@ -62,7 +62,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import activity, atomics, build, ossec, plants, rulesets, score, seal, sigma, wazuh
+from . import activity, atomics, build, ossec, packets, plants, rulesets, score, seal, sigma, wazuh
 from . import path as range_path
 from . import recording as range_recording
 from .spec import Spec, SpecError, load, parse, read
@@ -536,6 +536,25 @@ class Run:
                     "note": "followed while the run lasts, for a live view; no result is computed from them",
                 },
             }
+        capture_hosts = [host.name for host in spec.hosts.values() if host.capture == "packets"]
+        self.manifest["packet_capture"] = None
+        if capture_hosts:
+            self.manifest["packet_capture"] = {
+                "program": "tcpdump",
+                "path": build.CAPTURE_DIR,
+                "filter": build.CAPTURE_FILTER,
+                "hosts": {
+                    host: {
+                        "ready": [],
+                        "stopped": None,
+                        "collected": None,
+                        "files": {},
+                    }
+                    for host in capture_hosts
+                },
+                "delivery_gap": None,
+                "delivery_findings": [],
+            }
         # The archive and alerts as ECS lines, and the ordinary day's score: written after the collection.
         self.manifest["ecs"] = None
         self.manifest["score"] = None
@@ -581,6 +600,8 @@ class Run:
             (self.out / "defense.md").write_text(
                 wazuh.summary(self.manifest, record["passed"]), encoding="utf-8"
             )
+        if self.manifest["packet_capture"] is not None:
+            (self.out / "packets.md").write_text(packets.markdown(self.manifest), encoding="utf-8")
         if self.manifest["weaknesses"] or self.manifest["plants"] or self.manifest["ready"].get("plants"):
             (self.out / "plants.md").write_text(plants.summary(self.manifest), encoding="utf-8")
         if self.manifest["activity"] is not None:
@@ -940,6 +961,8 @@ class Run:
                 )
         if self.spec.wazuh:
             self.defense_ready(deadline, budget)
+        if self.manifest["packet_capture"] is not None:
+            self.capture_ready(deadline, budget)
         checks = self.run_checks(plants.ready_checks(self.spec), "engine:ready")
         self.manifest["ready"]["plants"] = checks
         self.write()
@@ -948,6 +971,116 @@ class Run:
             raise NotReady(
                 f"{'; '.join(failed)}: see ready.plants in manifest.json for what each command printed"
             )
+
+    def capture_ready(self, deadline: float, budget: int) -> None:
+        """Prove each capture process is alive and recorded one mark on every range interface.
+
+        A UDP mark goes to another host on each network. The route says which
+        interface must hold it, and tcpdump's immediate-write mode makes its
+        payload visible in that interface's PCAP before this gate passes.
+        """
+
+        capture = self.manifest["packet_capture"]
+        assert capture is not None
+        number = 0
+        for host, entry in capture["hosts"].items():
+            for network in self.spec.hosts[host].networks:
+                peers = [peer for peer in self.spec.members(network) if peer != host]
+                peer = next(
+                    (
+                        candidate
+                        for candidate in peers
+                        if (self.manifest["containers"].get(candidate, {}).get("addresses") or {}).get(network)
+                    ),
+                    None,
+                )
+                if peer is None:
+                    raise NotReady(
+                        f"packet capture on {host}: network {network} has no peer whose traffic can mark it"
+                    )
+                destination = self.manifest["containers"][peer]["addresses"][network]
+                source = (self.manifest["containers"][host].get("addresses") or {}).get(network)
+                number += 1
+                port = 62000 + number
+                token = f"bluefire-packet-mark-{self.run_id}-{host}-{network}"
+                quoted_peer = shlex.quote(destination)
+                quoted_token = shlex.quote(token)
+                script = (
+                    f"peer={quoted_peer}; token={quoted_token}; port={port}; "
+                    "iface=$(ip -o route get \"$peer\" | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p'); "
+                    "[ -n \"$iface\" ] || exit 2; "
+                    f'pidfile="{build.CAPTURE_RUN}/$iface.pid"; '
+                    "[ -r \"$pidfile\" ] || exit 2; pid=$(< \"$pidfile\"); kill -0 \"$pid\" || exit 2; "
+                    "printf '%s' \"$token\" > \"/dev/udp/$peer/$port\"; tries=0; "
+                    f'until grep -aFq -- "$token" "{build.CAPTURE_DIR}/$iface.pcap"; do '
+                    "kill -0 \"$pid\" || exit 2; tries=$((tries + 1)); "
+                    "[ \"$tries\" -lt 100 ] || exit 1; sleep 0.1; done; printf '%s' \"$iface\""
+                )
+                done = self.execute(self.containers[host], script, 30, "engine:ready")
+                interface = done.stdout.strip() if done.returncode == 0 else None
+                mark = {
+                    "network": network,
+                    "interface": interface,
+                    "source": source,
+                    "destination": destination,
+                    "destination host": peer,
+                    "port": port,
+                    "token": token,
+                    "seen": done.returncode == 0,
+                    "seconds": round(time.monotonic() - self.started_at, 1),
+                }
+                entry["ready"].append(mark)
+                self.write()
+                if done.returncode != 0:
+                    reason = (done.stderr or done.stdout).strip()[:300] or f"exit {done.returncode}"
+                    raise NotReady(
+                        f"packet capture on {host}: its mark on {network} was not found within {budget} s "
+                        f"of the start ({reason}); look at raw/hosts/{host}{build.CAPTURE_DIR}"
+                    )
+                if time.monotonic() > deadline:
+                    raise NotReady(
+                        f"packet capture on {host}: its marks took longer than {budget} s from the start"
+                    )
+
+    def stop_captures(self) -> None:
+        """Ask every tcpdump process to finish its current packet and write its counters."""
+
+        capture = self.manifest["packet_capture"]
+        if capture is None:
+            return
+        for host, entry in capture["hosts"].items():
+            script = (
+                "status=0; found=0; "
+                f'for pidfile in {build.CAPTURE_RUN}/*.pid; do [ -e "$pidfile" ] || continue; found=1; '
+                'pid=$(< "$pidfile"); kill -TERM "$pid" 2>/dev/null || status=1; done; '
+                "[ \"$found\" -eq 1 ] || exit 2; tries=0; "
+                f'for pidfile in {build.CAPTURE_RUN}/*.pid; do pid=$(< "$pidfile"); '
+                'while kill -0 "$pid" 2>/dev/null; do tries=$((tries + 1)); '
+                '[ "$tries" -lt 200 ] || exit 2; sleep 0.1; done; done; exit "$status"'
+            )
+            done = self.execute(self.containers[host], script, 30, "engine:collect")
+            entry["stopped"] = {
+                "at": now(),
+                "cleanly": done.returncode == 0,
+                **({"error": (done.stderr or done.stdout).strip()[:300]} if done.returncode else {}),
+            }
+            self.write()
+
+    def collect_captures(self) -> None:
+        """Copy the stopped captures and tcpdump counters out before the hosts are removed."""
+
+        capture = self.manifest["packet_capture"]
+        if capture is None:
+            return
+        for host, entry in capture["hosts"].items():
+            entry["collected"] = self.copy_out(host, build.CAPTURE_DIR)
+        self.write()
+
+    def analyse_captures(self) -> None:
+        capture = self.manifest["packet_capture"]
+        if capture is not None:
+            packets.analyse(self.out, capture)
+            self.write()
 
     def run_checks(self, checks: list[plants.Check], tag: str) -> list[dict]:
         """Run each plant check's commands in order, as its accounts, and judge what they printed."""
@@ -1956,19 +2089,21 @@ class Run:
             held = hold_signals()
             try:
                 complete = True
+                if self.started and self.manifest["packet_capture"] is not None:
+                    try:
+                        self.stop_captures()
+                        self.collect_captures()
+                        self.analyse_captures()
+                    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+                        self.manifest["packet_capture"]["collect_error"] = (
+                            f"{type(error).__name__}: {error}"[:500]
+                        )
                 if self.started and self.spec.wazuh:
                     try:
                         self.collect()
                         self.analyse()
                     except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
                         self.manifest["defense"]["collect_error"] = f"{type(error).__name__}: {error}"[:500]
-                    try:
-                        self.record_ecs()
-                    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
-                        self.manifest["ecs"] = {
-                            "error": f"{type(error).__name__}: {error}"[:500],
-                            "files": {},
-                        }
                 if self.created:
                     try:
                         complete = self.teardown()
@@ -1990,6 +2125,16 @@ class Run:
                     watched = final["pass"]
                     if self.phases:
                         self.phases.append({"phase": "teardown", "passed": final["pass"], "checks": [final]})
+                # Rule engines that judge retained telemetry run only after the range is down and its event
+                # watch has stopped. In particular, Suricata has no overlap with a sealed range.
+                if self.started and self.spec.wazuh:
+                    try:
+                        self.record_ecs()
+                    except Exception as error:  # noqa: BLE001 - every exit path writes its outputs
+                        self.manifest["ecs"] = {
+                            "error": f"{type(error).__name__}: {error}"[:500],
+                            "files": {},
+                        }
                 code, result, reason = outcome(
                     (code, result, reason),
                     complete,

@@ -177,6 +177,12 @@ INET_UPLOADS = "/srv/uploads"
 INET_LOG = "/var/log/inet/access.log"
 INET_CERT = "/etc/inet/cert.pem"
 INET_KEY = "/etc/inet/key.pem"
+# A packet capture asked for by a host stays inside that host until collection. One file is written
+# for each of its range interfaces. The Wazuh manager's ports are the defense's own channel, not the
+# shop traffic the packet sensor records.
+CAPTURE_DIR = "/var/log/bluefire/packets"
+CAPTURE_RUN = "/run/bluefire/packets"
+CAPTURE_FILTER = "not (port 1514 or port 1515)"
 HOST_KEY = "/etc/ssh/ssh_host_ed25519_key"
 COMMIT_FILE = f"{atomics.ATOMICS_PATH}/COMMIT"
 LICENSE_IN_CONTEXT = f"atomics/{atomics.LICENSE}"
@@ -193,7 +199,7 @@ class Rendered:
 
 
 def start_script(spec: Spec, host: str) -> str:
-    """The entrypoint of a host built from base: its services, its agent, then nothing but sleep."""
+    """The entrypoint of a host built from base: capture, services, its agent, then sleep."""
 
     settings = spec.hosts[host]
     services = settings.services
@@ -205,6 +211,24 @@ def start_script(spec: Spec, host: str) -> str:
         "mkdir -p /run/bluefire",
         "rsyslogd",
     ]
+    if settings.capture == "packets":
+        lines += [
+            f"install -d -m 0750 -o tcpdump -g tcpdump {CAPTURE_DIR}",
+            f"install -d -m 0755 {CAPTURE_RUN}",
+            "for path in /sys/class/net/*; do",
+            '  iface=${path##*/}; [ "$iface" = lo ] && continue',
+            f'  tcpdump -i "$iface" -p -nn -s 0 -U -Z tcpdump -w "{CAPTURE_DIR}/$iface.pcap" '
+            f"'{CAPTURE_FILTER}' 2> \"{CAPTURE_DIR}/$iface.log\" &",
+            "  pid=$!",
+            f'  printf "%s\\n" "$pid" > "{CAPTURE_RUN}/$iface.pid"',
+            "  tries=0",
+            f'  while [ ! -s "{CAPTURE_DIR}/$iface.pcap" ]; do',
+            '    kill -0 "$pid"',
+            '    tries=$((tries + 1)); [ "$tries" -lt 100 ] || exit 1',
+            "    sleep 0.1",
+            "  done",
+            "done",
+        ]
     if "sshd" in services:
         lines += [
             "mkdir -p /run/sshd",

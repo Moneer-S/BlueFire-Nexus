@@ -83,7 +83,8 @@ hosts:
     kind: host
     role: web application
     networks: [edge, inside, mgmt]
-    packages: [nginx, php-fpm, php-mysql, curl, wget, procps, openssh-client, openssh-server, sudo, cron]
+    packages: [nginx, php-fpm, php-mysql, curl, wget, procps, openssh-client, openssh-server, sudo, cron, tcpdump]
+    capture: packets
     services: [sshd, nginx, php-fpm, cron]
     listens: [22, 80]
     sshd: {password_auth: true, permit_root: false, pam_nodelay: true}
