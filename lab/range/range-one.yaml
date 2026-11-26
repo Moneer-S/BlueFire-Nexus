@@ -2,7 +2,8 @@
 # tests that runs through it. The files that `from:` names are beside this file:
 # app/ holds the shop's pages and its table, repos/ the build server's git
 # repository. range-one.lock holds the SHA-256 of every file the hosts carry
-# from Atomic Red Team. `activity` is the shop's ordinary work beside the path.
+# from Atomic Red Team, and range-one.rules.lock that of every file of the
+# public rule sets. `activity` is the shop's ordinary work beside the path.
 range: range-one
 version: 1
 sentence: >-
@@ -35,6 +36,19 @@ defense:
       - {path: /var/log/snoopy.log, format: syslog}
       - {path: /var/log/dpkg.log, format: syslog}
     fim_realtime: [/etc, /home, /root, /tmp, /var/tmp]
+rule_sets:                         # public rule sets, fetched file by file at their commit
+  sigma:
+    kind: sigma                    # Sigma rules, each given the events of its log source after the run
+    repo: SigmaHQ/sigma
+    commit: 552f3fee420ef232a8e5790c4fae591847e32347  # pragma: allowlist secret
+    folders: [rules/linux/process_creation, rules/linux/file_event, rules/linux/builtin,
+              rules/web/webserver_generic]
+    licence: LICENSE
+    lock: range-one.rules.lock     # sha256 of every fetched rule file and of the licence file
+defenses:                          # each judges the same run; the first is the baseline
+  - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
+  - {id: sigma-public, name: Public Sigma rules on host logs,
+     sensors: [wazuh-agent], rules: [sigma]}
 networks:                          # all: --internal, gateway_mode_ipv4=isolated, no IPv6
   edge: {}                         # the stand-in internet
   inside: {}                       # web, build, db

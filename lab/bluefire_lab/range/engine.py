@@ -62,7 +62,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import activity, atomics, build, ossec, plants, score, seal, wazuh
+from . import activity, atomics, build, ossec, plants, rulesets, score, seal, sigma, wazuh
 from . import path as range_path
 from . import recording as range_recording
 from .spec import Spec, SpecError, load, parse, read
@@ -433,11 +433,21 @@ class Canary:
 
 
 class Run:
-    def __init__(self, spec: Spec, spec_name: str, out: Path, plant: str | None, hold: float):
+    def __init__(
+        self,
+        spec: Spec,
+        spec_name: str,
+        out: Path,
+        plant: str | None,
+        hold: float,
+        rule_engine: Path | None = None,
+    ):
         self.spec = spec
         self.out = out
         self.plant = plant
         self.hold = hold
+        # The program that evaluates the rule sets of the spec's defenses after the run, when one was given.
+        self.rule_engine = rule_engine
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
         self.networks: dict[str, str] = {}
         self.containers: dict[str, str] = {}
@@ -483,6 +493,8 @@ class Run:
             "ready": {},
             "defense": None,
             "atomic_red_team": None,
+            # The public rule sets of the spec's defenses, as fetched into rules/ of the run's folder.
+            "rule_sets": {},
             "weaknesses": plants.weaknesses(spec),
             "plants": None,
             "path": None,
@@ -645,6 +657,16 @@ class Run:
             if name.startswith(self.spec.prefix + "-"):
                 found.append((identifier, name))
         return found
+
+    def fetch_rule_sets(self) -> None:
+        """Fetch the spec's public rule sets by their lock into the run's folder, before anything is created.
+
+        The rules travel with the run, so that it can be judged by them again from its own folder.
+        """
+
+        for rule_set in self.spec.rule_sets:
+            self.manifest["rule_sets"][rule_set.name] = rulesets.fetch(self.spec, rule_set, self.out)
+        self.write()
 
     def prepare_images(self) -> None:
         """Pull the pinned images, and build the others from the rendered spec unless all their tags exist.
@@ -1754,7 +1776,7 @@ class Run:
     def record_ecs(self) -> None:
         """Write the manager's archive and alerts as ECS lines with their origins and ties, and score the run."""
 
-        scored(self.out, self.manifest, self.spec)
+        scored(self.out, self.manifest, self.spec, self.rule_engine)
         self.write()
 
     def labelled(self) -> tuple[list[str], list[str]]:
@@ -1828,6 +1850,7 @@ class Run:
         watch_command = "docker events --filter type=container --filter type=network"
         try:
             self.preflight()
+            self.fetch_rule_sets()
             self.prepare_images()
             since = docker("info", "--format", "{{.SystemTime}}").stdout.strip()
             self.watch.start(since)
@@ -1984,8 +2007,16 @@ class Run:
                     signal.signal(number, handler)
 
 
-def scored(out: Path, manifest: dict, spec: Spec) -> None:
-    """The ECS lines of a run folder's collected archive and alerts, its steps', and its score, into the manifest."""
+def scored(
+    out: Path, manifest: dict, spec: Spec, rule_engine: Path | None = None, judged_by: Spec | None = None
+) -> None:
+    """The ECS lines of a run folder's collected archive and alerts, its steps', and its score, into the manifest.
+
+    Each defense of the spec judges the run. `rule_engine` is the program that
+    evaluates their rule sets, from the rule files in the run's folder;
+    `judged_by` is another spec whose defenses and rule sets judge the run in
+    place of its own.
+    """
 
     logs = out / "raw" / "hosts" / spec.manager / "var" / "ossec" / "logs"
     addresses = {
@@ -1993,6 +2024,10 @@ def scored(out: Path, manifest: dict, spec: Spec) -> None:
         for host, entry in (manifest.get("containers") or {}).items()
     }
     uses, _ = activity.path_uses(range_path.section(spec), spec.hosts)
+    named = judged_by or spec
+    # The hashes each rule set's files had when they were fetched into the run's folder, by the run
+    # itself, or, for the rule sets of another spec, by the lock beside that spec.
+    fetched = (manifest.get("judged_by") or {}).get("rule_sets") if judged_by else manifest.get("rule_sets")
     manifest["ecs"], manifest["score"] = score.record(
         out,
         logs,
@@ -2007,6 +2042,15 @@ def scored(out: Path, manifest: dict, spec: Spec) -> None:
             host: entry["name"]
             for host, entry in (manifest.get("containers") or {}).items()
             if entry.get("name")
+        },
+        defenses=named.defenses,
+        rule_sets=named.rule_sets,
+        agents=spec.agents,
+        engine=rule_engine,
+        locks={
+            name: entry["lock"]
+            for name, entry in (fetched or {}).items()
+            if isinstance(entry, dict) and isinstance(entry.get("lock"), dict)
         },
     )
 
@@ -2026,10 +2070,16 @@ def write_recording(out: Path, manifest: dict) -> None:
     write_json(out / "manifest.json", manifest)
 
 
-def rescore(folder: Path) -> int:
+def rescore(folder: Path, rule_engine: Path | None = None, defenses: Path | None = None) -> int:
     """Write the ECS lines, the score and the recording of a run folder again, from its own files.
 
-    The spec is the copy the run's manifest holds, so a run is scored by what it ran.
+    The spec is the copy the run's manifest holds, so a run is scored by what
+    it ran. Its defenses judge it again; their rule sets are evaluated by
+    `rule_engine`, from the rule files in the run's folder. `defenses` names
+    another spec file whose defenses and rule sets judge the run in place of
+    its own, as for a run made before the spec named any: its rule sets must be
+    in the run's folder (`range rules`), and are checked against the lock
+    beside that spec. Nothing is started or fetched.
     """
 
     try:
@@ -2042,7 +2092,31 @@ def rescore(folder: Path) -> int:
     if not spec.wazuh:
         print(f"{folder}: the range has no defense, so there is nothing to score", file=sys.stderr)
         return 2
-    scored(folder, manifest, spec)
+    if rule_engine is not None and not Path(rule_engine).is_file():
+        print(f"the rule engine {rule_engine} is not a file", file=sys.stderr)
+        return 2
+    judged_by = None
+    manifest.pop("judged_by", None)
+    if defenses is not None:
+        try:
+            judged_by = load(defenses)
+            sets = {
+                found.name: rulesets.record(found, rulesets.locked(judged_by, found))
+                for found in judged_by.rule_sets
+            }
+        except (OSError, SpecError) as error:
+            print(f"{defenses}: {error}", file=sys.stderr)
+            return 2
+        # What the run itself fetched stays under rule_sets: scored again without this spec, the run is
+        # judged by its own defenses once more.
+        manifest["judged_by"] = {
+            "file": Path(defenses).name,
+            "sha256": judged_by.sha256,
+            "rule_sets": sets,
+            "note": "the defenses and rule sets that judge the run are this spec's, not those of the spec "
+            "the run ran; its rule sets were read from the run's folder and checked against its lock",
+        }
+    scored(folder, manifest, spec, rule_engine, judged_by)
     write_json(folder / "manifest.json", manifest)
     (folder / "score.md").write_text(score.markdown(manifest), encoding="utf-8")
     write_recording(folder, manifest)
@@ -2170,12 +2244,28 @@ def hold_signals() -> dict:
     return held
 
 
-def run(spec_path: Path, out: Path, plant: str | None = None, hold: float = 0) -> int:
+def run(
+    spec_path: Path,
+    out: Path,
+    plant: str | None = None,
+    hold: float = 0,
+    rule_engine: Path | None = None,
+) -> int:
     try:
         spec = load(spec_path)
     except (OSError, SpecError) as error:
         print(f"bluefire-lab range: {error}")
         return EXIT_REFUSED
+    if rule_engine is not None and not Path(rule_engine).is_file():
+        print(f"bluefire-lab range: the rule engine {rule_engine} is not a file")
+        return EXIT_REFUSED
+    if rule_engine is not None:
+        # Before anything is created: a program that cannot be started would only show at the end.
+        try:
+            sigma.engine_version(rule_engine)
+        except sigma.EngineError as error:
+            print(f"bluefire-lab range: {error}")
+            return EXIT_REFUSED
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     if (out / "seal.json").exists():
@@ -2187,7 +2277,7 @@ def run(spec_path: Path, out: Path, plant: str | None = None, hold: float = 0) -
 
     previous = signal.signal(signal.SIGTERM, stop)
     try:
-        engine = Run(spec, Path(spec_path).name, out, plant, hold)
+        engine = Run(spec, Path(spec_path).name, out, plant, hold, rule_engine)
         engine.run()
         # The teardown can still change the outcome after the sequence returned.
         code = engine.manifest["exit_code"]
@@ -2223,16 +2313,70 @@ def render(spec_path: Path, out: Path) -> int:
 
 
 def lock(spec_path: Path) -> int:
-    """Write the lock of the published files the spec's hosts carry."""
+    """Write the lock of the published files the spec's hosts carry, and that of its public rule sets."""
 
     try:
         spec = load(spec_path)
-        written = atomics.lock(spec)
+        # A spec with neither is told so by the lock of the published files.
+        written = [atomics.lock(spec)] if spec.atomics or not spec.rule_sets else []
+        written += rulesets.lock(spec)
     except (OSError, SpecError, ValueError) as error:
         print(f"bluefire-lab range: {error}")
         return EXIT_REFUSED
-    print(f"{written}: {len(written.read_text(encoding='utf-8').splitlines()) - 1} files")
+    for path in written:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        print(f"{path}: {sum(1 for line in lines if not line.startswith('# '))} files")
     return EXIT_OK
+
+
+def rules(spec_path: Path, out: Path) -> int:
+    """Fetch the spec's public rule sets by their lock into a folder's rules/, as a run does into its own.
+
+    A rule set that the run in that folder fetched itself stays as the run fetched it, so that the run can
+    still be judged by its own spec: a rule set of the same name with another lock is refused. The folder
+    of any other rule set is emptied first, so that it holds the files of the lock and no others.
+    """
+
+    try:
+        spec = load(spec_path)
+        if not spec.rule_sets:
+            raise SpecError(f"the spec {Path(spec_path).name} names no rule set under rule_sets")
+        own = run_rule_sets(Path(out))
+        for rule_set in spec.rule_sets:
+            if rule_set.name in own and own[rule_set.name] != rulesets.locked(spec, rule_set):
+                raise SpecError(
+                    f"the run in {out} fetched a rule set {rule_set.name} of its own into "
+                    f"{rulesets.FOLDER}/{rule_set.name}/, and the rule set {rule_set.name} of "
+                    f"{Path(spec_path).name} has another lock: give it another name there, so that the run "
+                    "keeps its own"
+                )
+        fetched = {}
+        for rule_set in spec.rule_sets:
+            folder = Path(out) / rulesets.FOLDER / rule_set.name
+            if rule_set.name not in own and (folder.is_symlink() or folder.exists()):
+                shutil.rmtree(folder)
+            fetched[rule_set.name] = rulesets.fetch(spec, rule_set, Path(out))
+    except (OSError, ValueError, SpecError) as error:
+        print(f"bluefire-lab range: {error}")
+        return EXIT_REFUSED
+    for name, entry in fetched.items():
+        print(
+            f"{Path(out) / entry['folder']}: {entry['files']} rule files of {name}, {entry['repo']} at {entry['commit']}"
+        )
+    return EXIT_OK
+
+
+def run_rule_sets(folder: Path) -> dict[str, object]:
+    """The rule sets the run in a folder fetched itself, as its manifest records them: the lock of each, by
+    the set's name. A folder that holds no run has none."""
+
+    manifest = Path(folder) / "manifest.json"
+    recorded = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
+    sets = recorded.get("rule_sets") if isinstance(recorded, dict) else None
+    return {
+        name: entry.get("lock") if isinstance(entry, dict) else None
+        for name, entry in (sets.items() if isinstance(sets, dict) else ())
+    }
 
 
 def down(spec_path: Path) -> int:

@@ -375,9 +375,9 @@ those runs installed.
 
 Each `lab-run` artifact includes the SigmaHQ rules used and their license.
 
-The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following images and
-packages at the pins their spec files give, when a range is built or runs. None of them is copied
-into this repository. The nginx image runs unchanged; the others are the base of images the lab
+The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following images, packages,
+rules and tools at the pins their spec files and workflow give, when a range is built or runs.
+None of them is copied into this repository. The nginx image runs unchanged; the others are the base of images the lab
 builds from a spec (`bluefire-lab range render`), which add the lab's configuration files.
 
 | Project | Pin | Licence | Use |
@@ -387,13 +387,17 @@ builds from a spec (`bluefire-lab range render`), which add the lab's configurat
 | [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team) | commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, every file checked against the SHA-256 in `lab/range/range-one.lock` | MIT, Copyright (c) 2018 Red Canary, Inc. | Fetched when range one's images are built, and copied into them as data: the `src` folder of T1110.004 (its password lists) on `attacker`, and T1105's `atomic.sh` on `inet`, which serves it. The technique YAMLs of the path are fetched and checked too, and are written to the build folder only. No build step runs any of them. The project's `LICENSE.txt` is fetched and locked with them, and goes with every copy: `build/atomics/LICENSE.txt` in the build folder, and `/opt/atomics/LICENSE.txt` on `attacker` and `inet`. The build folder is part of a run's folder, which the `range-one` CI job uploads as the artifact `range-one-run`, so that artifact holds these files with their licence. The images are built on the machine or runner that runs the range and are not pushed to a registry; in CI their layers are kept in the repository's GitHub Actions cache |
 | [Wazuh manager image](https://github.com/wazuh/wazuh-docker) | `wazuh/wazuh-manager:4.14.10@sha256:eabfa7ee4e63acb51c2130fa0583e30f843d030b091cf45a4fbd93d78fa21517` | Wazuh: GPL-2.0; the image's Amazon Linux 2023 packages under their own licences | The range's Wazuh manager, with the lab's edits of its stock `ossec.conf`, the lab's snoopy decoder, Filebeat kept from starting and its API on loopback only |
 | [Wazuh agent](https://github.com/wazuh/wazuh) | package `wazuh-agent_4.14.10-1_amd64.deb` from `packages.wazuh.com`, SHA-512 `5ee41846e81b2f5f5017bb0f968ac039443f09a400e5feb8121a4e52db6bb8d1c91683667b03a657a0236c858bd1f159026b493ace504ec8f92e491e6c8ae04d` | GPL-2.0 | The agent inside each watched host, with the lab's edits of its stock `ossec.conf` |
-| [snoopy](https://github.com/a2o/snoopy) | Ubuntu noble package `snoopy` `2.5.1-1`, from the snapshot above | GPL-2.0 | Writes every program start on a watched host to syslog |
+| [snoopy](https://github.com/a2o/snoopy) | Ubuntu noble package `snoopy` `2.5.1-1`, from the snapshot above | GPL-2.0 | Writes the program starts on a watched host to syslog, with the file each exec call named |
+| [SigmaHQ rules](https://github.com/SigmaHQ/sigma) | commit `552f3fee420ef232a8e5790c4fae591847e32347` (release `r2026-07-01`): the folders `rules/linux/process_creation`, `rules/linux/file_event`, `rules/linux/builtin` and `rules/web/webserver_generic` and the file `LICENSE`, every file checked against the SHA-256 in `lab/range/range-one.rules.lock` | [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License). The `LICENSE` file fetched with them is a short notice, not the licence's text: it says that the rules of the SigmaHQ repositories are released under the Detection Rule License 1.1, with a link to it, and that the Sigma specification and logo are public domain | Rules of the defense `sigma-public` of range one. A run fetches them file by file from `raw.githubusercontent.com` into `rules/sigma/` of its own folder, with that `LICENSE` and a file `SOURCE` that names the repository and commit, and Zircolite evaluates them after the run over the events the agents recorded. The run's folder is what the `range-one` CI job uploads as the artifact `range-one-run`, so that artifact holds the rules with their licence notice. Each match the lab writes (`alerts.sigma.ecs.ndjson`, the manifest and `score.md`) names its rule's title, id and author, and the recording names each rule that matched with its author in its notes. No rule file is copied into this repository |
+| [Zircolite](https://github.com/wagga40/Zircolite) | 4.7.1, the release archive checked against the SHA-256 that `.github/workflows/range-one.yml` gives, the same as `lab.yml` | LGPL-3.0-or-later | The rule engine of range one's public Sigma rules: a separate program, run after the run over the run's files and never inside the range |
 
 The tests in `lab/tests/fixtures/range/wazuh/` hold short excerpts of the stock `ossec.conf` files
 that the pinned agent package and manager image install (Wazuh, GPL-2.0), as test data for the
 lab's edits of them, and lines and events trimmed from one run of a range with one agent host.
 The small range in `lab/tests/fixtures/range/small/` stands in for published files with contents
-of its own, at a stand-in commit; it copies nothing from Atomic Red Team.
+of its own, at a stand-in commit; it copies nothing from Atomic Red Team. The rule set in
+`lab/tests/fixtures/range/rule-set/` is made up for the tests, laid out as a repository of Sigma
+rules at a stand-in commit; it copies no published rule.
 
 `lab/tests/fixtures/range/ecs/ecs-8.17.0-fields.yml` is taken from the
 [Elastic Common Schema](https://github.com/elastic/ecs) (Apache-2.0, Copyright Elasticsearch B.V.),

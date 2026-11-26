@@ -11,7 +11,7 @@ In this document:
 - [Hardening that blocks a technique](#hardening-that-blocks-a-technique), and [the lab's own detection rules](#detection-rules-of-the-labs-own).
 - [A sensor change that makes a gap visible](#a-sensor-change-that-makes-a-gap-visible).
 - [The range and its seal](#a-range-and-its-seal): a network of throwaway containers with no route out.
-- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity), [its path of published tests](#range-one-the-path) and [the path's score and recording](#range-one-the-score-and-the-recording).
+- Range one: [its hosts](#range-one-its-hosts), [its ordinary activity](#range-one-ordinary-activity), [its path of published tests](#range-one-the-path), [the path's score and recording](#range-one-the-score-and-the-recording) and [its defenses](#range-one-its-defenses).
 - [Comparing two runs](#comparing-two-recordings).
 - [The defender loop](#the-defender-loop-so-far): a test nobody saw, a sensor change, then a new rule.
 - [How to run it](#how-to-run-it).
@@ -794,10 +794,12 @@ the rule. What it asks for:
   `bluefire-lab-`; every container and network is named with it, so two
   ranges on one machine need two prefixes), `docker: {min_engine: 28}` or
   later, `networks` and `hosts`. Optional: `base` (the image and Ubuntu
-  snapshot that hosts without an `image` are built from), `defense` (Wazuh),
+  snapshot that hosts without an `image` are built from), `defense` (Wazuh:
+  how the manager and the agents are installed and what the agents watch),
   `atomic_red_team` (the repository and commit of the published files the
-  hosts carry, and the lock beside the spec), `path`, `activity`, and
-  `sentence` and `executor`, which other parts of the lab read.
+  hosts carry, and the lock beside the spec), `rule_sets` and `defenses`
+  (below), `path`, `activity`, and `sentence` and `executor`, which other
+  parts of the lab read.
 - **Networks** are names with no settings: every one is created internal,
   with the isolated gateway mode and without IPv6.
 - **Hosts.** Keys: `kind` (`attacker`, `internet`, `host` or `defense`),
@@ -826,6 +828,29 @@ the rule. What it asks for:
   `writes` lists the files a job writes, by pattern. [Ordinary
   activity](#range-one-ordinary-activity) gives the rules that keep jobs
   apart from each other and from the path.
+- **Rule sets.** `rule_sets` maps a name to a public rule set, pinned: `kind`
+  (`sigma`, the one kind of rule set the lab can give a recorded run to),
+  `repo` (a GitHub repository), `commit` (in full), `folders` (the folders of
+  the repository to take, none inside another), `licence` (the repository's
+  licence file, which is fetched and kept with the rules) and `lock` (a file
+  beside the spec with the SHA-256 of every one of those files; rule sets can
+  share it, and it is not the lock of `atomic_red_team`). All six are
+  required. The name is the rule set's detector in a recording, so it is not
+  `pinned` or `lab`, which a recording uses already, nor `wazuh`.
+- **Defenses.** `defenses` is a list of 1 to 8 named defenses, each with `id`
+  (letters, digits, `-` and `_`), `name` (a few plain words), `sensors` (the
+  kinds of sensor it records with; the one kind today is `wazuh-agent`, the
+  agents of `defense.wazuh` on every host that has one) and `rules` (at most
+  four: `wazuh`, the rules the manager runs live, or a name of `rule_sets`;
+  an empty list is a defense that only records). The first is the baseline
+  that a recording shows first. A defense's rules must read what one of its
+  sensors records, and every rule set must be run by a defense. A spec
+  without `defenses` has the one its agents and its manager's live rules
+  make, and its recording has no `defenses`. A later kind of sensor or of
+  rule set is one more word in the loader's lists (`SENSORS`, `RULE_KINDS`)
+  and the code that reads it; the two keys keep their shape.
+  ([Range one: its defenses](#range-one-its-defenses) says what a defense
+  is and how one judges a run.)
 - **YAML.** The loader reads only `true` and `false` as booleans, so that the
   key `off` of `defense.wazuh` stays a key. PyYAML's `safe_load` and
   `safe_dump` read `off`, `on`, `yes` and `no` as booleans: a script that
@@ -842,6 +867,10 @@ and `build`, and the run shows that what happens on each of them reaches the
 manager. The path of published tests runs in it
 ([range one: the path](#range-one-the-path)), and every step is scored
 ([the score and the recording](#range-one-the-score-and-the-recording)).
+This section is about the sensor and the manager's live rules, which the
+spec's `defense` key describes. A spec can name several defenses that judge
+the same run, each with its own rules
+([range one: its defenses](#range-one-its-defenses)).
 
 ```bash
 bluefire-lab range render lab/range/range-one.yaml --out <folder>   # optional: only writes the build files
@@ -865,10 +894,16 @@ job may not start at all and the ordinary day is then "not scored".
   certificate store (ca-certificates and the openssl it needs), which comes
   from the live archive of the build day so that the snapshot can be reached
   over HTTPS; its version is not recorded. On those hosts
-  snoopy 2.5.1 writes every program start to syslog, with the `BLUEFIRE_TAG` of
-  the process that started it, and rsyslog writes the lines with timestamps to
-  the microsecond. A host starts its services from a plain script, without
-  systemd.
+  snoopy 2.5.1 writes a line to syslog for each program started through the C
+  library's `execv` or `execve` (see the limits below), with the
+  `BLUEFIRE_TAG` of the process that started it and, as `exe`, the file the
+  call named (snoopy's data source `filename`),
+  which the command line does not hold: a shell that finds `grep` on its
+  search path starts `/usr/bin/grep` with the command line `grep ...`. The
+  lab's decoder reads it, and the ECS line gives it as `process.executable`,
+  with a path written relative to the working folder joined to that folder.
+  rsyslog writes the lines with timestamps to the microsecond. A host starts
+  its services from a plain script, without systemd.
 - **Images from the spec.** `range render` writes one multi-stage Dockerfile
   and a bake file. Every image is tagged with the spec's prefix and a hash of
   the build context, so `range run` builds with `docker buildx bake --load`
@@ -961,7 +996,16 @@ job may not start at all and the ordinary day is then "not scored".
 
 Some limits: snoopy does not see the first program of a `docker exec` (the
 engine's `bash`), nor static programs; a process without `BLUEFIRE_TAG` has
-the tag `(undefined)`. The agent package is for amd64 only.
+the tag `(undefined)`. snoopy 2.5.1 wraps the C library's `execv` and
+`execve` only, so it does not log every program that another program
+starts: in [run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964),
+`s07`'s `find ... -exec sh -c ...` left a line for `find` and one for the
+`cat` that the shell started, and none for the `sh` that `find` started. It
+logs an exec call when it is made, not when it succeeds, so `exe` is the file
+the call named even when there is no such file. The lab's line names no
+parent program. That the program's path arrives in the manager's archive is
+not yet shown by a CI run: the runs this file cites were made before snoopy's
+line held it. The agent package is for amd64 only.
 
 The `range-one` job of the `range-one` workflow runs this on a GitHub-hosted
 runner, fails unless there was no delivery gap, every agent host got its marks
@@ -1021,9 +1065,12 @@ Install the lab once, from the clone's top folder, with `pip install ./lab`
 for the virtual environment it needs). Then:
 
 ```bash
-bluefire-lab range run lab/range/range-one.yaml --out <new folder>
-bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files change
+bluefire-lab range run lab/range/range-one.yaml --out <new folder> --engine <path to Zircolite 4.7.1>
+bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files or rule sets change
 ```
+
+Without `--engine` the run is the same, and the defense whose rules run after
+the run is not judged ([its defenses](#range-one-its-defenses)).
 
 **Published files, pinned and locked.** The build fetches the technique YAML
 of every step of the path, the `src` folders the hosts carry and the files
@@ -1072,8 +1119,9 @@ then gives the run its result.
 weaknesses in words, the ready gate and the plant checks with what each
 command printed), `seal.json`, `seal.md`, `defense.md`, `plants.md`,
 `docker-events.ndjson`, `build/` (the rendered Dockerfile, bake file and
-build context) and `raw/hosts/<host>/`, which now also holds `inet`'s access
-log and uploads.
+build context), `rules/sigma/` (the public rule set, fetched by its lock
+before anything is created) and `raw/hosts/<host>/`, which now also holds
+`inet`'s access log and uploads.
 
 The services (sshd, sudo, nginx, php-fpm, MariaDB) run under AppArmor's
 `docker-default` profile on the hosted runner: run 45281159443's
@@ -1207,6 +1255,10 @@ merged, and the raw files stay in `raw/` so that the mapping can be checked
 against them. The run is invalid (exit code 4, with the reason) when a raw
 line cannot be parsed, when a file has another number of ECS lines than raw
 lines, or when a line would lack `@timestamp`, `event.kind` or `labels.origin`.
+A rule set that is evaluated after the run writes its matches to a file of
+its own beside them, `alerts.<rule set>.ecs.ndjson` (`alerts.sigma.ecs.ndjson`
+in range one), in the same shape as an alert: see
+[its defenses](#range-one-its-defenses).
 
 Each ECS line keeps the manager's line whole under `wazuh.*`, less its
 `full_log` and `timestamp`. The ECS fields beside it are copies where ECS has a
@@ -1224,7 +1276,7 @@ a test checks each against the field list of ECS 8.17.0):
 | `data.srcip`, `data.srcport` | `source.ip`, `source.port` |
 | `data.dstuser`, when the line has no `data.srcuser` | `user.name` |
 | `data.srcuser`, `data.dstuser` (sudo, PAM) | `user.name` (who ran sudo or opened the session), `user.effective.name` when it is another account |
-| snoopy's `data.command`, `data.cwd`, `data.uid`, `data.euid` | `process.command_line`, `process.working_directory`, `user.id`, `user.effective.id`; `event.category` `process`, `event.type` `start` |
+| snoopy's `data.command`, `data.exe`, `data.cwd`, `data.uid`, `data.euid` | `process.command_line`, `process.executable` (a path written relative to the working folder is joined to that folder), `process.working_directory`, `user.id`, `user.effective.id`; `event.category` `process`, `event.type` `start` |
 | nginx's `data.protocol`, `data.url`, `data.id` | `http.request.method`, `url.original`, `http.response.status_code`; `event.category` `web`, `event.type` `access` |
 | `syscheck.path`, `uname_after`, `gname_after`, `uid_after`, `gid_after`, `inode_after`, `size_after`, `md5_after`, `sha1_after`, `sha256_after` | `file.path`, `file.owner`, `file.group`, `file.uid`, `file.gid`, `file.inode`, `file.size`, `file.hash.*`; `event.category` `file`, `event.type` `creation`, `change` or `deletion` |
 | `rule.id`, `rule.description`, `rule.level` | `rule.id`, `rule.description`, `event.severity`; `message` on an alert |
@@ -1475,14 +1527,27 @@ later run.
 ## Range one: the score and the recording
 
 After the collection, a run of a range with a path says, for every step, what
-the defense made of it, into `manifest.json` (`score.path`), `score.md` and
+each of its defenses made of it, into `manifest.json` (`score.path` for the
+manager's live rules, `score.defenses` for every defense), `score.md` and
 `steps.ecs.ndjson` (one ECS line per step: its daemon times, host, account,
 technique, the test's name and GUID, the exit code, what happened, the
 check's result, and the outcome below), and it writes `recording.json`, the
 run in the [recording format](../docs/RECORDING.md) that the app's live view
-plays. `bluefire-lab range score <run folder>` writes all of these again from
-a run folder's own files, with the spec the run's manifest holds, and starts
-nothing.
+plays. A spec that names no defense has one, the agents with the manager's
+stock rules, and its recording has no `defenses`.
+`bluefire-lab range score <run folder> [--engine <path to Zircolite 4.7.1>]`
+writes all of these again from a run folder's own files, with the spec the
+run's manifest holds and the rule files in its folder, and starts nothing.
+
+**`score.md`** opens with the path's outcome in one sentence (whether it
+reached its goal, and after how long), then a table with a row for each
+defense: its sensors, its rules and whether they ran live or after the run,
+the steps it alerted on, saw without an alert and did not see, its first
+alert in seconds after the first step and before the goal, and its false
+alerts on the ordinary day beside the minutes of that day. Then the table of
+steps, with one column for each defense's outcome, the detail of the
+manager's live rules, the ordinary day, and a section for each rule set that
+ran after the run ([its defenses](#range-one-its-defenses)).
 
 **Ties.** Each archived event and each alert is the engine's, a cleanup's, a
 job's of the ordinary activity, a step's, or unattributed, by the first rule
@@ -1516,7 +1581,8 @@ order (`alerted`, `seen`, `unseen`, `no effect`, `inconclusive`). A step
 cannot be `stopped` in range one: it configures no active response. The score
 also lists, per step, which agents recorded it, the rules that matched with
 their levels and first times, and the rules the spec expects of the step
-(`expect`) that did not appear.
+(`expect`) that did not appear. Every defense gets the same words from its own
+sensors' events and its own rules' alerts; the ties are the same for all.
 
 **The race.** The time from the start of the first step to the first alert at
 level 12 or higher on a step, against the time from the same start to the end
@@ -1531,6 +1597,7 @@ must be the daemon's, in order. When the check fails, the race is labelled
 The manager's own time of a line can run seconds behind the time rsyslog
 wrote on it, so an alert counts from the manager's time of it, or from its
 line's time when that is later, and the score gives the spread it measured.
+A rule that ran after the run counts from the time of the event it matched.
 Beside the race stand the ordinary day's false alerts and their denominators
 ([above](#range-one-what-the-defense-recorded-in-ecs-and-the-ordinary-day)).
 
@@ -1538,12 +1605,27 @@ Beside the race stand the ordinary day's false alerts and their denominators
 between every two that share a network, the three Wazuh agents as sensors,
 the manager's stock rules as the detector `pinned` that ran live, each step
 with its published name and one plain sentence (`plain` in the spec), its
-command and output, and the events and alerts tied to it, at most 300 events
-of a step and every one an alert was raised on; a step that went to another
-host (`to` in the spec) is on that host, `from` its own. An alert has the time
-of its line and `raised`, the manager's time of it. Two words joined the
-format's ties for this: `address` and `content`. The app's import accepts such
-a recording, and the single page plays it:
+command and output, and the events and alerts tied to it, the first 300
+events of a step, shared in equal parts among the sensors that recorded them,
+and every one a rule matched; a step that went to another host (`to` in the
+spec) is on that host, `from` its own. An alert has the time of its line and
+`raised`, the manager's time of it. Two words joined the
+format's ties for this: `address` and `content`. A rule set that judged the
+run after it is a detector of its own, with `when` `after the run`, the
+number of rules its engine loaded and the digest of its files, and its
+alerts have the time of their event and no `raised`. When the spec names its
+defenses, the recording has `defenses`: for each defense that judged the run,
+its sensors, its detectors, its own answer for every step, its ordinary day
+and its score. The top level is the first defense's, `wazuh-stock`: its
+verdicts, ordinary day and score are those of a recording of the spec without
+defenses, except that the recording also keeps each event beyond a step's cut
+that another defense's rules matched, and a step's `kept` counts it. The
+recording's `alerts` are those of every defense, numbered together in time
+order. The app's import refuses a key that its [recording
+format](../docs/RECORDING.md) does not list, so it takes a recording with
+`defenses` only when that format lists the key; it takes a recording of a
+spec without defenses as before. A single page that plays a recording is made
+so:
 
 ```bash
 bluefire-lab replay <run folder>/recording.json --template bluefire/ui/replay.html --out replay.html
@@ -1560,8 +1642,9 @@ level back to 12, or read the score without a recording), and nor does a run
 with an alert at level 12 or higher whose archived line is not in the archive:
 the manifest says why, and `bluefire-lab range score` exits 1.
 
-The `range-one` job keeps `recording.json`, the three ECS files and
-`replay.html` in its artifact, and shows the path's score in its summary.
+The `range-one` job keeps `recording.json`, the ECS files (the rule set's
+matches among them), the rule files the run fetched and `replay.html` in its
+artifact, and shows `score.md` in its summary.
 
 The app ships the recording of
 [run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)
@@ -1622,9 +1705,120 @@ logged was counted for the engine by its tag alone, so `s08` has 19 events
 there: its own archive of `/etc` was counted as the engine's. Five runs do not
 say how far the times can vary.
 
+## Range one: its defenses
+
+A defense is a named thing in the spec (`defenses`, see
+[writing a spec](#writing-a-spec)): the kinds of sensor it records with and
+the rules it runs. One run is recorded with every sensor on, and each defense
+judges that same run, counting only the events its own sensors recorded and
+only the alerts of its own rules. For each one the score says what it made of
+every step, its first alert against the goal, and its false alerts on the
+ordinary day, with the denominators of the run.
+
+| Defense | Sensors | Rules | When the rules ran |
+| --- | --- | --- | --- |
+| `wazuh-stock`, Wazuh with its stock rules | the Wazuh agents on `web`, `db` and `build` | the manager's stock rules, the detector `pinned` | live |
+| `sigma-public`, the public Sigma rules over the same host logs | the same agents' records | SigmaHQ's rules at commit `552f3fee` (the commit `lab.yml` pins for the bench on one host), the folders `rules/linux/process_creation`, `rules/linux/file_event`, `rules/linux/builtin` and `rules/web/webserver_generic`, the detector `sigma` | after the run, by Zircolite 4.7.1 |
+
+`wazuh-stock` is first, so a recording's top level is its view, with the
+verdicts, ordinary day and score a recording had before the spec named
+defenses ([the recording](#range-one-the-score-and-the-recording) says what
+else differs). A third or a fourth defense is one more entry of `defenses`,
+with its rule set under `rule_sets`.
+
+**The rule set, fetched and locked.** `bluefire-lab range lock <spec>` lists
+each folder of the rule set at its commit through GitHub's contents API,
+fetches every file from `raw.githubusercontent.com` at that commit, and writes
+their SHA-256 to [`range/range-one.rules.lock`](range/range-one.rules.lock),
+with the repository's `LICENSE`. A run fetches the files by that lock into
+`rules/sigma/` of its own folder, with the `LICENSE` and a file `SOURCE` that
+says `SigmaHQ/sigma@<commit>`, before anything is created; a file that is
+missing or has another SHA-256 stops the run with the file's name. Nothing is
+cloned. `bluefire-lab range score` reads the rules from the run's folder,
+checks each file against the hashes the run recorded, and fetches nothing. For
+a run folder made before its spec named these defenses, `bluefire-lab range
+rules <spec> --out <run folder>` fetches the rules into it the way a run does,
+and `bluefire-lab range score <run folder> --engine <path to Zircolite>
+--defenses <spec>` judges it by that spec's defenses; its notes then say so.
+A rule set the run fetched itself stays as the run fetched it, so that the run
+can still be judged by its own spec: `range rules` refuses a rule set of the
+same name with another lock, which then needs a name of its own. The folder of
+any other rule set it empties before it fetches, so that the folder holds the
+files of the lock and no others.
+
+**How the rules are given the run.** After the run, the engine is given the
+manager's archived events, each rule folder over the events of the Sigma log
+source its rules name and no others, in Sigma's field names:
+
+- `process_creation` for Linux: the program starts snoopy logged, as `Image`
+  (the file the exec call named, `process.executable` in ECS), `CommandLine`,
+  `User` (the login name snoopy recorded) and `CurrentDirectory`.
+- `file_event` for Linux: the files the agents' file integrity monitoring saw
+  added or changed, as `TargetFilename`.
+- `webserver`: nginx's access lines, as `c-ip`, `cs-method`, `cs-uri-query`
+  (the request's path and query as the line holds them), `sc-status`,
+  `cs-user-agent` and `cs-referer`, with the line itself, all taken from the
+  line. The engine names a column by the letters and digits of a field's name,
+  so it reads a copy of each such rule with the field's name written that way;
+  the fetched files stay as the lock has them.
+- the keyword rules of `builtin`: a rule that names a `service` (`sshd`,
+  `sudo`, `cron`, `auth`, `syslog`) is given that service's lines only, and a
+  rule without one every line of every collected log file. A rule for a
+  service the range has no line of, such as `vsftpd`, is given nothing.
+
+Events of every origin are given: a step's, the ordinary activity's, the
+engine's own and unattributed ones. For each folder and log source the run
+records how many rules it holds, how many the engine says it loaded, and how
+many events it was given and read: the engine skips a rule it cannot convert,
+and a rule it did not load was not evaluated.
+
+**A match.** Each match is an alert of the detector `sigma`, at the time of
+the event it matched and with no `raised` time, at the rule's own level; it
+counts as an alert at `high` or `critical`. It is tied as the manager's alerts
+are, by its event: on a step's event it is that step's; on an event of the
+ordinary activity it is a match on the ordinary day, and a false alert when it
+counts; on the engine's own work or on an unattributed event it is listed
+apart and never counted. The matches are written to `alerts.sigma.ecs.ndjson`,
+one line each, in the shape of an alert, with the rule's id, title, level,
+author and address at its commit, and `labels.event_id` naming the event;
+`score.md` has a section for the rule set (what each folder was given, what
+the engine loaded and read, the rules that matched and where), and the
+manifest has it under `score."rule sets"`.
+
+**Without the engine.** `range run` and `range score` take the engine's path
+as `--engine`. Without it the Sigma rules are not evaluated: the run still
+completes, `score.md` says that `sigma-public` was not judged and why, and the
+recording holds only the defenses that were judged. The `range-one` job
+fetches the engine as the `lab` workflow does, at the same address and digest,
+and fails unless every defense of the spec judged the run.
+
+Limits:
+
+- The rules ran after the run, so a match counts from the time of its event,
+  while a live alert counts from when the manager raised it: the race favours
+  the rules that ran after the run by the manager's delay, and no response
+  could have followed their alert.
+- The lab's snoopy line names no parent program, so a rule that needs
+  `ParentImage`, `ParentCommandLine` or `LogonId` cannot match; the file
+  integrity sensor does not know which program wrote a file, so a `file_event`
+  rule that needs `Image` cannot match either. `User` is the login name, not
+  always the account the program ran as.
+- Only programs started through the C library's `execv` or `execve` are
+  logged (see [the defense of a range](#the-defense-of-a-range)), so a rule
+  cannot match a program snoopy did not see.
+- A run made before snoopy's line held the program's path has no `Image`:
+  most of the `process_creation` rules need one and can match nothing there,
+  and the recording's notes say so. Each recording's notes say which fields
+  the rules were given and which they named and were not given.
+- Not yet shown: what the public Sigma rules make of a run of range one on a
+  hosted runner.
+
 ## Not yet shown
 
 - Tests on Windows.
+- What the public Sigma rules make of a run of range one on a hosted runner,
+  and that snoopy's line brings the program's path to the manager's archive
+  there ([range one: its defenses](#range-one-its-defenses)).
 
 ## How to run it
 

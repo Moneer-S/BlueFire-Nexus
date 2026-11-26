@@ -6,13 +6,16 @@ made-up times and addresses. Nothing in it was recorded on a machine.
 """
 
 import gzip
+import hashlib
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from bluefire_lab.range import engine, recording, score
+from bluefire_lab.range import engine, recording, rulesets, score, sigma
+from bluefire_lab.range import spec as range_spec
 
 RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
 # A made-up start of the first step, in seconds since the epoch.
@@ -340,8 +343,11 @@ def test_the_race_counts_to_the_first_alert_and_to_the_end_of_the_goals_step(tmp
     assert race["first_alert_seconds"] == pytest.approx(9.4, abs=0.002)
     assert race["goal_seconds"] == pytest.approx(20.2, abs=0.002)
     assert race["says"] == "alert before goal by 10.8 s"
+    # score.md opens with the path's outcome, which is the same for every defense that judges the run.
     assert (
-        (tmp_path / "score.md").read_text().startswith("### Path of range-one: alert before goal by 10.8 s")
+        (tmp_path / "score.md")
+        .read_text()
+        .startswith("### Path of range-one: the path reached its goal 20.2 s after its first step started")
     )
 
 
@@ -817,3 +823,660 @@ def test_a_line_of_a_databases_error_log_has_one_kind_whatever_its_decoder() -> 
             "wazuh": {"location": "/var/log/mysql/error.log", "decoder": {"name": decoder}},
         }
         assert recording.kind_of(document, logs) == "database error log line"
+
+
+# The named defenses: range one's spec names two, and each judges the small run above. The rules
+# and the matches below are made up for the tests.
+RULE_SET = Path(__file__).parent / "fixtures" / "range" / "rule-set"
+MADE_UP_SET = """\
+rule_sets:
+  made-up:
+    kind: sigma
+    repo: example/rules
+    commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    folders: [rules/linux/process_creation, rules/linux/file_event, rules/linux/builtin,
+              rules/web/webserver_generic]
+    licence: LICENSE
+    lock: made-up.lock
+defenses:
+  - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
+  - {id: made-up-rules, name: Rules made up for the tests, sensors: [wazuh-agent], rules: [made-up]}
+"""
+HIGH = {
+    "id": "00000000-0000-4000-8000-00000000000a",
+    "title": "Made Up - A Rule That Counts",
+    "level": "high",
+    "author": "The lab's tests",
+    "file": "rules/linux/process_creation/made_up_high.yml",
+}
+LOW = {**HIGH, "id": "00000000-0000-4000-8000-00000000000b", "title": "Made Up - For Review", "level": "low"}
+# The places in LINES of the events the made-up matches are on.
+PLACE = {name: number for number, name in enumerate(LINES)}
+
+
+def spec_text(block: str) -> str:
+    """Range one's spec with its rule sets and defenses replaced by `block`, which may be empty."""
+
+    text = RANGE_ONE.read_text(encoding="utf-8")
+    return text[: text.index("rule_sets:")] + block + text[text.index("networks:") :]
+
+
+def with_rules(folder: Path) -> None:
+    """Put a stand-in for range one's rule set into a run folder, as the run would have fetched it."""
+
+    files = {
+        "LICENSE": b"A stand-in licence, made up for the tests.\n",
+        "rules/linux/process_creation/made_up_high.yml": b"title: a stand-in rule file, made up for the tests\n",
+    }
+    for relative, content in files.items():
+        path = folder / "rules" / "sigma" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    lock = {relative: hashlib.sha256(content).hexdigest() for relative, content in files.items()}
+    rewrite(folder, lambda m: m.update(rule_sets={"sigma": {"lock": lock}}))
+
+
+def matching(monkeypatch, matches: list[tuple[str, dict]]) -> Path:
+    """Stand in for the rule engine: it "matches" the given rules on the named lines of the small run.
+
+    Returns a file to pass as the engine's program, which is never started.
+    """
+
+    def evaluate_set(program, rules, folders, events, work) -> dict:
+        assert (rules / "LICENSE").is_file() and events[0]["full_log"]
+        return {
+            "engine": {"name": "Zircolite", "version": "4.7.1"},
+            "groups": [
+                {
+                    "folder": folders[0],
+                    "log source": "linux process_creation",
+                    "events": "program starts snoopy logged",
+                    "rules": 3,
+                    "loaded": 2,
+                    "given": 4,
+                    "read": 4,
+                    "matches": len(matches),
+                    "rules that matched": len({rule["id"] for _, rule in matches}),
+                    "fields given": ["CommandLine", "CurrentDirectory", "User"],
+                    "fields the rules name that are not given": {"Image": 2},
+                }
+            ],
+            "files that are not a rule": [],
+            "rules": 3,
+            "loaded": 2,
+            # In the order of the archive, as the lab's reading of the engine's matches gives them.
+            "matches": sorted(
+                ({"rule": rule, "event": PLACE[name]} for name, rule in matches),
+                key=lambda match: (match["event"], match["rule"]["id"]),
+            ),
+        }
+
+    monkeypatch.setattr(sigma, "evaluate_set", evaluate_set)
+    return RANGE_ONE
+
+
+def judged(folder: Path, program: Path | None = None, defenses: Path | None = None) -> dict:
+    assert engine.rescore(folder, program, defenses) == 0
+    return json.loads((folder / "manifest.json").read_text())
+
+
+def test_a_match_of_a_rule_set_is_tied_as_its_event_is(tmp_path: Path, monkeypatch) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(
+        monkeypatch,
+        [
+            ("a program the test started", HIGH),
+            ("a program of the cache job", LOW),
+            ("the engine's effect check", HIGH),
+            ("cron's session on web during s03", HIGH),
+        ],
+    )
+
+    manifest = judged(folder, program)
+
+    written = ecs_lines(folder, "alerts.sigma.ecs.ndjson")
+    assert [
+        (
+            d["labels"]["origin"],
+            d["labels"].get("step_id"),
+            d["labels"].get("tied_by"),
+            d["labels"].get("job"),
+        )
+        for d in written
+    ] == [
+        ("step", "s03", "session", None),
+        ("engine", None, None, None),
+        ("ordinary", None, None, "cache"),
+        # Only inside the step's time span: coincident, and not the step's.
+        ("unattributed", "s03", "window", None),
+    ]
+    first = written[0]
+    event = ecs_lines(folder, score.EVENTS_FILE)[PLACE["a program the test started"]]
+    # A match has the time of its event and names it; nothing raised it while the run lasted.
+    assert first["@timestamp"] == event["@timestamp"] and first["labels"]["event_id"] == event["event"]["id"]
+    assert first["event"]["kind"] == "alert" and "created" not in first["event"] and "wazuh" not in first
+    assert first["event"]["dataset"] == "sigma.matches" and first["labels"]["level"] == "high"
+    assert first["rule"] == {
+        "id": HIGH["id"],
+        "name": HIGH["title"],
+        "ruleset": "sigma",
+        "author": "The lab's tests",
+        "reference": "https://github.com/SigmaHQ/sigma/blob/552f3fee420ef232a8e5790c4fae591847e32347/"
+        "rules/linux/process_creation/made_up_high.yml",
+    }
+    assert first["process"]["command_line"] == "uname -a" and first["host"]["name"] == "web"
+    found = manifest["score"]["rule sets"]["sigma"]
+    assert (found["evaluated"], found["file"], found["lines"], found["when"]) == (
+        True,
+        "alerts.sigma.ecs.ndjson",
+        4,
+        "after the run",
+    )
+    assert [
+        (rule["title"], rule["counts"], rule["matches"], rule["on"]) for rule in found["rules that matched"]
+    ] == [
+        (HIGH["title"], True, 3, {"s03 (web)": 1, "engine (web)": 1, "unattributed (web)": 1}),
+        (LOW["title"], False, 1, {"cache (web)": 1}),
+    ]
+    # The manager's own alerts are written as before, one line for each raw line.
+    assert manifest["ecs"]["files"]["alerts.ecs.ndjson"]["ECS lines"] == 4
+
+
+def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monkeypatch) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(
+        monkeypatch,
+        [
+            ("a program the test started", HIGH),
+            ("a program of the cache job", HIGH),
+            ("a program of the cache job", LOW),
+            ("the engine's effect check", HIGH),
+            ("cron's session on web during s03", HIGH),
+        ],
+    )
+
+    stock, public = judged(folder, program)["score"]["defenses"]
+
+    assert (stock["id"], stock["detectors"], public["id"], public["detectors"]) == (
+        "wazuh-stock",
+        ["pinned"],
+        "sigma-public",
+        ["sigma"],
+    )
+    assert stock["sensors"] == public["sensors"] == ["wazuh-agent-web", "wazuh-agent-db", "wazuh-agent-build"]
+    # Both have the same sensors, so they saw the same events; each alerted on what its own rules matched.
+    steps = {entry["id"]: {step["id"]: step for step in entry["steps"]} for entry in (stock, public)}
+    assert [(s["visibility"], s["outcome"], s["events"]) for s in steps["wazuh-stock"].values()] == [
+        ("alert", "alerted", 2),
+        ("telemetry only", "seen", 2),
+    ]
+    assert [(s["visibility"], s["outcome"], s["events"]) for s in steps["sigma-public"].values()] == [
+        ("telemetry only", "seen", 2),
+        ("alert", "alerted", 2),
+    ]
+    assert stock["outcomes"]["alerted"] == public["outcomes"]["alerted"] == 1
+    # The manager raised its alert 0.4 s after the login's line; the rule that ran after the run counts
+    # from the time of the program start it matched, 20.05 s after the first step started.
+    assert stock["race"]["first_alert_seconds"] == pytest.approx(9.4, abs=0.002)
+    assert public["race"]["first_alert_seconds"] == pytest.approx(20.05, abs=0.002)
+    assert public["race"]["says"] == "alert before goal by 0.15 s"
+    assert public["race"]["first_alert"] == {
+        "step": "s03",
+        "moment": steps["sigma-public"]["s03"]["first_alert"]["moment"],
+        "detector": "sigma",
+        "rule": HIGH["id"],
+        "title": HIGH["title"],
+        "level": "high",
+    }
+    # A match on the engine's own work or on an event that is only coincident never counts for a step.
+    assert steps["sigma-public"]["s03"]["matches"] == 1
+    assert [
+        (rule["title"], rule["on"]) for rule in public["alerts on the engine's work and unattributed events"]
+    ] == [(HIGH["title"], {"engine (web)": 1, "unattributed (web)": 1})]
+    # The ordinary day: one event, two rules matched it, and the one that counts is a false alert.
+    assert (public["ordinary"]["events"], public["ordinary"]["false alerts"]) == (1, 1)
+    assert [(rule["title"], rule["counts"], rule["on"]) for rule in public["ordinary"]["matches"]] == [
+        (HIGH["title"], True, {"cache (web)": 1}),
+        (LOW["title"], False, {"cache (web)": 1}),
+    ]
+    assert (stock["ordinary"]["events"], stock["ordinary"]["false alerts"]) == (1, 0)
+    summary = (folder / "score.md").read_text()
+    assert (
+        "| Public Sigma rules on host logs (`sigma-public`) | Wazuh agent on web, db, build | "
+        in summary
+    )
+    assert (
+        "20.05 s after the first step started, 0.15 s before the goal: Made Up - A Rule That Counts"
+        in summary
+    )
+    assert "| `wazuh-stock` | `sigma-public` |" in summary and "| alerted | seen | 5715 |" in summary
+
+
+def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_path: Path, monkeypatch) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(
+        monkeypatch, [("a program the test started", HIGH), ("a program of the cache job", HIGH)]
+    )
+
+    judged(folder, program)
+    made = json.loads((folder / recording.FILE).read_text())
+
+    assert [(d["id"], d["rules"], d["when"]) for d in made["network"]["detectors"]] == [
+        ("pinned", 100, "live"),
+        ("sigma", 2, "after the run"),
+    ]
+    sigma_detector = made["network"]["detectors"][1]
+    assert (
+        sigma_detector["name"] == "Published Sigma rules (SigmaHQ/sigma at 552f3fee420e) with Zircolite 4.7.1"
+    )
+    assert len(sigma_detector["digest"]) == 64
+    assert {
+        "name": "SigmaHQ/sigma",
+        "version": "552f3fee420ef232a8e5790c4fae591847e32347",  # pragma: allowlist secret
+        "role": "rules",
+    } in (made["source"]["tools"])
+    assert {"name": "Zircolite", "version": "4.7.1", "role": "rule engine"} in made["source"]["tools"]
+    stock, public = made["defenses"]
+    assert (stock["id"], stock["name"], stock["detectors"]) == (
+        "wazuh-stock",
+        "Wazuh with its stock rules",
+        ["pinned"],
+    )
+    assert (public["id"], public["detectors"]) == ("sigma-public", ["sigma"])
+    assert stock["sensors"] == public["sensors"] == [s["id"] for s in made["network"]["sensors"]]
+    # The top level is the recording as its first defense sees it.
+    for step in made["steps"]:
+        mine = {
+            key: step[key] for key in ("visibility", "outcome", "first_event", "first_alert") if key in step
+        }
+        assert stock["steps"][step["id"]] == mine
+    assert (stock["ordinary"], stock["score"]) == (made["ordinary"], made["score"])
+    assert made["score"]["alerted"] == 1 and made["steps"][0]["outcome"] == "alerted"
+    # The rule set's match is an alert of its own detector, at its event's time, never raised.
+    match = next(alert for alert in made["alerts"] if alert["detector"] == "sigma")
+    event = next(event for event in made["events"] if event["id"] == match["events"][0])
+    assert "raised" not in match and match["time"] == event["time"] and event["text"] == "uname -a"
+    assert match["rule"] == {"id": HIGH["id"], "title": HIGH["title"], "level": "high", "origin": "pinned"}
+    assert (match["counts"], match["step"], match["host"]) == (True, "s03", "web")
+    # Its own view: it alerted on s03 at that time, and saw s01 with no alert.
+    assert (
+        public["steps"]["s03"]["visibility"]["answer"] == "alert"
+        and public["steps"]["s03"]["outcome"] == "alerted"
+    )
+    assert public["steps"]["s03"]["first_alert"] == match["time"]
+    assert public["steps"]["s01"]["outcome"] == "seen" and "first_alert" not in public["steps"]["s01"]
+    assert public["steps"]["s03"]["visibility"]["events"] == made["steps"][1]["visibility"]["events"] == 2
+    assert public["score"] == {
+        "steps": 2,
+        "took_effect": 2,
+        "alerted": 1,
+        "seen": 1,
+        "unseen": 0,
+        "stopped": 0,
+        "first_alert_seconds": pytest.approx(20.05, abs=0.002),
+        "goal_seconds": pytest.approx(20.2, abs=0.002),
+        "false_alerts": 1,
+    }
+    assert public["ordinary"] == {
+        "events": 1,
+        "matches": [{"rule": HIGH["title"], "id": HIGH["id"], "level": "high", "count": 1}],
+    }
+    said = " ".join(made["notes"])
+    assert (
+        "2 defenses judged this one run" in said
+        and "The top level of the recording is the first, wazuh-stock" in said
+    )
+    assert "No event they were given held these fields the rules name: Image (2 rules name it)" in said
+    assert "Of its 3 rules the engine loaded 2" in said
+    # Each rule that matched is named with its author, which the rules' licence asks to keep.
+    assert f"{HIGH['title']} ({HIGH['id']}), by The lab's tests" in said
+
+
+def test_a_defense_with_live_rules_and_a_rule_set_tells_each_alert_and_match_as_its_rules_ran(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    text = RANGE_ONE.read_text(encoding="utf-8")
+    both = (
+        "defenses:\n"
+        "  - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}\n"
+        "  - {id: both, name: The stock rules and the public Sigma rules, sensors: [wazuh-agent],\n"
+        "     rules: [wazuh, sigma]}\n"
+    )
+    text = text[: text.index("defenses:")] + both + text[text.index("networks:") :]
+    rewrite(folder, lambda m: m["spec"].update(text=text))
+    program = matching(monkeypatch, [("a program the test started", LOW)])
+
+    judged(folder, program)
+
+    steps = json.loads((folder / recording.FILE).read_text())["defenses"][1]["steps"]
+    # s01's first alert is the manager's, raised live; s03 has a match of each kind, below its own level.
+    s01, s03 = (steps[step]["visibility"]["basis"] for step in ("s01", "s03"))
+    assert "; rule 40112 at level 12, an alert at level 12 or higher, raised at " in s01
+    assert "after the run" not in s01
+    assert "; 1 rule match below level 12; 1 rule match below level high;" in s03
+
+
+def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_run_is_still_scored(
+    tmp_path: Path,
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+
+    manifest = judged(folder)
+
+    stock, public = manifest["score"]["defenses"]
+    assert stock["judged"] is True and stock["outcomes"]["alerted"] == 1
+    assert public == {
+        "id": "sigma-public",
+        "name": "Public Sigma rules on host logs",
+        "sensors": ["wazuh-agent-web", "wazuh-agent-db", "wazuh-agent-build"],
+        "rules": ["sigma"],
+        "detectors": ["sigma"],
+        "judged": False,
+        "not judged": "its rule set sigma was not evaluated: no rule engine was given (--engine <path to Zircolite>)",
+    }
+    assert not (folder / "alerts.sigma.ecs.ndjson").exists()
+    summary = (folder / "score.md").read_text()
+    assert (
+        "The defense `sigma-public` was not judged: its rule set sigma was not evaluated: no rule engine was given"
+        in summary
+    )
+    assert "| not judged | not judged | not judged | not judged | not judged |" in summary
+    # The recording holds only the defense that was judged.
+    made = json.loads((folder / recording.FILE).read_text())
+    assert [d["id"] for d in made["defenses"]] == ["wazuh-stock"]
+    assert [d["id"] for d in made["network"]["detectors"]] == ["pinned"]
+    assert {alert["detector"] for alert in made["alerts"]} == {"pinned"}
+    assert any(
+        note.startswith("The defense sigma-public of the spec is not in this recording")
+        for note in made["notes"]
+    )
+
+
+def test_every_section_of_the_score_of_a_run_that_did_not_end_sealed_is_headed_not_a_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    reason = "the seal failed after the path: event watch"
+    rewrite(folder, lambda m: m.update(result="invalid", exit_code=4, reason=reason))
+    program = matching(monkeypatch, [("a program the test started", HIGH)])
+
+    judged(folder, program)
+
+    headings = [line for line in (folder / "score.md").read_text().splitlines() if line.startswith("### ")]
+    assert [heading.split(": ")[0] for heading in headings] == [
+        "### Path of range-one",
+        "### Ordinary day of range-one",
+        "### Rule set sigma of range-one",
+    ]
+    assert all(": not a result, the run ended invalid (exit code 4)" in heading for heading in headings)
+
+
+def test_a_rule_file_of_the_run_folder_that_is_not_the_one_the_run_fetched_is_named(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(monkeypatch, [("a program the test started", HIGH)])
+    rule = folder / "rules" / "sigma" / "rules" / "linux" / "process_creation" / "made_up_high.yml"
+    rule.write_text("title: changed after the run\n")
+
+    public = judged(folder, program)["score"]["defenses"][1]
+
+    assert public["judged"] is False
+    assert "rules/sigma/rules/linux/process_creation/made_up_high.yml has SHA-256 " in public["not judged"]
+    assert not (folder / "alerts.sigma.ecs.ndjson").exists()
+
+
+def test_a_spec_that_names_no_defense_has_the_one_its_agents_and_live_rules_make(tmp_path: Path) -> None:
+    folder = small_run(tmp_path)
+    rewrite(folder, lambda m: m["spec"].update(text=spec_text("")))
+
+    manifest = judged(folder)
+
+    (only,) = manifest["score"]["defenses"]
+    assert (only["id"], only["detectors"], only["judged"]) == ("wazuh-stock", ["pinned"], True)
+    assert manifest["score"]["defenses named"] is False and "rule sets" not in manifest["score"]
+    # Its recording is as before: no defenses, and the manager's detector alone.
+    made = json.loads((folder / recording.FILE).read_text())
+    assert "defenses" not in made and [d["id"] for d in made["network"]["detectors"]] == ["pinned"]
+    assert not any("defenses judged" in note for note in made["notes"])
+
+
+def test_a_run_made_before_its_spec_named_defenses_is_judged_by_those_of_another_spec(
+    tmp_path: Path, monkeypatch, served
+) -> None:
+    folder = small_run(tmp_path / "run")
+    rewrite(folder, lambda m: m["spec"].update(text=spec_text("")))
+    # Another spec, with a rule set of its own and the lock beside it; its rules are fetched into
+    # the run's folder as `range rules` does.
+    other = tmp_path / "other.yaml"
+    other.write_text(spec_text(MADE_UP_SET), encoding="utf-8")
+    shutil.copyfile(RULE_SET / "made-up.lock", tmp_path / "made-up.lock")
+    spec = range_spec.load(other)
+    rulesets.fetch(spec, spec.rule_sets[0], folder, served())
+    program = matching(monkeypatch, [("a program the test started", HIGH)])
+
+    manifest = judged(folder, program, other)
+
+    assert manifest["judged_by"]["file"] == "other.yaml" and manifest["judged_by"]["sha256"] == spec.sha256
+    assert [(d["id"], d["judged"]) for d in manifest["score"]["defenses"]] == [
+        ("wazuh-stock", True),
+        ("made-up-rules", True),
+    ]
+    assert manifest["judged_by"]["rule_sets"]["made-up"]["commit"] == "b" * 40
+    made = json.loads((folder / recording.FILE).read_text())
+    assert [d["id"] for d in made["defenses"]] == ["wazuh-stock", "made-up-rules"]
+    assert made["defenses"][1]["steps"]["s03"]["outcome"] == "alerted"
+    assert any(
+        note.startswith("The defenses are those of the spec other.yaml (SHA-256 ") for note in made["notes"]
+    )
+    # Scored again without it, the run has the one defense of its own spec once more.
+    assert [d["id"] for d in judged(folder)["score"]["defenses"]] == ["wazuh-stock"]
+    assert "judged_by" not in json.loads((folder / "manifest.json").read_text())
+
+
+def test_a_run_judged_by_another_spec_keeps_the_rule_sets_it_fetched_itself(
+    tmp_path: Path, monkeypatch, served
+) -> None:
+    folder = small_run(tmp_path / "run")
+    with_rules(folder)
+    other = tmp_path / "other.yaml"
+    other.write_text(spec_text(MADE_UP_SET), encoding="utf-8")
+    shutil.copyfile(RULE_SET / "made-up.lock", tmp_path / "made-up.lock")
+    spec = range_spec.load(other)
+    rulesets.fetch(spec, spec.rule_sets[0], folder, served())
+    program = matching(monkeypatch, [("a program the test started", HIGH)])
+
+    judged(folder, program, other)
+    again = judged(folder, program)
+
+    # Its own rule set is still checked against the hashes the run recorded when it fetched it.
+    assert [(d["id"], d["judged"]) for d in again["score"]["defenses"]] == [
+        ("wazuh-stock", True),
+        ("sigma-public", True),
+    ]
+
+
+def fetched_from(monkeypatch, served) -> None:
+    """Have `range rules` fetch from the made-up repository the tests serve, not from a network."""
+
+    fetch = rulesets.fetch
+    monkeypatch.setattr(rulesets, "fetch", lambda spec, rule_set, out: fetch(spec, rule_set, out, served()))
+
+
+def test_range_rules_refuses_a_rule_set_of_the_name_of_one_the_run_fetched_itself(
+    tmp_path: Path, monkeypatch, served, capsys
+) -> None:
+    folder = small_run(tmp_path / "run")
+    with_rules(folder)
+    # Another spec whose rule set has the name of the run's own, sigma, and another lock.
+    other = tmp_path / "other.yaml"
+    named = MADE_UP_SET.replace("made-up:", "sigma:").replace("rules: [made-up]", "rules: [sigma]")
+    other.write_text(spec_text(named), encoding="utf-8")
+    lock = (RULE_SET / "made-up.lock").read_text().replace("# made-up: ", "# sigma: ")
+    (tmp_path / "made-up.lock").write_text(lock)
+    fetched_from(monkeypatch, served)
+    before = {path: path.read_bytes() for path in (folder / "rules").rglob("*") if path.is_file()}
+
+    assert engine.rules(other, folder) == engine.EXIT_REFUSED
+
+    assert "fetched a rule set sigma of its own into rules/sigma/" in capsys.readouterr().out
+    assert {path: path.read_bytes() for path in (folder / "rules").rglob("*") if path.is_file()} == before
+    # Scored again by its own spec, the run is judged by the rule set it fetched, as before.
+    program = matching(monkeypatch, [("a program the test started", HIGH)])
+    assert [(d["id"], d["judged"]) for d in judged(folder, program)["score"]["defenses"]] == [
+        ("wazuh-stock", True),
+        ("sigma-public", True),
+    ]
+
+
+def test_range_rules_leaves_in_a_rule_sets_folder_the_files_of_its_lock_and_no_others(
+    tmp_path: Path, monkeypatch, served
+) -> None:
+    folder = small_run(tmp_path / "run")
+    rewrite(folder, lambda m: m["spec"].update(text=spec_text("")))
+    other = tmp_path / "other.yaml"
+    other.write_text(spec_text(MADE_UP_SET), encoding="utf-8")
+    shutil.copyfile(RULE_SET / "made-up.lock", tmp_path / "made-up.lock")
+    # A rule file that a fetch of an earlier lock of the set left in its folder.
+    left = folder / "rules" / "made-up" / "rules" / "linux" / "builtin" / "lnx_made_up_left_over.yml"
+    left.parent.mkdir(parents=True)
+    left.write_text("title: a rule of an earlier lock, made up for the tests\n")
+    fetched_from(monkeypatch, served)
+
+    assert engine.rules(other, folder) == engine.EXIT_OK
+
+    assert not left.exists()
+    program = matching(monkeypatch, [("a program the test started", HIGH)])
+    assert judged(folder, program, other)["score"]["defenses"][1]["judged"] is True
+
+
+def test_the_rule_engine_judges_a_small_run_by_rules_made_up_for_the_tests(
+    engine: Path, tmp_path: Path, served
+) -> None:
+    folder = small_run(tmp_path / "run")
+    text = spec_text(MADE_UP_SET)
+    spec = range_spec.parse(range_spec.read(text), text, RULE_SET)
+    fetched = rulesets.fetch(spec, spec.rule_sets[0], folder, served())
+    rewrite(folder, lambda m: (m["spec"].update(text=text), m.update(rule_sets={"made-up": fetched})))
+
+    manifest = judged(folder, engine)
+
+    stock, made_up = manifest["score"]["defenses"]
+    found = manifest["score"]["rule sets"]["made-up"]
+    # The small run has no line of an FTP server and none of a web server's access log: the two
+    # rules for those were given nothing, and the engine did not load them.
+    assert (found["rules"], found["loaded"]) == (8, 6)
+    assert [group["not evaluated"] for group in found["groups"] if "not evaluated" in group] == [
+        "the lab gives no lines for the service vsftpd",
+        "the run holds no such event",
+    ]
+    # sshd's line on web from attacker's address holds the words the made-up rule for sshd looks for.
+    assert [(rule["title"], rule["level"], rule["on"]) for rule in found["rules that matched"]] == [
+        ("Made Up - A Word In A Line Of sshd", "high", {"s01 (web)": 1}),
+        ("Made Up - System Name Asked", "low", {"s03 (web)": 1}),
+        ("Made Up - File Written In Tmp", "medium", {"s03 (web)": 1}),
+        ("Made Up - A Word In Any Line", "medium", {"s01 (web)": 1}),
+    ]
+    steps = {step["id"]: step for step in made_up["steps"]}
+    assert (steps["s01"]["outcome"], steps["s03"]["outcome"]) == ("alerted", "seen")
+    assert made_up["race"]["first_alert_seconds"] == pytest.approx(2.0, abs=0.002)
+    assert stock["race"]["first_alert_seconds"] == pytest.approx(9.4, abs=0.002)
+    assert made_up["ordinary"]["false alerts"] == 0
+    made = json.loads((folder / recording.FILE).read_text())
+    assert [d["id"] for d in made["defenses"]] == ["wazuh-stock", "made-up-rules"]
+    assert made["defenses"][1]["score"]["first_alert_seconds"] == pytest.approx(2.0, abs=0.002)
+    assert sum(1 for alert in made["alerts"] if alert["detector"] == "made-up") == 4
+
+
+@pytest.mark.parametrize(
+    ("counts", "kept"),
+    [
+        ({"web": 1857}, {"web": 300}),
+        ({"web": 3, "build": 17}, {"web": 3, "build": 17}),
+        # What a sensor with few events leaves of its share goes to the others.
+        ({"web": 10, "capture": 5000}, {"web": 10, "capture": 290}),
+        ({"web": 500, "build": 500, "capture": 500}, {"web": 100, "build": 100, "capture": 100}),
+        ({}, {}),
+    ],
+)
+def test_the_cut_of_a_step_with_many_events_gives_each_sensor_its_share(counts: dict, kept: dict) -> None:
+    assert recording.shares(counts, 300) == kept
+
+
+def test_a_step_with_more_events_than_the_recording_keeps_keeps_the_first_of_each_sensor_and_every_matched(
+    tmp_path: Path,
+) -> None:
+    archive = [make() for make, _ in LINES.values()]
+    named = dict(zip(LINES, archive, strict=True))
+    # s01, from one sensor: 320 more failed logins on web from attacker's address.
+    logins = [
+        line(
+            "web",
+            T0 + 1 + number * 0.02,
+            "/var/log/auth.log",
+            f"sshd[11]: Invalid user admin{number} from 10.9.0.2 port {5000 + number}",
+            data={"srcip": "10.9.0.2", "srcuser": f"admin{number}"},
+        )
+        for number in range(320)
+    ]
+    # s03, from two sensors: 278 more lines on web that name webadmin, then 40 lines on build, which s03
+    # reaches, that name web's address.
+    sessions = [
+        line(
+            "web",
+            T0 + 20.06 + number * 0.01,
+            "/var/log/auth.log",
+            f"sshd[12]: Accepted password for webadmin from 10.9.0.9 port {6000 + number} ssh2",
+            data={"dstuser": "webadmin"},
+        )
+        for number in range(278)
+    ]
+    banners = [
+        line(
+            "build",
+            T0 + 23 + number * 0.01,
+            "/var/log/auth.log",
+            f"sshd[51]: banner exchange: Connection from 10.9.1.2 port {7000 + number}: invalid format",
+        )
+        for number in range(40)
+    ]
+    alerts = [
+        alert_on(
+            named["webadmin's login"], "40112", 12, "Multiple authentication failures followed by a success."
+        ),
+        # The last of s01's events, beyond its cut, matched a rule.
+        alert_on(logins[-1], "5710", 5, "sshd: Attempt to login using a non-existent user"),
+    ]
+    folder = small_run(tmp_path, archive + logins + sessions + banners, alerts)
+    rewrite(folder, lambda m: m["path"]["steps"][1].update(to=["build"]))
+
+    scored(folder)
+
+    made = json.loads((folder / recording.FILE).read_text())
+    tied = [d for d in ecs_lines(folder, score.EVENTS_FILE) if d["labels"]["origin"] == "step"]
+
+    def times(step: str, host: str) -> list[str]:
+        return sorted(
+            d["@timestamp"] for d in tied if d["labels"]["step_id"] == step and d["host"]["name"] == host
+        )
+
+    def kept(step: str, host: str) -> list[str]:
+        return sorted(e["time"] for e in made["events"] if e["step"] == step and e["host"] == host)
+
+    steps = {step["id"]: step["visibility"] for step in made["steps"]}
+    # s01: the first 300 of its 322 events in time order, and the two beyond them that a rule matched.
+    assert (steps["s01"]["events"], steps["s01"]["kept"]) == (322, 302)
+    assert kept("s01", "web") == times("s01", "web")[:300] + times("s01", "web")[-2:]
+    # s03: 300 of its 320, shared by sensor. build's 40 leave the rest of their half to web, whose first
+    # 260 are kept, though all of web's come before build's.
+    assert (steps["s03"]["events"], steps["s03"]["kept"]) == (320, 300)
+    assert kept("s03", "build") == times("s03", "build")
+    assert kept("s03", "web") == times("s03", "web")[:260]

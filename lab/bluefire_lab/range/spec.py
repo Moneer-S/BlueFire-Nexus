@@ -10,6 +10,12 @@ also reads which accounts and addresses the path uses. The other sections (the
 sentence, the executor and the rest of the path) are accepted here and read by
 the parts of the lab that use them.
 
+`rule_sets` names public rule sets, each pinned to a commit of its repository,
+and `defenses` the named defenses that judge a run: each one the kinds of
+sensor it records with and the rules it runs, which are the rules the Wazuh
+manager runs live (`wazuh`) or a rule set of `rule_sets`, evaluated after the
+run.
+
 What a host may have planted in it is a closed list: accounts, keys,
 known_hosts, dirs, files, database, sshd, packages, services, serve and
 atomics_src. It is not a general provisioning system.
@@ -26,7 +32,7 @@ from pathlib import Path
 import yaml
 
 KEYS = {"range", "version", "prefix", "docker", "networks", "hosts"}
-READ_KEYS = {"base", "defense", "atomic_red_team", "path", "activity"}
+READ_KEYS = {"base", "defense", "atomic_red_team", "path", "activity", "rule_sets", "defenses"}
 LATER_KEYS = {"sentence", "executor"}
 HOST_KEYS = {"kind", "role", "networks", "listens", "image", "agent", "watch", "packages", "services"}
 PLANT_KEYS = {
@@ -93,6 +99,24 @@ REPOS = "repos"
 # The logs every agent must collect, because the engine reads its own lines in them: the ready and
 # end nonces and the syslog marks go to auth.log, the program start mark to snoopy.log.
 ENGINE_LOGS = ("/var/log/auth.log", "/var/log/snoopy.log")
+# The kinds of sensor a range can have, and what of the spec gives a range each one. A defense
+# names the kinds it records with.
+WAZUH_AGENT = "wazuh-agent"
+SENSORS = {WAZUH_AGENT: "defense.wazuh"}
+# The rules the Wazuh manager of defense.wazuh runs live, as a defense names them.
+WAZUH_RULES = "wazuh"
+# The kinds of rule set the lab can give a recorded run to, and the kinds of sensor whose records
+# each kind reads. The live rules read what the agents send.
+RULE_KINDS = {"sigma": (WAZUH_AGENT,)}
+LIVE_RULES = {WAZUH_RULES: (WAZUH_AGENT,)}
+# A rule set's name is its detector's id in a recording, where these two ids are taken: `pinned` is
+# the manager's live rules, and `lab` the rules written in this repository.
+RESERVED_DETECTORS = ("pinned", "lab")
+# A defense's id, as the recording format takes it, and the most defenses and rules it holds.
+DEFENSE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+MAX_DEFENSES = 8
+MAX_RULES = 4
+MAX_NAME = 200
 
 
 class SpecError(ValueError):
@@ -149,6 +173,30 @@ class Atomics:
     repo: str
     commit: str
     lock: str
+
+
+@dataclass(frozen=True)
+class RuleSet:
+    """A public rule set, pinned: the folders the lab takes from a repository at a commit, its licence
+    file, and the lock file beside the spec that gives the SHA-256 of each of those files."""
+
+    name: str
+    kind: str
+    repo: str
+    commit: str
+    folders: tuple[str, ...]
+    licence: str
+    lock: str
+
+
+@dataclass(frozen=True)
+class Defense:
+    """A named defense: the kinds of sensor it records with, and the rules it runs over their records."""
+
+    id: str
+    name: str
+    sensors: tuple[str, ...]
+    rules: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -310,6 +358,9 @@ class Spec:
     folder: Path | None = None
     # The ordinary activity beside the path (see `activity`), when the spec has one.
     activity: object = None
+    # The public rule sets the spec pins, and the named defenses that judge a run, in the spec's order.
+    rule_sets: tuple[RuleSet, ...] = ()
+    defenses: tuple[Defense, ...] = ()
 
     @property
     def path_hosts(self) -> set[str]:
@@ -478,6 +529,14 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
         from .activity import parse as parse_activity
 
         spec = replace(spec, activity=parse_activity(data["activity"], hosts, data.get("path"), watch))
+    rule_sets = _rule_sets(data["rule_sets"], atomics) if "rule_sets" in data else ()
+    defenses = _defenses(data["defenses"], rule_sets, wazuh) if "defenses" in data else ()
+    unused = [found.name for found in rule_sets if not any(found.name in d.rules for d in defenses)]
+    if unused:
+        raise SpecError(
+            f"rule_sets: no defense runs {', '.join(unused)}: name it under a defense's rules, or leave it out"
+        )
+    spec = replace(spec, rule_sets=rule_sets, defenses=defenses)
     _plants_across(spec)
     for host in hosts:
         if not any(probe.source == host and probe.must == "connect" for probe in matrix(spec)):
@@ -1039,6 +1098,142 @@ def _atomics(value: object) -> Atomics:
     if lock and (not isinstance(lock, str) or not RELATIVE.match(lock)):
         raise SpecError("atomic_red_team.lock must be a file beside the spec, as in range-one.lock")
     return Atomics(entry["repo"], entry["commit"], lock)
+
+
+def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
+    """The spec's `rule_sets`: each a name and where its files come from, pinned."""
+
+    if not isinstance(value, dict) or not value:
+        raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
+    keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    found = []
+    for name, settings in value.items():
+        if not isinstance(name, str) or not NAME.match(name):
+            raise SpecError(
+                f"rule_sets: the name {name!r} must be lower-case letters, digits and single hyphens"
+            )
+        if name in LIVE_RULES:
+            raise SpecError(
+                f"rule_sets: {name} is the name of the rules the Wazuh manager runs live, so a rule set "
+                "that is fetched needs another name"
+            )
+        if name in RESERVED_DETECTORS:
+            raise SpecError(
+                f"rule_sets: a recording names a detector of its own {name}, so a rule set needs another name"
+            )
+        where = f"rule_sets: {name}"
+        entry = _mapping(settings, where, keys, keys)
+        if entry["kind"] not in RULE_KINDS:
+            raise SpecError(
+                f"{where}: kind must be one of {', '.join(RULE_KINDS)}: the kinds of rule set the lab can "
+                "give a recorded run to"
+            )
+        if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
+            raise SpecError(f"{where}: repo must be a GitHub repository, as in SigmaHQ/sigma")
+        if not isinstance(entry["commit"], str) or not COMMIT.match(entry["commit"]):
+            raise SpecError(f"{where}: commit must be a full commit id, 40 hex digits")
+        folders = entry["folders"]
+        if (
+            not isinstance(folders, list)
+            or not folders
+            or not all(isinstance(folder, str) and RELATIVE.match(folder) for folder in folders)
+            or any(
+                one == other or one.startswith(other + "/")
+                for number, one in enumerate(folders)
+                for place, other in enumerate(folders)
+                if number != place
+            )
+        ):
+            raise SpecError(
+                f"{where}: folders must list folders of the repository, as in rules/linux/process_creation, "
+                "once each and none inside another"
+            )
+        licence = entry["licence"]
+        if not isinstance(licence, str) or not RELATIVE.match(licence):
+            raise SpecError(
+                f"{where}: licence must be the licence file of the repository, as in LICENSE: it is "
+                "fetched and kept with the rules"
+            )
+        if any(licence == folder or licence.startswith(folder + "/") for folder in folders):
+            raise SpecError(f"{where}: licence names {licence}, which is inside one of the rule folders")
+        lock = entry["lock"]
+        if not isinstance(lock, str) or not RELATIVE.match(lock):
+            raise SpecError(f"{where}: lock must be a file beside the spec, as in range-one.rules.lock")
+        if atomics is not None and lock == atomics.lock:
+            raise SpecError(
+                f"{where}: lock names {lock}, the lock of atomic_red_team's files: the rule sets need a "
+                "lock file of their own"
+            )
+        found.append(
+            RuleSet(name, entry["kind"], entry["repo"], entry["commit"], tuple(folders), licence, lock)
+        )
+    return tuple(found)
+
+
+def _defenses(value: object, rule_sets: tuple[RuleSet, ...], wazuh: Wazuh | None) -> tuple[Defense, ...]:
+    """The spec's `defenses`: each an id, a name, the kinds of sensor it records with and the rules it runs."""
+
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_DEFENSES:
+        raise SpecError(
+            f"defenses must be a list of 1 to {MAX_DEFENSES} defenses, each with id, name, sensors and rules"
+        )
+    kinds = {found.name: found.kind for found in rule_sets}
+    keys = {"id", "name", "sensors", "rules"}
+    found: list[Defense] = []
+    for entry in value:
+        entry = _mapping(entry, "defenses", keys, keys)
+        identifier = entry["id"]
+        if not isinstance(identifier, str) or not DEFENSE_ID.match(identifier):
+            raise SpecError(
+                f"defenses: the id {identifier!r} must be 1 to 64 letters, digits, hyphens and underscores"
+            )
+        where = f"defenses: {identifier}"
+        if identifier in {defense.id for defense in found}:
+            raise SpecError(f"defenses lists the id {identifier} twice")
+        name = entry["name"]
+        if not isinstance(name, str) or not name.strip() or "\n" in name or len(name) > MAX_NAME:
+            raise SpecError(f"{where}: name must say in a few plain words what the defense is, on one line")
+        sensors = entry["sensors"]
+        if (
+            not isinstance(sensors, list)
+            or not sensors
+            or any(sensor not in SENSORS for sensor in sensors)
+            or len(set(sensors)) != len(sensors)
+        ):
+            raise SpecError(
+                f"{where}: sensors must list at least one kind of sensor, once each, of: {', '.join(SENSORS)}"
+            )
+        if WAZUH_AGENT in sensors and wazuh is None:
+            raise SpecError(
+                f"{where}: the sensor {WAZUH_AGENT} is the agent of {SENSORS[WAZUH_AGENT]}, and the spec has none"
+            )
+        rules = entry["rules"]
+        if (
+            not isinstance(rules, list)
+            or len(rules) > MAX_RULES
+            or not all(isinstance(rule, str) for rule in rules)
+            or len(set(rules)) != len(rules)
+        ):
+            raise SpecError(f"{where}: rules must list at most {MAX_RULES} rule sets by name, once each")
+        for rule in rules:
+            if rule not in LIVE_RULES and rule not in kinds:
+                raise SpecError(
+                    f"{where}: rules names {rule!r}, which is neither {WAZUH_RULES} (the rules the Wazuh "
+                    f"manager runs live) nor a rule set of rule_sets ({', '.join(kinds) or 'the spec has none'})"
+                )
+            reads = LIVE_RULES[rule] if rule in LIVE_RULES else RULE_KINDS[kinds[rule]]
+            if not set(reads) & set(sensors):
+                raise SpecError(
+                    f"{where}: the rules {rule} read what the sensor {' or '.join(reads)} records, and the "
+                    "defense does not list it under sensors"
+                )
+        found.append(Defense(identifier, name.strip(), tuple(sensors), tuple(rules)))
+    named = {rule for defense in found for rule in defense.rules}
+    if len(named) > MAX_DEFENSES:
+        raise SpecError(
+            f"defenses name {len(named)} different rule sets, and a recording holds at most {MAX_DEFENSES}"
+        )
+    return tuple(found)
 
 
 def _steps(path: object, hosts: dict[str, Host]) -> tuple[tuple[str, str], ...]:

@@ -1,0 +1,14 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - A Word In A Line Of sshd
+id: 00000000-0000-4000-8000-000000000006
+status: test
+description: Looks for a word in the lines the SSH server wrote, and in no other line.
+author: The lab's tests
+logsource:
+    product: linux
+    service: sshd
+detection:
+    keywords:
+        - 'Invalid user'
+    condition: keywords
+level: high

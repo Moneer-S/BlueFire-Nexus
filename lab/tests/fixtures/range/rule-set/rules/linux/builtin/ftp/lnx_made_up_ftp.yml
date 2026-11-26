@@ -1,0 +1,14 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - A Word In A Line Of An FTP Server
+id: 00000000-0000-4000-8000-000000000007
+status: test
+description: A rule for a service the range has no line of.
+author: The lab's tests
+logsource:
+    product: linux
+    service: vsftpd
+detection:
+    keywords:
+        - 'Invalid user'
+    condition: keywords
+level: high

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from bluefire_lab.range import build, engine, ossec, wazuh
+from bluefire_lab.range import activity, build, engine, ossec, wazuh
 from bluefire_lab.range import spec as range_spec
 
 FIXTURES = Path(__file__).parent / "fixtures" / "range" / "wazuh"
@@ -138,24 +138,47 @@ def test_the_build_writes_the_files_the_engine_would_make(tmp_path: Path) -> Non
     assert (tmp_path / "out" / "manager" / "ossec.conf").read_text() == ossec.manager(MANAGER_STOCK)[0]
 
 
-def test_the_lab_decoder_reads_the_fields_of_a_real_snoopy_line() -> None:
+def test_the_lab_decoder_reads_every_field_of_the_line_snoopy_is_set_to_write() -> None:
+    # The line is made here from the message format of the range's snoopy.ini, with a made-up value
+    # of the kind snoopy writes for each of its data sources: a program a shell found on its search
+    # path, started by a job in an SSH session.
+    written = re.search(r'message_format = "(.*)"', build.SNOOPY_INI).group(1)
+    values = {
+        "login": "ops",
+        "env:SSH_CONNECTION": "10.9.0.4 50022 10.9.0.5 22",
+        "sid": "412",
+        "uid": "1002",
+        "euid": "1002",
+        "cwd": "/var/www/app",
+        "filename": "/usr/bin/ls",
+        "env:BLUEFIRE_TAG": "job:admin",
+        "cmdline": "ls -l /var/www/app",
+    }
+    message = re.sub(r"%\{([^}]+)\}", lambda source: values[source.group(1)], written)
     pattern = re.search(r'<regex type="pcre2">(.*)</regex>', build.SNOOPY_DECODER).group(1)
     order = re.search(r"<order>(.*)</order>", build.SNOOPY_DECODER).group(1).split(", ")
-    line = next(
-        event["full_log"]
-        for event in fixture("delivery-web.json")["archive"]
-        if "bluefire-mark-program" in event["full_log"] and event["location"] == "/var/log/snoopy.log"
-    )
-    message = line.split(": ", 1)[1]
 
     fields = dict(zip(order, re.match(pattern, message).groups(), strict=True))
 
-    assert fields["tag"] == "engine:mark"
-    assert fields["command"] == "/bin/echo bluefire-mark-program-20261123T000000Z-000000"
-    assert fields["uid"] == "0"
-    # What Wazuh decoded from the same line, in the run.
-    decoded = next(e for e in fixture("delivery-web.json")["archive"] if e["full_log"] == line)
-    assert decoded["data"] == fields
+    assert fields == {
+        "login": "ops",
+        "ssh": "10.9.0.4 50022 10.9.0.5 22",
+        "sid": "412",
+        "uid": "1002",
+        "euid": "1002",
+        "cwd": "/var/www/app",
+        # The file the exec call named, which the command line does not hold.
+        "exe": "/usr/bin/ls",
+        "tag": "job:admin",
+        "command": "ls -l /var/www/app",
+    }
+    # The count of a job's runs reads the same line as rsyslog writes it, by its tag and its command.
+    line = f"2026-11-23T00:00:00.000000+00:00 web snoopy[412]: {message}"
+    assert activity.SNOOPY.match(line).groups() == (
+        "2026-11-23T00:00:00.000000+00:00",
+        "job:admin",
+        "ls -l /var/www/app",
+    )
 
 
 def delivery(recorded: dict) -> list[dict]:

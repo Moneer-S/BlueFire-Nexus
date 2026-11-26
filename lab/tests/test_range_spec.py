@@ -426,6 +426,161 @@ def test_the_loader_refuses_a_plant_with_the_reason(change, message: str) -> Non
     assert message in str(refused.value)
 
 
+def defended(change=None) -> dict:
+    """The small spec with a public rule set and two named defenses, as range one's spec names its own."""
+
+    document = small()
+    document["rule_sets"] = {
+        "made-up": {
+            "kind": "sigma",
+            "repo": "example/rules",
+            "commit": "b" * 40,
+            "folders": ["rules/linux/process_creation", "rules/web"],
+            "licence": "LICENSE",
+            "lock": "made-up.lock",
+        }
+    }
+    document["defenses"] = [
+        {
+            "id": "wazuh-stock",
+            "name": "Wazuh with its stock rules",
+            "sensors": ["wazuh-agent"],
+            "rules": ["wazuh"],
+        },
+        {
+            "id": "made_up",
+            "name": "Rules made up for the tests",
+            "sensors": ["wazuh-agent"],
+            "rules": ["made-up"],
+        },
+    ]
+    if change:
+        change(document)
+    return document
+
+
+def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
+    spec = range_spec.parse(defended())
+
+    assert spec.rule_sets == (
+        range_spec.RuleSet(
+            "made-up",
+            "sigma",
+            "example/rules",
+            "b" * 40,
+            ("rules/linux/process_creation", "rules/web"),
+            "LICENSE",
+            "made-up.lock",
+        ),
+    )
+    # The first defense is the baseline; a defense that only records runs no rules.
+    assert spec.defenses == (
+        range_spec.Defense("wazuh-stock", "Wazuh with its stock rules", ("wazuh-agent",), ("wazuh",)),
+        range_spec.Defense("made_up", "Rules made up for the tests", ("wazuh-agent",), ("made-up",)),
+    )
+    only_records = defended(
+        lambda d: d["defenses"].append(
+            {"id": "records", "name": "x", "sensors": ["wazuh-agent"], "rules": []}
+        )
+    )
+    assert range_spec.parse(only_records).defenses[2].rules == ()
+    assert range_spec.parse(small()).defenses == () and range_spec.parse(small()).rule_sets == ()
+
+
+def change_set(**values):
+    def change(document: dict) -> None:
+        document["rule_sets"]["made-up"].update(values)
+
+    return change
+
+
+def change_defense(index: int, **values):
+    def change(document: dict) -> None:
+        document["defenses"][index].update(values)
+
+    return change
+
+
+def rename_set(name):
+    def change(document: dict) -> None:
+        document["rule_sets"] = {name: document["rule_sets"]["made-up"]}
+        document["defenses"][1]["rules"] = [name]
+
+    return change
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        # rule_sets
+        (put({}, "rule_sets"), "rule_sets must name at least one rule set"),
+        (put(["made-up"], "rule_sets"), "rule_sets must name at least one rule set"),
+        (rename_set("Made Up"), "rule_sets: the name 'Made Up' must be lower-case letters"),
+        (rename_set("wazuh"), "rule_sets: wazuh is the name of the rules the Wazuh manager runs live"),
+        (rename_set("pinned"), "rule_sets: a recording names a detector of its own pinned"),
+        (rename_set("lab"), "rule_sets: a recording names a detector of its own lab"),
+        (change_set(kind="suricata"), "rule_sets: made-up: kind must be one of sigma"),
+        (drop("rule_sets", "made-up", "commit"), "rule_sets: made-up lacks: commit"),
+        (change_set(url="https://example.com/rules.zip"), "rule_sets: made-up has unknown keys: url"),
+        (change_set(repo="https://github.com/example/rules"), "repo must be a GitHub repository"),
+        (change_set(commit="552f3fee"), "rule_sets: made-up: commit must be a full commit id"),
+        (change_set(folders=[]), "folders must list folders of the repository"),
+        (change_set(folders=["/rules/linux"]), "folders must list folders of the repository"),
+        (change_set(folders=["rules", "rules/linux"]), "once each and none inside another"),
+        (change_set(folders=["rules/linux", "rules/linux"]), "once each and none inside another"),
+        (change_set(licence="../LICENSE"), "licence must be the licence file of the repository"),
+        (change_set(licence="rules/web/LICENSE"), "licence names rules/web/LICENSE, which is inside"),
+        (change_set(lock="locks/../made-up.lock"), "lock must be a file beside the spec"),
+        (change_set(lock="small.lock"), "lock names small.lock, the lock of atomic_red_team's files"),
+        (
+            lambda d: d["defenses"].pop(1),
+            "rule_sets: no defense runs made-up: name it under a defense's rules, or leave it out",
+        ),
+        (drop("defenses"), "rule_sets: no defense runs made-up"),
+        # defenses
+        (put([], "defenses"), "defenses must be a list of 1 to 8 defenses"),
+        (put({"wazuh-stock": {}}, "defenses"), "defenses must be a list of 1 to 8 defenses"),
+        (change_defense(1, id="two words"), "defenses: the id 'two words' must be 1 to 64 letters"),
+        (change_defense(1, id="wazuh-stock"), "defenses lists the id wazuh-stock twice"),
+        (change_defense(1, name=""), "defenses: made_up: name must say in a few plain words"),
+        (change_defense(1, responses=["block"]), "defenses has unknown keys: responses"),
+        (drop("defenses", 1, "rules"), "defenses lacks: rules"),
+        (
+            change_defense(1, sensors=["pcap"]),
+            "defenses: made_up: sensors must list at least one kind of sensor, once each, of: wazuh-agent",
+        ),
+        (change_defense(1, sensors=[]), "sensors must list at least one kind of sensor"),
+        (
+            change_defense(0, rules=["suricata"]),
+            "defenses: wazuh-stock: rules names 'suricata', which is neither wazuh (the rules the Wazuh "
+            "manager runs live) nor a rule set of rule_sets (made-up)",
+        ),
+        (
+            change_defense(0, rules=["wazuh", "wazuh"]),
+            "rules must list at most 4 rule sets by name, once each",
+        ),
+        (change_defense(0, rules="wazuh"), "rules must list at most 4 rule sets by name, once each"),
+    ],
+)
+def test_the_loader_refuses_a_rule_set_or_a_defense_with_the_reason(change, message: str) -> None:
+    with pytest.raises(range_spec.SpecError) as refused:
+        range_spec.parse(defended(change))
+
+    assert message in str(refused.value)
+
+
+def test_a_defense_that_names_the_agents_needs_a_spec_with_wazuh() -> None:
+    document = a_spec(
+        defenses=[{"id": "wazuh-stock", "name": "Wazuh", "sensors": ["wazuh-agent"], "rules": ["wazuh"]}]
+    )
+
+    with pytest.raises(
+        range_spec.SpecError,
+        match="the sensor wazuh-agent is the agent of defense.wazuh, and the spec has none",
+    ):
+        range_spec.parse(document)
+
+
 def test_a_step_of_the_path_on_a_host_the_spec_does_not_declare_is_refused() -> None:
     document = small(put({"steps": [{"id": "s01", "technique": "T1082", "host": "nowhere"}]}, "path"))
 
