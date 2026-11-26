@@ -1043,10 +1043,7 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
     ]
     assert (stock["ordinary"]["events"], stock["ordinary"]["false alerts"]) == (1, 0)
     summary = (folder / "score.md").read_text()
-    assert (
-        "| Public Sigma rules on host logs (`sigma-public`) | Wazuh agent on web, db, build | "
-        in summary
-    )
+    assert "| Public Sigma rules on host logs (`sigma-public`) | Wazuh agent on web, db, build | " in summary
     assert (
         "20.05 s after the first step started, 0.15 s before the goal: Made Up - A Rule That Counts"
         in summary
