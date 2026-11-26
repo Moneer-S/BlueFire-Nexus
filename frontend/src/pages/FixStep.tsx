@@ -19,7 +19,7 @@ import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, senso
 import { FreeText } from "../live/FreeText";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
-import { readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
+import { firstView, readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "../live/live.css";
 import "./RecordedRun.css";
@@ -31,9 +31,10 @@ export function FixStepPage() {
   return <FixStep key={`${recordingId}/${file ?? ""}/${stepId}`} recordingId={recordingId} file={file} stepId={stepId} />;
 }
 
+/** The recording as the run's own page plays it: one with defenses as its first defense judged the run. */
 function read(value: unknown): { recording: Recording } | { problem: string } {
   try {
-    return { recording: readRecording(value, { running: true }) };
+    return { recording: firstView(readRecording(value, { running: true })) };
   } catch (error) {
     return { problem: error instanceof RecordingError ? error.message : "The recording could not be read." };
   }

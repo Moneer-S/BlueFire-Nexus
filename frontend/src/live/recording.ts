@@ -15,6 +15,13 @@ export const MAX_LINKS = 16;
 export const MAX_SENSORS = 16;
 export const MAX_SENSORS_ON_A_HOST = 4;
 export const MAX_DETECTORS = 4;
+/**
+ * A recording with defenses holds one run judged by each of them. A defense
+ * has at most `MAX_DETECTORS` rule sets, which the map draws at once, and the
+ * network holds those of all.
+ */
+export const MAX_DEFENSES = 8;
+export const MAX_DETECTORS_WITH_DEFENSES = 8;
 
 /** An ISO 8601 time in UTC, such as `2026-11-17T17:07:23.834Z`. */
 export type Time = string;
@@ -137,12 +144,27 @@ export interface Visibility {
   kept?: number;
 }
 
-export interface Defense {
+/** The hardening change a `hardened` step ran with. */
+export interface HardeningChange {
   title: string;
   why: string;
 }
 
-export interface Step {
+/**
+ * What a defense made of a step: the keys of a step that depend on who judges
+ * the run. A recording with defenses holds them once for each defense, and
+ * the step's own are the first defense's.
+ */
+export interface StepVerdict {
+  visibility: Visibility;
+  outcome: Outcome;
+  outcome_with_lab_rules?: Outcome;
+  first_event?: Time;
+  first_alert?: Time;
+  first_alert_with_lab_rules?: Time;
+}
+
+export interface Step extends StepVerdict {
   id: string;
   order: number;
   role: StepRole;
@@ -157,14 +179,8 @@ export interface Step {
   command?: string;
   output?: string;
   happened: Happened;
-  visibility: Visibility;
-  outcome: Outcome;
-  outcome_with_lab_rules?: Outcome;
-  first_event?: Time;
-  first_alert?: Time;
-  first_alert_with_lab_rules?: Time;
   compared_with?: string;
-  defense?: Defense;
+  defense?: HardeningChange;
 }
 
 export interface RecordingEvent {
@@ -225,6 +241,24 @@ export interface Score {
   false_alerts?: number;
 }
 
+/**
+ * A defense: the sensors it records with, the rule sets it runs, and what it
+ * made of the run. Its view of the recording holds only the events of its
+ * sensors and the alerts of its rule sets on those events; `judgedBy` gives it.
+ */
+export interface Defense {
+  id: string;
+  name: string;
+  /** Ids of the network's sensors, at least one. */
+  sensors: string[];
+  /** Ids of the network's detectors, at most `MAX_DETECTORS`; none for a defense that only records. */
+  detectors: string[];
+  /** Its verdict on every step, by the step's id. */
+  steps: Record<string, StepVerdict>;
+  ordinary?: Ordinary;
+  score: Score;
+}
+
 export interface Recording {
   schema: typeof RECORDING_SCHEMA;
   id: string;
@@ -238,6 +272,12 @@ export interface Recording {
   alerts: Alert[];
   ordinary?: Ordinary;
   score: Score;
+  /**
+   * The defenses that judged the run, in a recording that names them. The
+   * steps' verdicts, `ordinary` and `score` above are then the first one's,
+   * and `events` and `alerts` hold those of every defense.
+   */
+  defenses?: Defense[];
   notes: string[];
 }
 
@@ -440,7 +480,10 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     if (count > MAX_SENSORS_ON_A_HOST) fail(`The host ${JSON.stringify(sensor.host)} has more than ${MAX_SENSORS_ON_A_HOST} sensors; the map draws at most ${MAX_SENSORS_ON_A_HOST} on one host.`);
     onHost.set(sensor.host, count);
   });
-  const detectors = atMost(array(network.detectors, "The network's detectors"), MAX_DETECTORS, "detectors").map((item, index) => object(item, `Detector ${index + 1}`));
+  // Without defenses the map draws every detector at once; with them it draws one defense's, and each defense has its own limit.
+  const allDetectors = array(network.detectors, "The network's detectors");
+  if (top.defenses !== undefined && allDetectors.length > MAX_DETECTORS_WITH_DEFENSES) fail(`The network has ${allDetectors.length} detectors; a recording with defenses holds at most ${MAX_DETECTORS_WITH_DEFENSES}.`);
+  const detectors = (top.defenses === undefined ? atMost(allDetectors, MAX_DETECTORS, "detectors") : allDetectors).map((item, index) => object(item, `Detector ${index + 1}`));
   const detectorIds = uniqueIds(detectors, "detector");
   detectors.forEach((detector, index) => {
     text(detector.name, `The name of detector ${index + 1}`);
@@ -495,16 +538,7 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     const happened = object(step.happened, `What happened in ${name}`);
     oneOf(happened.answer, HAPPENED, `What happened in ${name}`);
     text(happened.basis, `The basis of what happened in ${name}`);
-    const visibility = object(step.visibility, `The visibility of ${name}`);
-    oneOf(visibility.answer, VISIBILITY, `The visibility of ${name}`);
-    text(visibility.basis, `The basis of the visibility of ${name}`);
-    optionalNumber(visibility.events, `The events counted for ${name}`);
-    optionalNumber(visibility.kept, `The events kept for ${name}`);
-    oneOf(step.outcome, OUTCOMES, `The outcome of ${name}`);
-    if (step.outcome_with_lab_rules !== undefined) oneOf(step.outcome_with_lab_rules, OUTCOMES, `The outcome with lab rules of ${name}`);
-    optionalTime(step.first_event, `The first event of ${name}`);
-    optionalTime(step.first_alert, `The first alert of ${name}`);
-    optionalTime(step.first_alert_with_lab_rules, `The first alert with lab rules of ${name}`);
+    verdictShape(step, name);
     if (step.compared_with !== undefined) known(stepIds, step.compared_with, `What ${name} is compared with`, "step");
     if (step.defense !== undefined) {
       const defense = object(step.defense, `The hardening change of ${name}`);
@@ -552,25 +586,84 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
     if (alert.launcher_only !== undefined) bool(alert.launcher_only, `Whether ${name} matched only the launcher`);
   });
 
-  if (top.ordinary !== undefined) {
-    const ordinary = object(top.ordinary, "The recording's ordinary activity");
-    number(ordinary.events, "The events of ordinary activity");
-    array(ordinary.matches, "The matches on ordinary activity").forEach((item, index) => {
-      const match = object(item, `Match ${index + 1} on ordinary activity`);
-      text(match.rule, `The rule of match ${index + 1} on ordinary activity`);
-      oneOf(match.level, LEVELS, `The level of match ${index + 1} on ordinary activity`);
-      number(match.count, `The count of match ${index + 1} on ordinary activity`);
-    });
-  }
-  const score = object(top.score, "The recording's score");
-  for (const key of ["steps", "took_effect", "alerted", "seen", "unseen", "stopped"]) number(score[key], `The score's ${key}`);
-  for (const key of ["alerted_with_lab_rules", "first_alert_seconds", "goal_seconds", "false_alerts"]) optionalNumber(score[key], `The score's ${key}`);
+  ordinaryAndScore(top);
+  if (top.defenses !== undefined) defensesShape(top.defenses, sensorIds, detectorIds, stepIds);
   array(top.notes, "The recording's notes").forEach((note, index) => text(note, `Note ${index + 1}`));
 
   const recording = value as Recording;
   noControls(recording);
-  agree(recording);
+  if (recording.defenses === undefined) agree(recording);
+  else agreeForEach(recording, recording.defenses);
   return recording;
+}
+
+/** A defense's id, as a recording's own: letters, digits, `-` and `_`, at most 64. */
+const DEFENSE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * The defenses of a recording that names them: from 1 to `MAX_DEFENSES`, each
+ * with an id of its own and a name, sensors and detectors that the network
+ * has, a verdict on every step and on nothing else, and its ordinary activity
+ * and score.
+ */
+function defensesShape(value: unknown, sensorIds: Set<string>, detectorIds: Set<string>, stepIds: Set<string>): void {
+  const list = array(value, "The recording's defenses");
+  if (list.length < 1 || list.length > MAX_DEFENSES) fail(`The recording has ${list.length} defenses; one with defenses has from 1 to ${MAX_DEFENSES}.`);
+  const defenses = list.map((item, index) => object(item, `Defense ${index + 1}`));
+  uniqueIds(defenses, "defense");
+  defenses.forEach((defense, index) => {
+    const id = JSON.stringify(defense.id);
+    if (!DEFENSE_ID.test(text(defense.id, `The id of defense ${index + 1}`))) fail(`The id of defense ${index + 1}, ${id}, is not 1 to 64 letters, digits, "-" or "_".`);
+    text(defense.name, `The name of the defense ${id}`);
+    const sensors = array(defense.sensors, `The sensors of the defense ${id}`);
+    textList(sensors, `The sensors of the defense ${id}`);
+    sensors.forEach((item) => known(sensorIds, item, `The defense ${id}`, "sensor"));
+    if (sensors.length === 0) fail(`The defense ${id} has no sensor; a defense records with at least one.`);
+    const detectors = array(defense.detectors, `The detectors of the defense ${id}`);
+    textList(detectors, `The detectors of the defense ${id}`);
+    detectors.forEach((item) => known(detectorIds, item, `The defense ${id}`, "detector"));
+    const distinct = new Set(detectors).size;
+    if (distinct > MAX_DETECTORS) fail(`The defense ${id} has ${distinct} detectors; the map draws at most ${MAX_DETECTORS}.`);
+    const verdicts = object(defense.steps, `The steps of the defense ${id}`);
+    for (const step of Object.keys(verdicts)) known(stepIds, step, `The defense ${id}`, "step");
+    for (const step of stepIds) {
+      if (!Object.hasOwn(verdicts, step)) fail(`The defense ${id} has no verdict on Step ${JSON.stringify(step)}; a defense judges every step.`);
+      verdictShape(object(verdicts[step], `The verdict of the defense ${id} on Step ${JSON.stringify(step)}`), `Step ${JSON.stringify(step)} for the defense ${id}`);
+    }
+    ordinaryAndScore(defense, ` of the defense ${id}`);
+  });
+}
+
+/** What a defense made of a step: those keys of the step itself, or a defense's verdict on the step. */
+function verdictShape(holder: Fields, name: string): void {
+  const visibility = object(holder.visibility, `The visibility of ${name}`);
+  oneOf(visibility.answer, VISIBILITY, `The visibility of ${name}`);
+  text(visibility.basis, `The basis of the visibility of ${name}`);
+  optionalNumber(visibility.events, `The events counted for ${name}`);
+  optionalNumber(visibility.kept, `The events kept for ${name}`);
+  oneOf(holder.outcome, OUTCOMES, `The outcome of ${name}`);
+  if (holder.outcome_with_lab_rules !== undefined) oneOf(holder.outcome_with_lab_rules, OUTCOMES, `The outcome with lab rules of ${name}`);
+  optionalTime(holder.first_event, `The first event of ${name}`);
+  optionalTime(holder.first_alert, `The first alert of ${name}`);
+  optionalTime(holder.first_alert_with_lab_rules, `The first alert with lab rules of ${name}`);
+}
+
+/** The ordinary activity and the score: the recording's own, or those of a defense, which `of` names. */
+function ordinaryAndScore(holder: Fields, of = ""): void {
+  if (holder.ordinary !== undefined) {
+    const ordinary = object(holder.ordinary, of ? `The ordinary activity${of}` : "The recording's ordinary activity");
+    number(ordinary.events, `The events of ordinary activity${of}`);
+    array(ordinary.matches, `The matches on ordinary activity${of}`).forEach((item, index) => {
+      const match = object(item, `Match ${index + 1} on ordinary activity${of}`);
+      text(match.rule, `The rule of match ${index + 1} on ordinary activity${of}`);
+      oneOf(match.level, LEVELS, `The level of match ${index + 1} on ordinary activity${of}`);
+      number(match.count, `The count of match ${index + 1} on ordinary activity${of}`);
+    });
+  }
+  const score = object(holder.score, of ? `The score${of}` : "The recording's score");
+  const named = (key: string) => (of ? `The ${key} in the score${of}` : `The score's ${key}`);
+  for (const key of ["steps", "took_effect", "alerted", "seen", "unseen", "stopped"]) number(score[key], named(key));
+  for (const key of ["alerted_with_lab_rules", "first_alert_seconds", "goal_seconds", "false_alerts"]) optionalNumber(score[key], named(key));
 }
 
 /**
@@ -703,6 +796,120 @@ function maximum(values: readonly number[]): number {
   let high = Number.NEGATIVE_INFINITY;
   for (const value of values) if (value > high) high = value;
   return high;
+}
+
+/** Whether two values of a recording are the same, whatever the order of an object's keys. */
+function same(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => same(item, b[index]));
+  if (!isObject(a) || !isObject(b)) return a === b;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && same(a[key], b[key]));
+}
+
+/**
+ * What must hold of a recording with defenses, as the service checks it on
+ * import: every event and every alert is in the view of at least one defense,
+ * the top level holds the verdicts of the first defense, and the view of each
+ * defense agrees with itself as a recording without defenses does.
+ */
+function agreeForEach(recording: Recording, defenses: readonly Defense[]): void {
+  const views = defenses.map((defense) => ({ id: JSON.stringify(defense.id), view: viewOf(recording, defense) }));
+  const held = new Set(views.flatMap(({ view }) => view.events.map((event) => event.id)));
+  for (const event of recording.events) {
+    if (!held.has(event.id)) fail(`Event ${JSON.stringify(event.id)} is of the sensor ${JSON.stringify(event.sensor)}, which no defense has: every event of a recording with defenses is of a sensor that one of them has.`);
+  }
+  const judged = new Set(views.flatMap(({ view }) => view.alerts.map((alert) => alert.id)));
+  const run = new Set(defenses.flatMap((defense) => defense.detectors));
+  for (const alert of recording.alerts) {
+    if (judged.has(alert.id)) continue;
+    if (run.has(alert.detector)) fail(`Alert ${JSON.stringify(alert.id)} is in no defense's view: no defense has its detector, ${JSON.stringify(alert.detector)}, and the sensor of every event it names.`);
+    fail(`Alert ${JSON.stringify(alert.id)} is of the detector ${JSON.stringify(alert.detector)}, which no defense has: every alert of a recording with defenses is of a rule set that one of them has.`);
+  }
+
+  const [first] = views;
+  if (first) {
+    const whose = `the first defense's, ${first.id}: the top level of a recording with defenses holds the verdicts of its first defense.`;
+    recording.steps.forEach((step, index) => {
+      const judgedStep = first.view.steps[index];
+      const key = VERDICT_KEYS.find((item) => !same(step[item], judgedStep?.[item]));
+      if (key) fail(`The ${key} of Step ${JSON.stringify(step.id)} differs from ${whose}`);
+    });
+    if (!same(recording.ordinary, first.view.ordinary)) fail(`The recording's ordinary differs from ${whose}`);
+    if (!same(recording.score, first.view.score)) fail(`The recording's score differs from ${whose}`);
+  }
+
+  for (const { id, view } of views) {
+    try {
+      agree(view);
+    } catch (error) {
+      if (error instanceof RecordingError) fail(`For the defense ${id}: ${error.message}`);
+      throw error;
+    }
+  }
+}
+
+/** The keys of a step that say what a defense made of it. Every other key is the step's own, whoever judges it. */
+const VERDICT_KEYS: readonly (keyof StepVerdict)[] = ["visibility", "outcome", "outcome_with_lab_rules", "first_event", "first_alert", "first_alert_with_lab_rules"];
+
+/** Gives `target` one key of a verdict as `source` has it, or takes the key away when `source` has none. */
+function carry<K extends keyof StepVerdict>(target: StepVerdict, source: StepVerdict, key: K): void {
+  if (source[key] === undefined) delete target[key];
+  else target[key] = source[key];
+}
+
+/** The view of one defense of the recording, as `judgedBy` describes it. */
+function viewOf(recording: Recording, defense: Defense): Recording {
+  const sensors = new Set(defense.sensors);
+  const detectors = new Set(defense.detectors);
+  const events = recording.events.filter((event) => sensors.has(event.sensor));
+  const held = new Set(events.map((event) => event.id));
+  const view: Recording = {
+    ...recording,
+    network: { ...recording.network, sensors: recording.network.sensors.filter((sensor) => sensors.has(sensor.id)), detectors: recording.network.detectors.filter((detector) => detectors.has(detector.id)) },
+    steps: recording.steps.map((step) => {
+      const verdict = Object.hasOwn(defense.steps, step.id) ? defense.steps[step.id] : undefined;
+      if (!verdict) fail(`The defense ${JSON.stringify(defense.id)} has no verdict on Step ${JSON.stringify(step.id)}; a defense judges every step.`);
+      const judged: Step = { ...step };
+      for (const key of VERDICT_KEYS) carry(judged, verdict, key);
+      return judged;
+    }),
+    events,
+    alerts: recording.alerts.filter((alert) => detectors.has(alert.detector) && alert.events.every((id) => held.has(id))),
+    score: defense.score,
+  };
+  delete view.defenses;
+  if (defense.ordinary === undefined) delete view.ordinary;
+  else view.ordinary = defense.ordinary;
+  return view;
+}
+
+/** The defenses of a recording, in its order: the first is the one a reader shows first. None for a recording that names none. */
+export function defensesOf(recording: Recording): Defense[] {
+  return recording.defenses ?? [];
+}
+
+/**
+ * The view of one defense: the recording as that defense judged the run. It is
+ * itself a recording without defenses, so whatever plays or reads a recording
+ * takes it. It holds only the events of the defense's sensors and the alerts
+ * of its detectors that rest on those events, only those sensors and detectors
+ * in its network, each step with the defense's verdict in place of the step's
+ * own, and the defense's ordinary activity and score. What a step did is the
+ * same in every view.
+ */
+export function judgedBy(recording: Recording, defenseId: string): Recording {
+  const defense = defensesOf(recording).find((item) => item.id === defenseId);
+  if (!defense) fail(`This recording has no defense ${JSON.stringify(defenseId)}.`);
+  return viewOf(recording, defense);
+}
+
+/**
+ * What the app and the replay page play of a recording: the view of its first
+ * defense, or the recording itself when it names none.
+ */
+export function firstView(recording: Recording): Recording {
+  const [first] = defensesOf(recording);
+  return first ? viewOf(recording, first) : recording;
 }
 
 /**

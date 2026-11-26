@@ -11,8 +11,9 @@ import sensorBeforeText from "../../bluefire/data/recordings/lab-pair-history-wa
 import sensorAfterText from "../../bluefire/data/recordings/lab-pair-history-watch-after.json?raw";
 import { api, readDelta, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { codeSpans, listedPrice, movedWords, priceWords, pairChangeWords, pairHeadline, pairResultWords, raceWords, titlesWords, turnName, variationWords, verdictParts } from "../src/lib/recording-pairs";
+import type { Recording } from "../src/live/recording";
 import { ComparedRunsPage } from "../src/pages/ComparedRuns";
-import { alert, event, recording, step } from "./live-fixture";
+import { alert, at, event, recording, step } from "./live-fixture";
 
 // Small deltas in the shape `bluefire-lab compare` writes them, and the two real
 // comparisons shipped with the app. The page draws what each one says; none of
@@ -382,6 +383,44 @@ describe("the page of a change to the defense", () => {
     await user.click(within(detail).getByRole("button", { name: "Close the step's detail" }));
     expect(screen.queryByRole("region", { name: /every detail before and after/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Address")).toHaveTextContent(`/runs/compared/${ID}?step=2`);
+  }, 20_000);
+
+  it("draws a run that two defenses judged as its first defense judged it, with nothing of the second", async () => {
+    const delta = sensorDelta();
+    const before = { ...recording({ steps: [step("1", 1, 2), step("2", 3, 4, { outcome: "unseen", visibility: { answer: "no telemetry", basis: "nothing of the test was recorded besides its launcher's start", events: 0 } })] }), id: "run-before" };
+    // In the run after, the first defense has Sysmon and the published rules, and saw the test; the second has a packet capture and Sigma's rules too, and alerted on it.
+    const other = { visibility: { answer: "telemetry only", basis: "events", events: 0 }, outcome: "seen" } as const;
+    const seen = { visibility: { answer: "telemetry only", basis: "one record", events: 1 }, outcome: "seen", first_event: at(3.5) } as const;
+    const alerted = { visibility: { answer: "alert", basis: "a record, a packet and a rule", events: 2 }, outcome: "alerted", first_event: at(3.5), first_alert: at(3.6) } as const;
+    const plain = recording({
+      steps: [step("1", 1, 2, other), step("2", 3, 4, seen)],
+      events: [event("2-1", "2", 3.5), { ...event("2-2", "2", 3.6), sensor: "capture", kind: "packet", text: "a packet the capture kept" }],
+      alerts: [alert("on-the-packet", "2", 3.6, ["2-2"], { detector: "sigma", rule: { id: "s1", title: "Sigma rule on a packet", level: "high", origin: "pinned" } })],
+    });
+    const score = { ...plain.score, took_effect: 2, seen: 2 };
+    const after: Recording = {
+      ...plain,
+      id: "run-after",
+      network: {
+        ...plain.network,
+        sensors: [...plain.network.sensors, { id: "capture", name: "Packet capture", host: "target", records: "packets" }],
+        detectors: [...plain.network.detectors, { id: "sigma", name: "Sigma rules", rules: 3, when: "after the run" }],
+      },
+      score,
+      defenses: [
+        { id: "sysmon-alone", name: "Sysmon with the published rules", sensors: ["sysmon"], detectors: ["pinned"], steps: { "1": other, "2": seen }, score },
+        { id: "with-capture", name: "Sysmon, a packet capture and Sigma's rules", sensors: ["sysmon", "capture"], detectors: ["sigma"], steps: { "1": other, "2": alerted }, score: { ...score, seen: 1, alerted: 1 } },
+      ],
+    };
+    const { fetched } = mount(delta);
+    fetched.mockImplementation(async (id) => ({ summary: summaryOf(id), recording: id === "run-before" ? before : after }));
+
+    const stages = await screen.findByRole("group", { name: "Clear Bash history (echo), before and after" });
+    const afterStage = await within(stages).findByRole("article", { name: /^After/ });
+    // The first defense's one event of the test, and no rule.
+    expect(afterStage).toHaveTextContent("Sysmon recorded 1 event. No rule matched it.");
+    // Nothing of the second defense on the page: not its sensor, its packet, its rule set or its alert.
+    expect(screen.queryAllByText(/Packet capture|a packet the capture kept|Sigma rules|Sigma rule on a packet/)).toEqual([]);
   }, 20_000);
 
   it("counts every test of the run after that raises no alert, seen or unseen, beside what its score gives", async () => {
