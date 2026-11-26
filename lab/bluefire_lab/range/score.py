@@ -85,6 +85,7 @@ import math
 import posixpath
 import re
 import shlex
+import shutil
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -1171,6 +1172,18 @@ def record(
         ),
     }
     try:
+        # A rescore is one current judgment of the run. Remove matches and private engine work from
+        # an earlier judgment before naming the files written by this one.
+        for stale in out.glob("alerts.*.ecs.ndjson"):
+            if stale.is_symlink() or stale.is_file():
+                stale.unlink()
+            elif stale.exists():
+                shutil.rmtree(stale)
+        work = out / "engine"
+        if work.is_symlink() or work.is_file():
+            work.unlink()
+        elif work.exists():
+            shutil.rmtree(work)
         raw = {}
         for kind in ("archives", "alerts"):
             folder = logs / kind

@@ -114,6 +114,8 @@ LIVE_RULES = {WAZUH_RULES: (WAZUH_AGENT,)}
 RESERVED_DETECTORS = ("pinned", "lab")
 # A defense's id, as the recording format takes it, and the most defenses and rules it holds.
 DEFENSE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+# Text that the recording format refuses outside the few long-form fields that explicitly allow it.
+FORBIDDEN_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]")
 MAX_DEFENSES = 8
 MAX_RULES = 4
 MAX_NAME = 200
@@ -1108,9 +1110,10 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
     keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
     found = []
     for name, settings in value.items():
-        if not isinstance(name, str) or not NAME.match(name):
+        if not isinstance(name, str) or not NAME.match(name) or len(name) > 64:
             raise SpecError(
-                f"rule_sets: the name {name!r} must be lower-case letters, digits and single hyphens"
+                f"rule_sets: the name {name!r} must be lower-case letters, digits and single hyphens, "
+                "from 1 to 64 characters"
             )
         if name in LIVE_RULES:
             raise SpecError(
@@ -1191,7 +1194,12 @@ def _defenses(value: object, rule_sets: tuple[RuleSet, ...], wazuh: Wazuh | None
         if identifier in {defense.id for defense in found}:
             raise SpecError(f"defenses lists the id {identifier} twice")
         name = entry["name"]
-        if not isinstance(name, str) or not name.strip() or "\n" in name or len(name) > MAX_NAME:
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or FORBIDDEN_TEXT.search(name)
+            or len(name) > MAX_NAME
+        ):
             raise SpecError(f"{where}: name must say in a few plain words what the defense is, on one line")
         sensors = entry["sensors"]
         if (

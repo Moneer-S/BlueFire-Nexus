@@ -657,7 +657,7 @@ def view(
             first_alert=min(counting, default=None),
         )
 
-    rules: dict[str, dict] = {}
+    rules: dict[tuple[str, str], dict] = {}
     for detector in judged["detectors"]:
         for document in lines_of[detector]:
             if (document.get("labels") or {}).get("origin") != score.ORDINARY:
@@ -665,8 +665,16 @@ def view(
             if (document.get("host") or {}).get("name") not in watched:
                 continue
             rule = rule_of(document)
-            rules.setdefault(rule["id"], {**rule, "events": 0})["events"] += 1
-    ordinary = {"events": judged["ordinary"]["events"], "matches": lab.ordinary_matches(list(rules.values()))}
+            rules.setdefault((detector, rule["id"]), {**rule, "events": 0})["events"] += 1
+    repeated = Counter(rule["id"] for rule in rules.values())
+    ordinary_rules = [
+        {
+            **rule,
+            "id": f"{detector}:{rule['id']}" if repeated[rule["id"]] > 1 else rule["id"],
+        }
+        for (detector, _), rule in rules.items()
+    ]
+    ordinary = {"events": judged["ordinary"]["events"], "matches": lab.ordinary_matches(ordinary_rules)}
 
     tests = [step for step in steps if step["role"] == "test"]
     took = [step for step in tests if step["happened"]["answer"] == "took effect"]
@@ -819,18 +827,22 @@ def defense_notes(manifest: dict) -> list[str]:
             f"{group['given']} {group['events']}"
             for group in groups
         )
-        missing: dict[str, int] = {}
+        missing = []
         for group in groups:
-            for field, rules in (group.get("fields the rules name that are not given") or {}).items():
-                missing[field] = missing.get(field, 0) + rules
+            fields = group.get("fields the rules name that are not given") or {}
+            if fields:
+                missing.append(
+                    f"{group['log source']}: "
+                    + ", ".join(
+                        f"{field} ({lab.count(rules, 'rule names', 'rules name')} it)"
+                        for field, rules in fields.items()
+                    )
+                )
         said.append(
             f"The rules of {name} were given, by Sigma log source: {given}. "
             + (
-                "No event they were given held these fields the rules name: "
-                + ", ".join(
-                    f"{field} ({lab.count(rules, 'rule names', 'rules name')} it)"
-                    for field, rules in missing.items()
-                )
+                "Fields not given for any event of a log source, although that source's rules name them: "
+                + "; ".join(missing)
                 + ". A rule cannot match on a field it was not given."
                 if missing
                 else "Every field they name was given."

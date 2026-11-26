@@ -516,6 +516,7 @@ def rename_set(name):
         (put({}, "rule_sets"), "rule_sets must name at least one rule set"),
         (put(["made-up"], "rule_sets"), "rule_sets must name at least one rule set"),
         (rename_set("Made Up"), "rule_sets: the name 'Made Up' must be lower-case letters"),
+        (rename_set("a" * 65), "from 1 to 64 characters"),
         (rename_set("wazuh"), "rule_sets: wazuh is the name of the rules the Wazuh manager runs live"),
         (rename_set("pinned"), "rule_sets: a recording names a detector of its own pinned"),
         (rename_set("lab"), "rule_sets: a recording names a detector of its own lab"),
@@ -543,6 +544,7 @@ def rename_set(name):
         (change_defense(1, id="two words"), "defenses: the id 'two words' must be 1 to 64 letters"),
         (change_defense(1, id="wazuh-stock"), "defenses lists the id wazuh-stock twice"),
         (change_defense(1, name=""), "defenses: made_up: name must say in a few plain words"),
+        (change_defense(1, name="made\tup"), "name must say in a few plain words"),
         (change_defense(1, responses=["block"]), "defenses has unknown keys: responses"),
         (drop("defenses", 1, "rules"), "defenses lacks: rules"),
         (

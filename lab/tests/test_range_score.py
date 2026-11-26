@@ -1126,7 +1126,10 @@ def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_pat
         "2 defenses judged this one run" in said
         and "The top level of the recording is the first, wazuh-stock" in said
     )
-    assert "No event they were given held these fields the rules name: Image (2 rules name it)" in said
+    assert (
+        "Fields not given for any event of a log source, although that source's rules name them: "
+        "linux process_creation: Image (2 rules name it)"
+    ) in said
     assert "Of its 3 rules the engine loaded 2" in said
     # Each rule that matched is named with its author, which the rules' licence asks to keep.
     assert f"{HIGH['title']} ({HIGH['id']}), by The lab's tests" in said
@@ -1146,16 +1149,38 @@ def test_a_defense_with_live_rules_and_a_rule_set_tells_each_alert_and_match_as_
     )
     text = text[: text.index("defenses:")] + both + text[text.index("networks:") :]
     rewrite(folder, lambda m: m["spec"].update(text=text))
-    program = matching(monkeypatch, [("a program the test started", LOW)])
+    same_id = {**HIGH, "id": "100", "title": "Made Up - Same Id in Another Detector"}
+    program = matching(
+        monkeypatch,
+        [("a program the test started", LOW), ("a program of the cache job", same_id)],
+    )
 
     judged(folder, program)
 
-    steps = json.loads((folder / recording.FILE).read_text())["defenses"][1]["steps"]
+    view = json.loads((folder / recording.FILE).read_text())["defenses"][1]
+    steps = view["steps"]
     # s01's first alert is the manager's, raised live; s03 has a match of each kind, below its own level.
     s01, s03 = (steps[step]["visibility"]["basis"] for step in ("s01", "s03"))
     assert "; rule 40112 at level 12, an alert at level 12 or higher, raised at " in s01
     assert "after the run" not in s01
     assert "; 1 rule match below level 12; 1 rule match below level high;" in s03
+    # Rule ids are unique only within a detector. Both ordinary matches stay distinct, and the
+    # recording's false-alert count agrees with the score's detector-and-rule identity.
+    assert view["ordinary"]["matches"] == [
+        {
+            "rule": "A stand-in rule on the cache job.",
+            "id": "pinned:100",
+            "level": "informational",
+            "count": 1,
+        },
+        {
+            "rule": "Made Up - Same Id in Another Detector",
+            "id": "sigma:100",
+            "level": "high",
+            "count": 1,
+        },
+    ]
+    assert view["score"]["false_alerts"] == 1
 
 
 def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_run_is_still_scored(
@@ -1275,7 +1300,13 @@ def test_a_run_made_before_its_spec_named_defenses_is_judged_by_those_of_another
         note.startswith("The defenses are those of the spec other.yaml (SHA-256 ") for note in made["notes"]
     )
     # Scored again without it, the run has the one defense of its own spec once more.
+    stale_matches = folder / "alerts.made-up.ecs.ndjson"
+    stale_work = folder / "engine" / "made-up" / "left-by-the-other-judgment.txt"
+    assert stale_matches.is_file()
+    stale_work.parent.mkdir(parents=True, exist_ok=True)
+    stale_work.write_text("not a result of the next judgment\n")
     assert [d["id"] for d in judged(folder)["score"]["defenses"]] == ["wazuh-stock"]
+    assert not stale_matches.exists() and not (folder / "engine").exists()
     assert "judged_by" not in json.loads((folder / "manifest.json").read_text())
 
 
@@ -1332,6 +1363,30 @@ def test_range_rules_refuses_a_rule_set_of_the_name_of_one_the_run_fetched_itsel
         ("wazuh-stock", True),
         ("sigma-public", True),
     ]
+
+
+def test_range_rules_keeps_a_run_owned_rule_set_when_the_spec_has_the_same_lock(
+    tmp_path: Path, monkeypatch, served
+) -> None:
+    folder = small_run(tmp_path / "run")
+    other = tmp_path / "other.yaml"
+    other.write_text(spec_text(MADE_UP_SET), encoding="utf-8")
+    shutil.copyfile(RULE_SET / "made-up.lock", tmp_path / "made-up.lock")
+    spec = range_spec.load(other)
+    lock = rulesets.fetch(spec, spec.rule_sets[0], folder, served())["lock"]
+    rewrite(folder, lambda manifest: manifest.update(rule_sets={"made-up": {"lock": lock}}))
+    before = {path: path.read_bytes() for path in (folder / "rules" / "made-up").rglob("*") if path.is_file()}
+
+    monkeypatch.setattr(
+        rulesets,
+        "fetch",
+        lambda *args, **kwargs: pytest.fail("range rules fetched a rule set the run already owns"),
+    )
+
+    assert engine.rules(other, folder) == engine.EXIT_OK
+    assert {
+        path: path.read_bytes() for path in (folder / "rules" / "made-up").rglob("*") if path.is_file()
+    } == before
 
 
 def test_range_rules_leaves_in_a_rule_sets_folder_the_files_of_its_lock_and_no_others(
