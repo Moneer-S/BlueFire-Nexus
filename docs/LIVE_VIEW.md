@@ -49,7 +49,10 @@ Linux machine shipped with the app is
   them at alert level is a "lab alert" on every screen ("LAB ALERT · HIGH" on
   a chip), and the score never counts them. In a step's detail, the other runs
   of its technique say "lab alert" beside their outcome where one of the lab's
-  own rules alerted on them.
+  own rules alerted on them. A step that the score counts as seen and one of
+  the lab's own rules alerted on says so, and the hint under it reads "The
+  score counts published rules only, and none of those alerted.": it names no
+  published rule to start from and does not say that no rule matched.
 - **The head says what the run is, in one quiet line.** Under the title one
   line says what the run is and when it was recorded: "A real run, recorded 23
   Nov 2026 on a GitHub-hosted runner" for a run shipped with BlueFire or

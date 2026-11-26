@@ -105,6 +105,18 @@ describe("a step's neighbours and its gap", () => {
     expect(fixHint(noisy, seen, groups)).toBe('To alert here, start from the rule "Review": it matched this step at medium level, and 5 events of ordinary activity too.');
   });
 
+  it("does not send a seen step that one of the lab's own rules alerted on to a published rule, or say that no rule matched it", () => {
+    const seen = run.steps.find((item) => item.id === "2");
+    if (!seen) throw new Error("fixture");
+    const ours = alert("lab-2", "2", 3.2, ["e2"], { detector: "lab", rule: { id: "r-lab", title: "Ours", level: "high", origin: "lab" } });
+    const said = "The score counts published rules only, and none of those alerted.";
+    // With a published rule matched for review beside the lab's alert, and with the lab's alert alone.
+    expect(fixHint(run, seen, groupMatches([...run.alerts.filter((item) => item.step === "2"), ours]))).toBe(said);
+    expect(fixHint(run, seen, groupMatches([ours]))).toBe(said);
+    // Where the matches are not at hand, the recording's own outcome with the lab's rules says the same.
+    expect(fixHint(run, { ...seen, outcome_with_lab_rules: "alerted" })).toBe(said);
+  });
+
   it("splits the tests seen with no alert by what the published rules made of them", () => {
     expect(seenBreakdown(run)).toEqual({ total: 1, review: 1, info: 0, launcher: 0, none: 0 });
   });
