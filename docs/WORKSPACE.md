@@ -21,7 +21,7 @@ BlueFire Nexus is an open-source, AI-first security experimentation and defense-
 
 Connect behavior steps into an experiment, inspect the recorded outcome, then carry a run into detection work or compare it with another result. The optional AI Assistant works alongside the same workspace; manual editing and simulation remain available without an AI provider.
 
-![BlueFire Nexus Overview with saved experiments and results](assets/screenshots/desktop-workspace.png)
+![The BlueFire Nexus Overview: it leads with a run recorded in CI, the attack path of 11 steps through a network of 7 hosts, to play; under "Before against after" the two changes to the defense, new auditd settings and a new rule, each with what it did; and an example plan below them](assets/screenshots/app-overview.png)
 
 Watch the [development walkthrough](assets/screenshots/desktop-workflow.webm): explore a connected plan and its inspector, open a contextual Assistant draft, then revisit a saved comparison and detection evaluation. The installed build uses AI Off and clearly labeled synthetic records; both saved simulations took the same path. [Capture details](assets/screenshots/capture.json) identify the source revision and scope.
 
