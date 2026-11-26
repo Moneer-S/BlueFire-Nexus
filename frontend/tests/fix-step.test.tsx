@@ -486,9 +486,9 @@ describe("the page for fixing a step", () => {
     expect(watch).toHaveTextContent("Imported");
     // The price in the words the comparison's card on Runs gives it.
     expect(within(watch).getByText("2 published rules alert on ordinary activity, before and after")).toHaveClass("cmp-price");
-    // The price stands on a line of its own under the result, keyed as the cards key it, so the two never read as one sentence.
+    // The price stands on a line of its own under the result, keyed as the cards key it and the comparison's page heads it, so the two never read as one sentence.
     const priceLine = within(watch).getByText("2 published rules alert on ordinary activity, before and after").closest("p");
-    expect(priceLine?.textContent).toBe("Price2 published rules alert on ordinary activity, before and after");
+    expect(priceLine?.textContent).toBe("What it cost2 published rules alert on ordinary activity, before and after");
     const resultLine = within(watch).getByText("better").closest("p");
     expect(resultLine).not.toBe(priceLine);
     expect(resultLine).not.toHaveTextContent("ordinary activity");

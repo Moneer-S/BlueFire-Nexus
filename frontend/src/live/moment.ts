@@ -139,8 +139,9 @@ function workOutReveal(timeline: Timeline, segment: Segment): number {
 
 /**
  * The score as the screen tells it: the playback's score so far, with the
- * current step counted from the moment its outcome is told, so the numbers
- * and the step's own words never disagree.
+ * current step counted as seen, unseen or alerted from the moment its outcome
+ * is told, and as stopped from its recorded end, when the host's badge and the
+ * log say so, so the numbers and the rest of the screen never disagree.
  */
 export function scoreOnScreen(timeline: Timeline, frame: Frame, moment: StepMoment | null): ScoreSoFar {
   const score = { ...frame.score };
@@ -155,8 +156,9 @@ export function scoreOnScreen(timeline: Timeline, frame: Frame, moment: StepMome
     if (counted && !moment.revealed) score.alerted -= 1;
     if (!counted && moment.revealed && moment.outcome === "alerted") score.alerted += 1;
   }
+  // What a step did is said from its recorded end on: a stopped step is counted then, with the host's badge and the log's mark.
+  if (step.outcome === "stopped" && moment.ended) score.stopped += 1;
   if (!moment.revealed) return score;
-  if (step.outcome === "stopped") score.stopped += 1;
   if (test && moment.outcome === "seen") score.seen += 1;
   if (test && moment.outcome === "unseen") score.unseen += 1;
   return score;

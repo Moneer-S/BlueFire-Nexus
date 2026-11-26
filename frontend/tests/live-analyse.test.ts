@@ -71,9 +71,9 @@ describe("a step's neighbours and its gap", () => {
     const alerted = by("4");
     const canary = by("1");
     if (!seen || !unseen || !alerted || !canary) throw new Error("fixture");
-    // The hint says why a sensor is the place to start, in the recording's own words.
+    // The hint says why a sensor is the place to start, in the recording's own words: its one record by the noun the recording gives it.
     const lab = { ...unseen, technique: { id: "T9999" }, visibility: { answer: "no telemetry" as const, basis: "nothing of the test was recorded besides its launcher's start", events: 0 } };
-    expect(fixHint(run, lab)).toBe("Start with a sensor: its only record is the harness's own launch of its command, which never counts.");
+    expect(fixHint(run, lab)).toBe("Start with a sensor: its only record is its launcher's start, which never counts.");
     const other = { ...lab, visibility: { ...lab.visibility, basis: "No event of the agent named the step's session." } };
     expect(fixHint(run, other)).toBe("Start with a sensor: no event of the agent named the step's session.");
     // Another engine's basis that names a launcher, or starts with an acronym, is still told in its own words.
@@ -91,7 +91,7 @@ describe("a step's neighbours and its gap", () => {
     if (!base) throw new Error("fixture");
     const unseen = { ...base, id: "9", order: 9, technique: { id: "T1070.003" }, visibility: { answer: "no telemetry" as const, basis: "nothing of the test was recorded besides its launcher's start", events: 0 } };
     // A test by its count among the tests, any other step by its role: never by its place in the list.
-    expect(fixHint(run, unseen)).toBe("Start with a sensor: its only record is the harness's own launch of its command, which never counts. Other runs of T1070.003 were recorded: the canary alerted, test 3 alerted, test 1 seen.");
+    expect(fixHint(run, unseen)).toBe("Start with a sensor: its only record is its launcher's start, which never counts. Other runs of T1070.003 were recorded: the canary alerted, test 3 alerted, test 1 seen.");
   });
 
   it("names a published rule to start from when rules already matched a seen step below alert level, with its noise on ordinary activity", () => {

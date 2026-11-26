@@ -472,7 +472,7 @@ function TriedLine({ item }: { item: Tried }) {
       <span className={`cmp-result is-${result}`}>{resultWords(step.result)}</span>
     </p>
     {/* The price on a line of its own under the result, with the key the cards give it; the lab's whole verdict, with the price as the lab wrote it, one click away. */}
-    {price ? <p className="fx-tried-price"><span className="fx-tried-price-key">Price</span><span className={`cmp-price${price.unknown ? " is-unknown" : ""}`}>{price.words}</span></p> : null}
+    {price ? <p className="fx-tried-price"><span className="fx-tried-price-key">What it cost</span><span className={`cmp-price${price.unknown ? " is-unknown" : ""}`}>{price.words}</span></p> : null}
     <details className="fx-quoted">
       <summary>The comparison's own words</summary>
       <p><LabText text={step.verdict} /></p>

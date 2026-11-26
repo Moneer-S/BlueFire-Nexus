@@ -187,9 +187,9 @@ describe("one name for a step, and the recording's own words, on every part of t
     expect(detail.textContent).toContain("4 of 5 steps");
     expect(detail.textContent).toContain("id test:dd");
     expect(detail.textContent).not.toMatch(/step \d+ of/);
-    // What the recording says of the unseen test, and why a sensor is the place to start.
+    // What the recording says of the unseen test, and why a sensor is the place to start: its one record by one name in both.
     expect(detail.querySelector(".lv-dt-why")?.textContent).toBe(`It took effect, and ${lab}.`);
-    expect(detail.querySelector(".lv-dt-hint")?.textContent).toBe("Start with a sensor: its only record is the harness's own launch of its command, which never counts. Other runs of T1070.003 were recorded: the canary alerted.");
+    expect(detail.querySelector(".lv-dt-hint")?.textContent).toBe("Start with a sensor: its only record is its launcher's start, which never counts. Other runs of T1070.003 were recorded: the canary alerted.");
     unmount();
   });
 

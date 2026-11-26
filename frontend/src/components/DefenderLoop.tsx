@@ -62,7 +62,7 @@ function Turn({ pair, number, compact }: { pair: DeltaSummary; number: number | 
     {/* The headline names one moved step itself; several are named here, under it. */}
     {pair.comparable && moved.length && !headlineNamesStep(pair, moved) ? <p className="dl-moved">{titlesWords(moved)}{variants ? ", each also with other arguments" : ""}</p> : null}
     <p className="dl-method"><span>{methodWords(pair)}</span><span className={`recorded-run-origin is-${pair.origin.kind}`}>{originWords(pair.origin)}</span></p>
-    {price ? <p className="dl-price"><span className="dl-price-key">Price</span><span>{price.words}</span></p> : null}
+    {price ? <p className="dl-price"><span className="dl-price-key">What it cost</span><span>{price.words}</span></p> : null}
     <p className={`dl-result${result.warn ? " is-warn" : ""}`}><LabWords text={result.text} /></p>
     {compact ? null : <p className="dl-links">
       <Link className="dl-open" to={pairPath(pair.id)}>See the difference<ArrowRight aria-hidden="true" /></Link>

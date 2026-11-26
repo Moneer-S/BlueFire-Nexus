@@ -431,12 +431,13 @@ function Cost({ delta, moved, recordings }: { delta: Delta; moved: readonly Delt
     const high = (recording: Recording | null) => (recording?.ordinary?.matches ?? []).filter((match) => match.level === "high" || match.level === "critical");
     const rulesBefore = high(before), rulesAfter = high(after);
     const names = [...new Set([...rulesBefore, ...rulesAfter].map((match) => match.rule))];
-    const alerts = (list: typeof rulesBefore, rule: string) => list.filter((match) => match.rule === rule).reduce((sum, match) => sum + match.count, 0);
+    // The events of ordinary activity each rule matched: a rule that alerted there is one false alert, however many events it matched.
+    const events = (list: typeof rulesBefore, rule: string) => list.filter((match) => match.rule === rule).reduce((sum, match) => sum + match.count, 0);
     body = <>
       {fa[0] !== undefined && fa[1] !== undefined ? <p className="cmp-cost-big"><b>{fa[0]}</b> before, <b>{fa[1]}</b> after</p> : null}
       <p>{priceSentence(price, delta)}</p>
       <details className="cmp-more"><summary>Which rules, and on how much activity</summary>
-        {names.length ? <ul>{names.map((rule) => <li key={rule}><b>{rule}</b>: {plural(alerts(rulesBefore, rule), "alert")} before, {count(alerts(rulesAfter, rule))} after</li>)}</ul> : null}
+        {names.length ? <ul>{names.map((rule) => <li key={rule}><b>{rule}</b>: {plural(events(rulesBefore, rule), "event")} before, {count(events(rulesAfter, rule))} after</li>)}</ul> : null}
         {before?.ordinary && after?.ordinary ? <p>Ordinary activity: {count(before.ordinary.events)} events before, {count(after.ordinary.events)} after. The lab does not say how alike the two were. The lab's own rules are not counted here.</p> : null}
         <p className="cmp-small">In the lab's words: <LabText text={price} /></p>
       </details>

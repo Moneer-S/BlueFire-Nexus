@@ -18,6 +18,8 @@ interface RaceLineProps {
   score: ScoreSoFar;
   /** True once the current step's outcome is told. */
   revealed: boolean;
+  /** True once the current step's clock has reached its recorded end. */
+  ended: boolean;
 }
 
 /**
@@ -86,15 +88,16 @@ export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoF
 }
 
 /**
- * While hardened reruns play: how many of those told so far their change stopped, of all the hardened reruns of the
- * recording, the count the score box gives. Null at any other step.
+ * While hardened reruns play: how many of those that have reached their recorded end their change stopped, of all the
+ * hardened reruns of the recording, the count the score box gives. `ended` says whether the current step's clock has
+ * reached its end, the moment the host's badge and the log say it was stopped. Null at any other step.
  */
-export function rerunsSoFar(timeline: Timeline, frame: Frame, revealed: boolean): { stopped: number; total: number } | null {
+export function rerunsSoFar(timeline: Timeline, frame: Frame, ended: boolean): { stopped: number; total: number } | null {
   const current = frame.segment;
   if (!current || current.step.role !== "hardened") return null;
   const hardened = timeline.segments.filter((segment) => segment.step.role === "hardened");
-  const told = hardened.filter((segment) => segment.end <= frame.time || (segment === current && revealed));
-  return { stopped: told.filter((segment) => segment.step.outcome === "stopped").length, total: hardened.length };
+  const over = hardened.filter((segment) => segment.end <= frame.time || (segment === current && ended));
+  return { stopped: over.filter((segment) => segment.step.outcome === "stopped").length, total: hardened.length };
 }
 
 /** Pixels kept free between two labels on the track. */
@@ -206,7 +209,7 @@ function useWidths(): [RefObject<HTMLDivElement | null>, RefObject<HTMLDivElemen
   return [track, ruler, widths];
 }
 
-export function RaceLine({ recording, timeline, frame, facts, score, revealed }: RaceLineProps) {
+export function RaceLine({ recording, timeline, frame, facts, score, revealed, ended }: RaceLineProps) {
   const length = Math.max(1, facts.end - facts.start);
   const fraction = (real: number) => Math.min(1, Math.max(0, (real - facts.start) / length));
   const at = (real: number) => `${(fraction(real) * 100).toFixed(3)}%`;
@@ -224,7 +227,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed }:
   const otherBegun = others.filter((segment) => segment.start <= frame.time).length;
   const otherNow = testList && frame.segment !== null && frame.segment.step.role !== "test" && otherBegun > 0;
   const otherRoles = [...new Set(others.map((segment) => segment.step.role))].join(", ");
-  const reruns = rerunsSoFar(timeline, frame, revealed);
+  const reruns = rerunsSoFar(timeline, frame, ended);
   const otherNote = other ? `${capital(stepLabel(recording, other.step))} alerted at ${elapsed((other.real - facts.start) / 1000)} into the run${other.step.role === "canary" ? ", as expected: it is built to be caught" : ""}.` : undefined;
   // The flagged alert itself: the counting published match that fires first.
   const firstRule = first?.alert.rule.title;
