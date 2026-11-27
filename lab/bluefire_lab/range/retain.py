@@ -1076,14 +1076,22 @@ def _same_as_collected(
     relative = PurePosixPath("raw/hosts") / manager / "var/ossec/logs" / kind
     actual = run.walk_files(relative, f"the collected Wazuh {kind} folder")
     ordered = []
+    current = None
     seen_days = set()
     text_days = set()
     expected_prefix = "ossec-archive-" if kind == "archives" else "ossec-alerts-"
     for path in actual:
         parts = path.relative.relative_to(relative).parts
+        if len(parts) == 1:
+            if parts[0] != f"{kind}.json.gz" or current is not None:
+                raise RetainError(
+                    f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
+                )
+            current = path
+            continue
         if len(parts) != 3:
             raise RetainError(
-                f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files"
+                f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
             )
         year, month, filename = parts
         match = wazuh.DAILY.fullmatch(filename)
@@ -1102,21 +1110,26 @@ def _same_as_collected(
             or not filename.endswith(".json.gz")
         ):
             raise RetainError(
-                f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files"
+                f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
             )
         day = (int(year), wazuh.MONTHS.index(month), int(match.group(1)))
         if day in seen_days:
             raise RetainError(f"the collected Wazuh {kind} folder repeats one daily JSON gzip file")
         seen_days.add(day)
         ordered.append((day, path))
-    if not ordered:
-        raise RetainError(f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files")
+    sources = [path for _day, path in sorted(ordered, key=lambda item: item[0])]
+    if current is not None:
+        sources.append(current)
+    if not sources:
+        raise RetainError(
+            f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
+        )
     if not text_days.issubset(seen_days):
         raise RetainError(f"the collected Wazuh {kind} folder has a text alert file without matching JSON")
 
     digest = hashlib.sha256()
     count = 0
-    for _day, path in sorted(ordered, key=lambda item: item[0]):
+    for path in sources:
         relative_path = path.relative.as_posix()
         snapshot, _ = _remember(snapshots, path, f"collected Wazuh file {relative_path}")
         try:
