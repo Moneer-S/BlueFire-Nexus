@@ -2,7 +2,7 @@
 // rests on, its times, the published test, the command, the rules that
 // matched, its events as a log, and the other runs of the same technique.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
 import { alertMoment, timeOf } from "./recording";
 import type { RuleMatches, StepRow } from "./analyse";
@@ -79,8 +79,64 @@ function raisedAfterOfMany(alerts: readonly Alert[], ended: number | null): stri
   return `${count(late)} of its ${count(alerts.length)} matches ${late === 1 ? "was" : "were"} raised after the step ended.`;
 }
 
+interface CorrelationEvidenceIndex {
+  events: ReadonlyMap<string, RecordingEvent>;
+  steps: ReadonlyMap<string, Step>;
+}
+
+interface CorrelationEvidenceItem {
+  alert: Alert;
+  event: RecordingEvent;
+  step: Step;
+  reference: number;
+}
+
+/** Every event cited by a cross-step alert, in the rule's recorded evidence order. */
+function correlationEvidence(index: CorrelationEvidenceIndex, alerts: readonly Alert[]): CorrelationEvidenceItem[] {
+  const evidence: CorrelationEvidenceItem[] = [];
+  for (const alert of alerts) {
+    const resolved = alert.events.map((eventId, reference) => {
+      const event = index.events.get(eventId);
+      if (!event) throw new Error(`alert ${alert.id} refers to unknown event ${eventId}`);
+      const step = index.steps.get(event.step);
+      if (!step) throw new Error(`event ${event.id} refers to unknown step ${event.step}`);
+      return { alert, event, step, reference };
+    });
+    if (resolved.some(({ step }) => step.id !== alert.step)) evidence.push(...resolved);
+  }
+  return evidence;
+}
+
+function CorrelationEvidence({ recording, index, alerts, ruleTitle }: { recording: Recording; index: CorrelationEvidenceIndex; alerts: readonly Alert[]; ruleTitle: string }) {
+  const evidence = correlationEvidence(index, alerts);
+  if (evidence.length === 0) return null;
+  return (
+    <section className="lv-dt-correlation" aria-label={`Correlation evidence for ${ruleTitle}`}>
+      <h6>Correlation evidence</h6>
+      <ol>
+        {evidence.map(({ alert, event, step, reference }) => {
+          const text = event.text || event.image || event.kind;
+          return (
+            <li key={`${alert.id}:${event.id}:${reference}`}>
+              <span className="lv-dt-crow">
+                <span className="lv-dt-cstep" title={step.title}>
+                  {stepShortName(recording, step)}
+                </span>
+                <time dateTime={event.time}>{clockTime(timeOf(event.time))}</time>
+                <span className="lv-dt-ctext" dir="auto">
+                  <FreeText text={text} />
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
 /** One rule of a group, once however often it matched: its events counted once each, and when its first match came. */
-function RuleRow({ recording, match, ended }: { recording: Recording; match: RuleMatches; ended: number | null }) {
+function RuleRow({ recording, evidenceIndex, match, ended }: { recording: Recording; evidenceIndex: CorrelationEvidenceIndex; match: RuleMatches; ended: number | null }) {
   const [first] = match.alerts;
   if (!first) return null;
   const { rule } = match;
@@ -113,19 +169,20 @@ function RuleRow({ recording, match, ended }: { recording: Recording; match: Rul
       </span>
       {late ? <span className="lv-dt-mnote">{late}</span> : null}
       {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: one false alert.</span> : null}
+      <CorrelationEvidence recording={recording} index={evidenceIndex} alerts={match.alerts} ruleTitle={rule.title} />
     </div>
   );
 }
 
 /** One group of the rules that matched, each rule on one row, in the order of its first match. */
-function MatchGroup({ recording, title, alerts, ended }: { recording: Recording; title: string; alerts: Alert[]; ended: number | null }) {
+function MatchGroup({ recording, evidenceIndex, title, alerts, ended }: { recording: Recording; evidenceIndex: CorrelationEvidenceIndex; title: string; alerts: Alert[]; ended: number | null }) {
   const rules = matchesByRule(alerts);
   if (rules.length === 0) return null;
   return (
     <div className="lv-dt-group">
       <h5>{title}</h5>
       {rules.map((match) => (
-        <RuleRow key={`${match.rule.origin}:${match.rule.id}`} recording={recording} match={match} ended={ended} />
+        <RuleRow key={`${match.rule.origin}:${match.rule.id}`} recording={recording} evidenceIndex={evidenceIndex} match={match} ended={ended} />
       ))}
     </div>
   );
@@ -232,6 +289,13 @@ function EventLines({ recording, events, marks, colours, refusal }: { recording:
 
 export function StepDetail({ recording, row, colours, testNumber, testsTotal, origin, originWords = "the start of the run", onSelect, onWatch, onFix, onClose, takeFocus }: StepDetailProps) {
   const article = useRef<HTMLElement | null>(null);
+  const evidenceIndex = useMemo<CorrelationEvidenceIndex>(
+    () => ({
+      events: new Map(recording.events.map((event) => [event.id, event] as const)),
+      steps: new Map(recording.steps.map((step) => [step.id, step] as const)),
+    }),
+    [recording.events, recording.steps],
+  );
   // The detail is mounted again for every step, so this runs once per chosen step.
   useEffect(() => {
     if (takeFocus) article.current?.focus({ preventScroll: true });
@@ -465,12 +529,12 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         </h4>
         {anyMatch ? (
           <>
-            <MatchGroup recording={recording} title="Published rules at alert level: in the score" alerts={m.alert} ended={row.end} />
-            <MatchGroup recording={recording} title="Lab alerts: the lab's own rules at alert level, not in the score" alerts={m.labAlert} ended={row.end} />
-            <MatchGroup recording={recording} title="Published rules below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
-            <MatchGroup recording={recording} title="Published rules at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
-            <MatchGroup recording={recording} title="The lab's own rules below alert level" alerts={m.labReview} ended={row.end} />
-            <MatchGroup recording={recording} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules at alert level: in the score" alerts={m.alert} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Lab alerts: the lab's own rules at alert level, not in the score" alerts={m.labAlert} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="The lab's own rules below alert level" alerts={m.labReview} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
           </>
         ) : (
           <p className="lv-dt-empty">No rule matched.</p>
