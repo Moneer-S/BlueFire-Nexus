@@ -35,7 +35,8 @@
   position: absolute;
   z-index: 4;
   display: grid;
-  grid-auto-rows: 16px;
+  align-content: start;
+  grid-auto-rows: auto;
   padding-top: 2px;
   background: linear-gradient(90deg, rgba(8, 26, 39, 0.9), rgba(8, 26, 39, 0.68));
 }
@@ -46,10 +47,18 @@
   grid-template-columns: 15px minmax(0, 1fr) 38px 30px 36px 58px;
   gap: 5px;
   align-items: center;
+  min-height: 16px;
   min-width: 0;
   padding: 0 5px;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.lv-ds-limit {
+  margin: 1px 5px 3px;
+  font-size: 10px;
+  line-height: 13px;
+  color: var(--lv-muted-strong);
 }
 
 .lv-ds-row.is-heads {

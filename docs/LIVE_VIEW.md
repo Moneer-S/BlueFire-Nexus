@@ -81,13 +81,19 @@ Linux machine shipped with the app is
   those of the canary and control steps, "short: checks and repeats"; its
   tooltip names their roles and says that none of them is a test or in the
   score of tests.
-- **Several defenses judge the same real moment.** On an attack path, the
+- **Several defenses judge the same recorded step.** On an attack path, the
   outcome of the run leads the head. The defense side of the map is headed
   "Judged by" and names the chosen defense, then lists every defense with the
   current step's verdict and its alerted, seen, unseen and false-alert counts.
-  Keys 1 through 8, or a row, choose a defense. The same step and exact
-  recorded clock remain on screen, including in a quiet gap; playback does not
-  restart. The chosen defense supplies every event, alert, rule engine,
+  Keys 1 through 8, or a row, choose a defense. The same step remains on
+  screen. Within a step window shared by both defenses, and in quiet gaps, its
+  recorded clock remains too; playback does not restart. A sensor-specific
+  event can extend one defense's step window beyond another's. Switching from
+  that extension clamps the clock to the other defense's step edge rather than
+  carrying it into that defense's quiet gap. Comparison counts use those
+  displayed moments. They are transient playback counts, not the completed
+  recording's final outcome or Analyse score. The chosen defense supplies every
+  event, alert, rule engine,
   verdict, race sentence and count. Sensors used only by another defense keep
   their place on the map, dimmed, with their full name in a tooltip, so the
   network does not jump when its judge changes. Analyse mode sets all defenses

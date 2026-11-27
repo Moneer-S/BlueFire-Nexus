@@ -453,7 +453,8 @@ export function LiveView({ recording: held, origin, originKind, initial, onFix, 
     return () => document.removeEventListener("keydown", onKey);
   }, [mode, togglePlay]);
 
-  // Another defense judges the same moment: the same step, the same time on the clock.
+  // Another defense judges the same step. Shared windows and gaps keep the clock;
+  // a sensor-specific step extension clamps at the other defense's step edge.
   const chooseDefense = useCallback(
     (id: string) => {
       const next = judged.find((item) => item.defense.id === id);

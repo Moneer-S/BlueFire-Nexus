@@ -33,6 +33,7 @@ export function DefenseSideHead({ judges, left, width }: { judges: MapJudges; le
 export function DefenseSideRows({ judges, box, mapHeight }: { judges: MapJudges; box: Box; mapHeight: number }) {
   return (
     <div className="lv-ds-rows" role="group" aria-label="The defenses that judge this run" style={{ left: box[0], bottom: mapHeight - box[3], width: box[2] - box[0], minHeight: box[3] - box[1] }}>
+      <p className="lv-ds-limit">Switching limit: a sensor event between steps can move the clock and live counts back to that step's end. The completed Analyse result stays final.</p>
       <div className="lv-ds-row is-heads" aria-hidden="true">
         <span /><span /><span>alerted</span><span>seen</span><span>unseen</span><span>false alerts</span>
       </div>

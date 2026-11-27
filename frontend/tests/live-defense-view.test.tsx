@@ -78,11 +78,12 @@ function open(value: Recording, initial: LiveViewProps["initial"], onMoment?: (m
 }
 
 describe("one run judged by several defenses", () => {
-  it("leads with the outcome, switches every visible verdict, and keeps the exact moment", async () => {
+  it("leads with the outcome, switches every visible verdict, and keeps the exact shared moment", async () => {
     const onMoment = vi.fn<(moment: LiveMoment) => void>();
     const { container, unmount } = open(judgedTwice(), { step: "1", at: 1.2, paused: true }, onMoment);
     expect(container.querySelector(".lv-outcome")?.textContent).toContain("The attacker has not reached its goal");
     const choices = within(container).getByRole("group", { name: "The defenses that judge this run" });
+    expect(within(choices).getByText("Switching limit: a sensor event between steps can move the clock and live counts back to that step's end. The completed Analyse result stays final.")).toBeTruthy();
     const stock = within(choices).getByRole("button", { name: /Wazuh with its stock rules/ });
     expect(stock.getAttribute("aria-pressed")).toBe("true");
     expect(within(choices).getByLabelText("Key 1. Step 1: alerted")).toBeTruthy();

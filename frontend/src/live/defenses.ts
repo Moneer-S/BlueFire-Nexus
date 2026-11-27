@@ -49,7 +49,8 @@ export function judgeAll(recording: Recording): Judged[] {
   });
 }
 
-/** The same step and real clock in another defense's timeline. */
+/** The same step in another defense's timeline. Shared windows and gaps keep
+ * real time; a sensor-specific body extension clamps at the other step's edge. */
 export function sameMoment(from: Timeline, to: Timeline, time: number): number {
   const frame = frameAt(from, time);
   const source = frame.segment;
