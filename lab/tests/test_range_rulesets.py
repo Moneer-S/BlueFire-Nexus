@@ -7,6 +7,7 @@ conftest.py). Nothing is fetched from a network.
 """
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from bluefire_lab.range import spec as range_spec
 
 SMALL = Path(__file__).parent / "fixtures" / "range" / "small" / "small.yaml"
 RULE_SET = Path(__file__).parent / "fixtures" / "range" / "rule-set"
+SELECTION = Path(__file__).parent / "fixtures" / "range" / "rule-set-selection"
 COMMIT = "b" * 40
 MADE_UP = {
     "kind": "sigma",
@@ -93,6 +95,99 @@ def test_a_run_fetches_the_rules_by_the_lock_with_the_licence_and_a_line_that_sa
     assert len(asked) == len(made["lock"]) == made["files"] + 1
     assert made["folder"] == "rules/made-up" and made["digest"] == DIGEST
     assert rulesets.held(tmp_path, "made-up", made["lock"]) == folder
+
+
+def selection_spec(
+    tmp_path: Path,
+    kind: str,
+    folder: str,
+    *,
+    rule_paths: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
+) -> range_spec.Spec:
+    """A parsed spec changed only to exercise made-up format-aware discovery."""
+
+    spec = defended(tmp_path)
+    rule_set = replace(
+        spec.rule_sets[0],
+        kind=kind,
+        folders=(folder,),
+        rule_paths=rule_paths,
+        include="rules",
+        exclude=exclude,
+    )
+    return replace(spec, rule_sets=(rule_set,))
+
+
+def test_a_sigma_set_locks_only_rules_in_selected_source_paths_and_records_what_was_left_out(
+    tmp_path: Path, served
+) -> None:
+    spec = selection_spec(tmp_path, "sigma", "sigma", rule_paths=("sigma/source",))
+    asked: list[str] = []
+    upstream = served(SELECTION, asked=asked)
+
+    def fetched(url: str) -> bytes:
+        assert "sigma/tests/valid-looking.yml" not in url
+        return upstream(url)
+
+    rulesets.lock(spec, fetched)
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {"LICENSE", "sigma/source/atomic.yml", "sigma/source/correlation.yml"}
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": ["sigma/source"],
+        "exclude": [],
+        "selected files": 2,
+        "left out files": 4,
+        "left out by reason": {
+            "Sigma pipeline": 1,
+            "not a Sigma rule or correlation": 1,
+            "not YAML": 1,
+            "outside selected source paths": 1,
+        },
+    }
+    assert len([url for url in asked if "raw.githubusercontent.com" in url]) == 6
+
+
+def test_a_suricata_set_locks_only_active_rule_files_and_keeps_an_exact_exclusion_distinct(
+    tmp_path: Path, served
+) -> None:
+    omitted = ("suricata/retired.rules",)
+    spec = selection_spec(tmp_path, "suricata", "suricata", exclude=omitted)
+    asked: list[str] = []
+
+    rulesets.lock(spec, served(SELECTION, asked=asked))
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {"LICENSE", "suricata/active.rules"}
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": [],
+        "exclude": list(omitted),
+        "selected files": 1,
+        "left out files": 3,
+        "left out by reason": {
+            "excluded by the spec": 1,
+            "no active Suricata rule": 1,
+            "not a Suricata .rules file": 1,
+        },
+    }
+    assert not any(url.endswith("/suricata/retired.rules") for url in asked)
+
+
+def test_locking_refuses_a_filter_that_does_not_describe_the_pinned_folders(tmp_path: Path, served) -> None:
+    missing = selection_spec(tmp_path, "suricata", "suricata", exclude=("suricata/missing.rules",))
+    unmatched = selection_spec(tmp_path, "suricata", "suricata", rule_paths=("suricata/missing",))
+
+    with pytest.raises(
+        range_spec.SpecError, match="exclude names suricata/missing.rules, which the configured"
+    ):
+        rulesets.lock(missing, served(SELECTION))
+    with pytest.raises(range_spec.SpecError, match="rule_paths names suricata/missing, which match no file"):
+        rulesets.lock(unmatched, served(SELECTION))
 
 
 @pytest.mark.parametrize("existing", ["rules-link", "set-link", "set-folder"])

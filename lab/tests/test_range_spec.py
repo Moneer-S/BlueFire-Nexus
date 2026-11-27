@@ -473,6 +473,18 @@ def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
             "made-up.lock",
         ),
     )
+    selected = range_spec.parse(
+        defended(
+            change_set(
+                rule_paths=["rules/linux/process_creation"],
+                include="rules",
+                exclude=["rules/linux/process_creation/retired.yml"],
+            )
+        )
+    ).rule_sets[0]
+    assert selected.rule_paths == ("rules/linux/process_creation",)
+    assert selected.include == "rules"
+    assert selected.exclude == ("rules/linux/process_creation/retired.yml",)
     # The first defense is the baseline; a defense that only records runs no rules.
     assert spec.defenses == (
         range_spec.Defense("wazuh-stock", "Wazuh with its stock rules", ("wazuh-agent",), ("wazuh",)),
@@ -525,6 +537,17 @@ def rename_set(name):
         (change_set(url="https://example.com/rules.zip"), "rule_sets: made-up has unknown keys: url"),
         (change_set(repo="https://github.com/example/rules"), "repo must be a GitHub repository"),
         (change_set(commit="552f3fee"), "rule_sets: made-up: commit must be a full commit id"),
+        (change_set(include="yaml"), "rule_sets: made-up: include must be all or rules"),
+        (change_set(rule_paths="rules/*"), "rule_paths must list relative source folders once each"),
+        (change_set(rule_paths=["rules/**/sigma"]), "rule_paths must list relative source folders once each"),
+        (change_set(rule_paths=["tests/*/sigma"]), "rule_paths names tests/*/sigma, outside"),
+        (change_set(exclude="rules/retired.yml"), "exclude must list repository file paths once each"),
+        (change_set(exclude=["../retired.yml"]), "exclude must list repository file paths once each"),
+        (
+            change_set(exclude=["rules/web/retired.yml", "rules/web/retired.yml"]),
+            "exclude must list repository file paths once each",
+        ),
+        (change_set(exclude=["tests/rule.yml"]), "outside the folders the rule set takes"),
         (change_set(folders=[]), "folders must list folders of the repository"),
         (change_set(folders=["/rules/linux"]), "folders must list folders of the repository"),
         (change_set(folders=["rules", "rules/linux"]), "once each and none inside another"),

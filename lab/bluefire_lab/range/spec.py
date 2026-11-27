@@ -189,6 +189,9 @@ class RuleSet:
     folders: tuple[str, ...]
     licence: str
     lock: str
+    rule_paths: tuple[str, ...] = ()
+    include: str = "all"
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1107,7 +1110,8 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
 
     if not isinstance(value, dict) or not value:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
-    keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    required = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    keys = required | {"rule_paths", "include", "exclude"}
     found = []
     for name, settings in value.items():
         if not isinstance(name, str) or not NAME.match(name) or len(name) > 64:
@@ -1125,7 +1129,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 f"rule_sets: a recording names a detector of its own {name}, so a rule set needs another name"
             )
         where = f"rule_sets: {name}"
-        entry = _mapping(settings, where, keys, keys)
+        entry = _mapping(settings, where, keys, required)
         if entry["kind"] not in RULE_KINDS:
             raise SpecError(
                 f"{where}: kind must be one of {', '.join(RULE_KINDS)}: the kinds of rule set the lab can "
@@ -1151,6 +1155,48 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 f"{where}: folders must list folders of the repository, as in rules/linux/process_creation, "
                 "once each and none inside another"
             )
+        rule_paths = entry.get("rule_paths", [])
+        if (
+            not isinstance(rule_paths, list)
+            or not all(
+                isinstance(path, str)
+                and RELATIVE.match(path.replace("*", "x"))
+                and all("*" not in part or part == "*" for part in path.split("/"))
+                for path in rule_paths
+            )
+            or len(set(rule_paths)) != len(rule_paths)
+        ):
+            raise SpecError(
+                f"{where}: rule_paths must list relative source folders once each; a whole path part may be *"
+            )
+        outside_paths = sorted(
+            path
+            for path in rule_paths
+            if not any(path == folder or path.startswith(folder + "/") for folder in folders)
+        )
+        if outside_paths:
+            raise SpecError(
+                f"{where}: rule_paths names {', '.join(outside_paths[:5])}, outside the configured folders"
+            )
+        include = entry.get("include", "all")
+        if include not in ("all", "rules"):
+            raise SpecError(f"{where}: include must be all or rules")
+        exclude = entry.get("exclude", [])
+        if (
+            not isinstance(exclude, list)
+            or not all(isinstance(path, str) and RELATIVE.match(path) for path in exclude)
+            or len(set(exclude)) != len(exclude)
+        ):
+            raise SpecError(
+                f"{where}: exclude must list repository file paths once each, with no absolute or parent path"
+            )
+        outside = sorted(
+            path for path in exclude if not any(path.startswith(folder + "/") for folder in folders)
+        )
+        if outside:
+            raise SpecError(
+                f"{where}: exclude names {', '.join(outside[:5])}, outside the folders the rule set takes"
+            )
         licence = entry["licence"]
         if not isinstance(licence, str) or not RELATIVE.match(licence):
             raise SpecError(
@@ -1168,7 +1214,18 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 "lock file of their own"
             )
         found.append(
-            RuleSet(name, entry["kind"], entry["repo"], entry["commit"], tuple(folders), licence, lock)
+            RuleSet(
+                name,
+                entry["kind"],
+                entry["repo"],
+                entry["commit"],
+                tuple(folders),
+                licence,
+                lock,
+                tuple(rule_paths),
+                include,
+                tuple(exclude),
+            )
         )
     return tuple(found)
 
