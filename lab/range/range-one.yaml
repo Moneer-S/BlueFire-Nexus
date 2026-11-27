@@ -36,7 +36,7 @@ defense:
       - {path: /var/log/snoopy.log, format: syslog}
       - {path: /var/log/dpkg.log, format: syslog}
     fim_realtime: [/etc, /home, /root, /tmp, /var/tmp]
-rule_sets:                         # public rule sets, fetched file by file at their commit
+rule_sets:                         # public rule sets, each file pinned before use
   sigma:
     kind: sigma                    # Sigma rules, each given the events of its log source after the run
     repo: SigmaHQ/sigma
@@ -45,10 +45,17 @@ rule_sets:                         # public rule sets, fetched file by file at t
               rules/web/webserver_generic]
     licence: LICENSE
     lock: range-one.rules.lock     # sha256 of every fetched rule file and of the licence file
+  et-open:
+    kind: suricata
+    source: lab/rules/et-open/SHA256SUMS
+    sha256: [a7b140e3, 95557d19, a234b0fa, 465f4471, 39ba5071, 7ee6efcb, 0e23df6b, 7c6f30dc]
+    version: "11342"
 defenses:                          # each judges the same run; the first is the baseline
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
   - {id: sigma-public, name: Public Sigma rules on host logs,
      sensors: [wazuh-agent], rules: [sigma]}
+  - {id: packets-et-open, name: "Packets on web, judged by Suricata with the ET Open rules",
+     sensors: [packet-capture], rules: [et-open]}
 networks:                          # all: --internal, gateway_mode_ipv4=isolated, no IPv6
   edge: {}                         # the stand-in internet
   inside: {}                       # web, build, db
@@ -83,7 +90,8 @@ hosts:
     kind: host
     role: web application
     networks: [edge, inside, mgmt]
-    packages: [nginx, php-fpm, php-mysql, curl, wget, procps, openssh-client, openssh-server, sudo, cron]
+    packages: [nginx, php-fpm, php-mysql, curl, wget, procps, openssh-client, openssh-server, sudo, cron, tcpdump]
+    capture: packets
     services: [sshd, nginx, php-fpm, cron]
     listens: [22, 80]
     sshd: {password_auth: true, permit_root: false, pam_nodelay: true}

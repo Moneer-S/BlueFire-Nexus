@@ -1064,15 +1064,19 @@ certificate is kept the same way.
 
 Install the lab once, from the clone's top folder, with `pip install ./lab`
 (on Ubuntu's system Python, see [A range and its seal](#a-range-and-its-seal)
-for the virtual environment it needs). Then:
+for the virtual environment it needs). Have the pinned Suricata image already
+present locally; scoring never pulls an image. Then:
 
 ```bash
-bluefire-lab range run lab/range/range-one.yaml --out <new folder> --engine <path to Zircolite 4.7.1>
+bluefire-lab range run lab/range/range-one.yaml --out <new folder> \
+  --engine <path to Zircolite 4.7.1> \
+  --suricata-image jasonish/suricata:8.0.8@sha256:d5a3a1785299ab40918d465e54fedf8e3afeeedba76bb64b0cc74dbc20bda2c3
 bluefire-lab range lock lab/range/range-one.yaml   # only when the spec's published files or rule sets change
 ```
 
-Without `--engine` the run is the same, and the defense whose rules run after
-the run is not judged ([its defenses](#range-one-its-defenses)).
+Without either evaluator, the run and its raw telemetry are the same. Only a
+defense that needs the missing evaluator is not judged
+([its defenses](#range-one-its-defenses)).
 
 **Published files, pinned and locked.** The build fetches the technique YAML
 of every step of the path, the `src` folders the hosts carry and the files
@@ -1261,6 +1265,43 @@ A rule set that is evaluated after the run writes its matches to a file of
 its own beside them, `alerts.<rule set>.ecs.ndjson` (`alerts.sigma.ecs.ndjson`
 in range one), in the same shape as an alert: see
 [its defenses](#range-one-its-defenses).
+
+The `web` host also records its own range interfaces with tcpdump. Capture
+starts before its services, stops before the host is removed, and is copied to
+`raw/hosts/web/var/log/bluefire/packets/<interface>.pcap`. The manifest keeps
+the interface, packet and byte totals, snap length, link type, timestamp
+resolution, and tcpdump's captured, received and kernel-drop counters. The lab
+parses every PCAP before using it. A missing, cut or unexpected file, an
+unclean stop, or packets dropped by the kernel is reported as a packet
+delivery gap; it is not turned into complete telemetry by omission.
+
+With `--suricata-image`, Suricata reads those retained PCAPs only after the
+range has ended. The image must be the pinned 8.0.8 reference shown above and
+must already be present. Each evaluator container runs with no network,
+`--pull never`, every capability dropped, no new privileges and a read-only
+root; the PCAP and verified rules are read-only mounts. Suricata disables
+checksum validation for offline PCAP input. `HOME_NET` is the exact addresses
+the manifest recorded for protected sensor hosts: Wazuh agents and packet
+capture hosts. The attacker, stand-in internet, client and manager stay out,
+even when they share a range subnet.
+
+One rule-independent pass writes the run's canonical packet telemetry to the
+losslessly compressed `events.network.ecs.ndjson.gz`. It holds network flows
+and the HTTP, TLS, SSH and DNS records Suricata derived from the raw packets.
+The manifest records the compressed file's exact byte count, SHA-256 and
+decompressed line count. Each Suricata rule set gets a separate offline pass
+over the same PCAPs and writes only its matches to
+`alerts.<rule set>.ecs.ndjson`, such as `alerts.et-open.ecs.ndjson`; it does
+not duplicate the canonical packet stream. After a pass is fully validated,
+its per-PCAP `eve.json` is discarded as derived workspace; the raw PCAPs and
+counters remain, as do the canonical ECS and per-set alert objects. Every
+match links to a canonical network event. A later judgment recomputes these
+objects semantically from the raw PCAPs. Suricata may assign different flow
+IDs or serialized ECS bytes, so each judgment attests its own compressed byte
+count, SHA-256 and line count rather than promising byte-identical
+regeneration. A missing image, unusable capture or failed rule set leaves only
+the defenses that depend on it not judged. The Wazuh and Sigma judgments still
+use their own telemetry and rules.
 
 Each ECS line keeps the manager's line whole under `wazuh.*`, less its
 `full_log` and `timestamp`. The ECS fields beside it are copies where ECS has a
@@ -1537,9 +1578,17 @@ check's result, and the outcome below), and it writes `recording.json`, the
 run in the [recording format](../docs/RECORDING.md) that the app's live view
 plays. A spec that names no defense has one, the agents with the manager's
 stock rules, and its recording has no `defenses`.
-`bluefire-lab range score <run folder> [--engine <path to Zircolite 4.7.1>]`
-writes all of these again from a run folder's own files, with the spec the
-run's manifest holds and the rule files in its folder, and starts nothing.
+
+The same run can be judged again without starting a range or making a network
+request:
+
+```bash
+bluefire-lab range score <run folder> --engine <path to Zircolite 4.7.1> \
+  --suricata-image <pinned image>
+```
+
+It reads the spec the run's manifest holds, its raw PCAPs and the rule files
+in its folder.
 
 A hosted run whose raw sensor data is retained in the repository can have its
 exact closure and declared provenance validated, then be copied and judged by
@@ -1750,6 +1799,7 @@ ordinary day, with the denominators of the run.
 | --- | --- | --- | --- |
 | `wazuh-stock`, Wazuh with its stock rules | the Wazuh agents on `web`, `db` and `build` | the manager's stock rules, the detector `pinned` | live |
 | `sigma-public`, the public Sigma rules over the same host logs | the same agents' records | SigmaHQ's rules at commit `552f3fee` (the commit `lab.yml` pins for the bench on one host), the folders `rules/linux/process_creation`, `rules/linux/file_event`, `rules/linux/builtin` and `rules/web/webserver_generic`, the detector `sigma` | after the run, by Zircolite 4.7.1 |
+| `packets-et-open`, packets on `web` | the packet capture on `web` | the retained ET Open version 11342 subset, the detector `et-open` | after the run, by Suricata 8.0.8 |
 
 `wazuh-stock` is first, so a recording's top level is its view, with the
 verdicts, ordinary day and score a recording had before the spec named
@@ -1757,7 +1807,7 @@ defenses ([the recording](#range-one-the-score-and-the-recording) says what
 else differs). A third or a fourth defense is one more entry of `defenses`,
 with its rule set under `rule_sets`.
 
-**The rule set, fetched and locked.** `bluefire-lab range lock <spec>` lists
+**The Sigma rule set, fetched and locked.** `bluefire-lab range lock <spec>` lists
 each folder of the rule set at its commit through GitHub's contents API,
 fetches every file from `raw.githubusercontent.com` at that commit, and writes
 their SHA-256 to [`range/range-one.rules.lock`](range/range-one.rules.lock),
@@ -1777,7 +1827,17 @@ same name with another lock, which then needs a name of its own. The folder of
 any other rule set it empties before it fetches, so that the folder holds the
 files of the lock and no others.
 
-**How the rules are given the run.** After the run, the engine is given the
+**The packet rule set, kept verbatim.** `lab/rules/et-open/` contains 1,553
+enabled rules in eight complete network-relevant category files from Emerging
+Threats Open version 11342, plus its classifications and complete licence
+files. `SOURCE.md` names the source archive, its SHA-256, the exact included
+and excluded coverage, and how to reproduce the subset; `SHA256SUMS` pins
+every retained byte. A run copies only that declared closure into
+`rules/et-open/` and records its digest and source. Rescoring checks the held
+folder against the recorded closure before Suricata sees it. Neither scoring
+nor rescoring extracts an archive or fetches a rule.
+
+**How the Sigma rules are given the run.** After the run, the engine is given the
 manager's archived events, each rule folder over the events of the Sigma log
 source its rules name and no others, in Sigma's field names:
 
@@ -1816,12 +1876,21 @@ author and address at its commit, and `labels.event_id` naming the event;
 the engine loaded and read, the rules that matched and where), and the
 manifest has it under `score."rule sets"`.
 
-**Without the engine.** `range run` and `range score` take the engine's path
-as `--engine`. Without it the Sigma rules are not evaluated: the run still
-completes, `score.md` says that `sigma-public` was not judged and why, and the
-recording holds only the defenses that were judged. The `range-one` job
-fetches the engine as the `lab` workflow does, at the same address and digest,
-and fails unless every defense of the spec judged the run.
+**How the packet rules are given the run.** Suricata receives the same
+manifest-named raw PCAPs for every Suricata rule set. The canonical pass loads
+no detection rules. A rule-set pass receives every regular `.rules` file in
+its verified held folder, in stable path order. `alerts.et-open.ecs.ndjson`
+holds ET Open matches at their packet time and without a `raised` time. The
+score records the exact image, rule source and digest, how many rules Suricata
+loaded, which it did not load and why, and the rules that matched. Priority 1,
+2 and 3 become high, medium and low; only high and critical matches count as
+alerts. A successful pass with no matches is still an evaluated result.
+
+**Without an evaluator.** `range run` and `range score` take Zircolite's path
+as `--engine` and the pinned Suricata image as `--suricata-image`. Without one,
+only the defenses that require it are not judged; the run still completes and
+`score.md` says why. The `range-one` job preloads both evaluators and fails
+unless every defense of the spec judged the run.
 
 Limits:
 

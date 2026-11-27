@@ -139,6 +139,12 @@ def main(arguments: list[str] | None = None) -> int:
         help="the Zircolite program: with it, the rule sets of the spec's defenses judge the run after it; "
         "without it those defenses are not judged, and score.md says so",
     )
+    bringing.add_argument(
+        "--suricata-image",
+        metavar="IMAGE",
+        help="a pinned Suricata image already present locally: with it, packet rule sets judge the retained "
+        "captures after the range ends; the evaluator never pulls it or joins a network",
+    )
     removing = actions.add_parser(
         "down",
         help="remove the containers and networks that carry both the spec's prefix and its range label",
@@ -165,7 +171,7 @@ def main(arguments: list[str] | None = None) -> int:
     scoring = actions.add_parser(
         "score",
         help="write a run folder's ECS lines, score and recording.json again from its own files; "
-        "starts nothing",
+        "starts no range and fetches nothing",
     )
     scoring.add_argument("folder", type=Path, help="the folder a run of `range run` wrote")
     scoring.add_argument(
@@ -179,6 +185,12 @@ def main(arguments: list[str] | None = None) -> int:
         type=Path,
         help="a spec file whose defenses and rule sets judge the run in place of those of the spec it ran, "
         "as for a run made before its spec named any",
+    )
+    scoring.add_argument(
+        "--suricata-image",
+        metavar="IMAGE",
+        help="a pinned Suricata image already present locally: with it, packet rule sets judge the retained "
+        "captures offline; the evaluator never pulls it or joins a network",
     )
     retaining = actions.add_parser(
         "retain",
@@ -210,6 +222,12 @@ def main(arguments: list[str] | None = None) -> int:
         "--engine", type=Path, help="the Zircolite program; required when the judging spec has rule sets"
     )
     rejudging.add_argument(
+        "--suricata-image",
+        metavar="IMAGE",
+        help="a pinned Suricata image already present locally: with it, packet rule sets judge the retained "
+        "captures offline; the evaluator never pulls it or joins a network",
+    )
+    rejudging.add_argument(
         "--template", type=Path, required=True, help="the app's page template, bluefire/ui/replay.html"
     )
     rejudging.add_argument(
@@ -221,12 +239,22 @@ def main(arguments: list[str] | None = None) -> int:
         if options.action == "down":
             return range_engine.down(options.spec)
         if options.action == "score":
-            return range_engine.rescore(options.folder, options.engine, options.defenses)
+            return range_engine.rescore(
+                options.folder,
+                rule_engine=options.engine,
+                defenses=options.defenses,
+                suricata_image=options.suricata_image,
+            )
         if options.action == "retain":
             return range_retain.main(options.run, options.spec, options.out)
         if options.action == "rejudge":
             return range_retained.rejudge(
-                options.retained, options.defenses, options.out, options.template, options.engine
+                options.retained,
+                options.defenses,
+                options.out,
+                options.template,
+                options.engine,
+                suricata_image=options.suricata_image,
             )
         if options.action == "render":
             return range_engine.render(options.spec, options.out)
@@ -234,7 +262,14 @@ def main(arguments: list[str] | None = None) -> int:
             return range_engine.lock(options.spec)
         if options.action == "rules":
             return range_engine.rules(options.spec, options.out)
-        return range_engine.run(options.spec, options.out, options.plant, options.hold, options.engine)
+        return range_engine.run(
+            options.spec,
+            options.out,
+            options.plant,
+            options.hold,
+            rule_engine=options.engine,
+            suricata_image=options.suricata_image,
+        )
     if options.command == "atomic":
         return atomic.write(options.spec, options.atomics, options.out)
     if options.command == "run":

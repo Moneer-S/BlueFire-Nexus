@@ -377,6 +377,8 @@ def rejudge(
     out: Path,
     template: Path,
     rule_engine: Path | None = None,
+    *,
+    suricata_image: str | None = None,
 ) -> int:
     """Validate, copy and rejudge a retained run, then write its standalone replay page."""
 
@@ -410,7 +412,7 @@ def rejudge(
         engine.write_json(manifest_path, manifest)
         if judged_by.rule_sets and engine.rules(defenses, work) != 0:
             return 1
-        code = engine.rescore(work, rule_engine, defenses)
+        code = engine.rescore(work, rule_engine, defenses, suricata_image=suricata_image)
         if code != 0:
             return code
         _regular(recording, "the newly generated recording.json")
