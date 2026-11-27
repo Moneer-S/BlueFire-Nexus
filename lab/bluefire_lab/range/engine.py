@@ -2699,9 +2699,12 @@ def rules(spec_path: Path, out: Path) -> int:
     except (OSError, ValueError, SpecError) as error:
         print(f"bluefire-lab range: {error}")
         return EXIT_REFUSED
-    for name, entry in fetched.items():
+    for rule_set in spec.rule_sets:
+        name = rule_set.name
+        entry = fetched[name]
         print(
-            f"{Path(out) / entry['folder']}: {entry['files']} rule files of {name}, {entry['repo']} at {entry['commit']}"
+            f"{Path(out) / entry['folder']}: {entry['files']} rule files of {name}, "
+            f"{rulesets.source(rule_set)}"
         )
     return EXIT_OK
 
