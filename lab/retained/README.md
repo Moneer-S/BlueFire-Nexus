@@ -30,19 +30,24 @@ root the workflow uploads.
 
 The exporter recomputes the packet file closure, classic-PCAP facts, digests,
 ready tokens and tcpdump counters, refuses any kernel drop, and limits the
-PCAP identity bytes to 8 MiB. It selects the two complete live Wazuh JSON
-streams, the manager startup record, every file of every completed path step,
-every declared PCAP and its counter record, plus only the manifest context
-needed to score and record them later. Raw bytes are streamed unchanged. The
-known `.log` inputs are stored as `.txt` and mapped back to their canonical
-names; this is a name change only. Generated ECS, scores, recordings, replay
-pages, rule-engine work and Docker event documents are not retained.
+PCAP identity bytes to 8 MiB and the whole candidate to 16 MiB. It selects the two live Wazuh JSON streams only
+after their bytes exactly match the chronological, decompressed daily files
+collected from the manager. It also selects the manager startup record, every
+file of every completed path step, every declared PCAP and its counter record,
+plus only the manifest context needed to score and record them later. Raw bytes
+are streamed unchanged. The known `.log` inputs are stored as `.txt` and mapped
+back to their canonical names; this is a name change only. Generated ECS,
+scores, recordings, replay pages, rule-engine work and Docker event documents
+are not retained.
 
 Every selected source and tracked input must be a regular single-link file.
 The exporter hashes it before use, verifies size and hash while streaming the
 copy, verifies the copy, and rechecks all sources before publication. It writes
 a private sibling candidate, runs the actual retained-run verifier over its
-exact closure, then atomically publishes a new output folder. It never
+exact closure, then atomically publishes a new output folder without replacing
+any final path that appeared in the meantime. This final-name guarantee assumes
+the GitHub workflow keeps its private `$RUNNER_TEMP/retained-artifact` parent
+stable while the command runs. The exporter never
 truncates, redacts, encodes or synthesizes telemetry. The unchanged repository
 privacy and secret scans remain the final publication gate.
 

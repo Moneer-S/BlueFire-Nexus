@@ -8,6 +8,9 @@ until :mod:`bluefire_lab.range.retained` accepts the complete candidate.
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import gzip
 import hashlib
 import ipaddress
 import json
@@ -21,14 +24,17 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from . import retained
+from . import path as range_path
+from . import retained, wazuh
 from .path import iso
 from .spec import Spec, SpecError, load
 
 MAX_PCAP_BYTES = 8 * 1024 * 1024
+MAX_RETAINED_BYTES = 16 * 1024 * 1024
 CAPTURE_DIR = PurePosixPath("var/log/bluefire/packets")
 CAPTURE_PATH = "/" + CAPTURE_DIR.as_posix()
 COUNTER_NAMES = ("captured", "received by filter", "dropped by kernel")
@@ -48,6 +54,8 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 PLAIN = re.compile(r"[^\x00-\x1f\x7f]+\Z")
 INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 RULES_LOADED = re.compile(r"Total rules enabled: '([0-9]+)'")
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
 
 
 class RetainError(ValueError):
@@ -67,9 +75,196 @@ class HostedContext:
     runner_temp: Path
 
 
+class SourceRoot:
+    """One run directory held by identity while every selected path is read."""
+
+    def __init__(self, parent: Path, relative: PurePosixPath):
+        self.original = parent.joinpath(*relative.parts)
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = None
+        try:
+            descriptor = os.open(parent, flags)
+            opened = os.fstat(descriptor)
+            named = parent.lstat()
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or stat.S_ISLNK(named.st_mode)
+                or _signature(opened) != _signature(named)
+            ):
+                raise RetainError("RUNNER_TEMP changed while RUN was being anchored")
+            for part in relative.parts:
+                child = None
+                try:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                    opened = os.fstat(child)
+                    named = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+                    if (
+                        not stat.S_ISDIR(opened.st_mode)
+                        or stat.S_ISLNK(named.st_mode)
+                        or _signature(opened) != _signature(named)
+                    ):
+                        raise RetainError(
+                            "RUN changed or gained a linked component while it was being anchored"
+                        )
+                except Exception:
+                    if child is not None:
+                        os.close(child)
+                    raise
+                os.close(descriptor)
+                descriptor = child
+        except OSError as error:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise RetainError(f"RUN cannot be anchored safely: {error}") from error
+        except Exception:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise
+        self.descriptor = descriptor
+        self.signature = _signature(opened)
+
+    def check(self) -> None:
+        try:
+            opened = os.fstat(self.descriptor)
+            named = self.original.lstat()
+        except OSError as error:
+            raise RetainError(f"RUN changed while the export was being prepared: {error}") from error
+        if (
+            _signature(opened) != self.signature
+            or stat.S_ISLNK(named.st_mode)
+            or _signature(named) != self.signature
+        ):
+            raise RetainError("RUN changed while the export was being prepared")
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+    def open_dir(self, relative: PurePosixPath, what: str) -> int:
+        descriptor = os.dup(self.descriptor)
+        try:
+            for part in relative.parts:
+                flags = (
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                )
+                child = os.open(part, flags, dir_fd=descriptor)
+                opened = os.fstat(child)
+                named = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or stat.S_ISLNK(named.st_mode)
+                    or _signature(opened) != _signature(named)
+                ):
+                    os.close(child)
+                    raise RetainError(f"{what} has a directory component that changed or is a link")
+                os.close(descriptor)
+                descriptor = child
+            return descriptor
+        except OSError as error:
+            os.close(descriptor)
+            raise RetainError(f"{what} cannot be traversed safely: {error}") from error
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    def open_file(self, relative: PurePosixPath, what: str) -> tuple[int, int, str]:
+        if not relative.parts:
+            raise RetainError(f"{what} has no file name")
+        parent_relative = PurePosixPath(*relative.parts[:-1])
+        parent = self.open_dir(parent_relative, what)
+        leaf = relative.name
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = None
+        try:
+            descriptor = os.open(leaf, flags, dir_fd=parent)
+            opened = os.fstat(descriptor)
+            named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        except OSError as error:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(parent)
+            raise RetainError(f"{what} cannot be opened safely: {error}") from error
+        if _signature(opened) != _signature(named):
+            os.close(descriptor)
+            os.close(parent)
+            raise RetainError(f"{what} changed while it was opened")
+        return descriptor, parent, leaf
+
+    def list_dir(self, relative: PurePosixPath, what: str) -> list[tuple[str, os.stat_result]]:
+        descriptor = self.open_dir(relative, what)
+        try:
+            with os.scandir(descriptor) as entries:
+                return sorted(
+                    ((entry.name, entry.stat(follow_symlinks=False)) for entry in entries),
+                    key=lambda item: item[0],
+                )
+        except OSError as error:
+            raise RetainError(f"{what} cannot be listed safely: {error}") from error
+        finally:
+            os.close(descriptor)
+
+    def walk_files(self, relative: PurePosixPath, what: str) -> list[RunPath]:
+        found: list[RunPath] = []
+        root = self.open_dir(relative, what)
+
+        def visit(descriptor: int, folder: PurePosixPath) -> None:
+            try:
+                with os.scandir(descriptor) as entries:
+                    listed = sorted(
+                        ((entry.name, entry.stat(follow_symlinks=False)) for entry in entries),
+                        key=lambda item: item[0],
+                    )
+                for name, status in listed:
+                    child_relative = folder / name
+                    if stat.S_ISLNK(status.st_mode):
+                        raise RetainError(f"{what}/{child_relative.relative_to(relative)} is a link")
+                    if stat.S_ISDIR(status.st_mode):
+                        flags = (
+                            os.O_RDONLY
+                            | os.O_DIRECTORY
+                            | getattr(os, "O_CLOEXEC", 0)
+                            | getattr(os, "O_NOFOLLOW", 0)
+                        )
+                        child = None
+                        try:
+                            child = os.open(name, flags, dir_fd=descriptor)
+                            opened = os.fstat(child)
+                            named = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                            if _signature(opened) != _signature(named):
+                                raise RetainError(f"{what} changed while it was traversed")
+                            visit(child, child_relative)
+                        finally:
+                            if child is not None:
+                                os.close(child)
+                        continue
+                    if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+                        raise RetainError(
+                            f"{what}/{child_relative.relative_to(relative)} is not a single-link regular file"
+                        )
+                    found.append(RunPath(self, child_relative))
+            except OSError as error:
+                raise RetainError(f"{what} cannot be traversed safely: {error}") from error
+
+        try:
+            visit(root, relative)
+        finally:
+            os.close(root)
+        return found
+
+
+@dataclass(frozen=True)
+class RunPath:
+    source: SourceRoot
+    relative: PurePosixPath
+
+    @property
+    def display(self) -> Path:
+        return self.source.original.joinpath(*self.relative.parts)
+
+
 @dataclass(frozen=True)
 class Snapshot:
     path: Path
+    locator: Path | RunPath
     what: str
     signature: tuple[int, ...]
     bytes: int
@@ -179,12 +374,34 @@ def _check_ancestors(root: Path, path: Path, what: str) -> None:
             raise RetainError(f"{what} has a parent that is not a real directory")
 
 
-def _capture(path: Path, what: str, *, content: bool = False) -> tuple[Snapshot, bytes | None]:
+def _display(locator: Path | RunPath) -> Path:
+    return locator.display if isinstance(locator, RunPath) else locator
+
+
+def _open_locator(locator: Path | RunPath, what: str) -> tuple[int, int | None, str | None]:
+    if isinstance(locator, RunPath):
+        return locator.source.open_file(locator.relative, what)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, flags)
+        return os.open(locator, flags), None, None
     except OSError as error:
         raise RetainError(f"{what} cannot be opened safely: {error}") from error
+
+
+def _named_status(locator: Path | RunPath, parent: int | None, leaf: str | None) -> os.stat_result:
+    if isinstance(locator, RunPath):
+        return os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+    return locator.lstat()
+
+
+def _close_locator(descriptor: int, parent: int | None) -> None:
+    os.close(descriptor)
+    if parent is not None:
+        os.close(parent)
+
+
+def _capture(locator: Path | RunPath, what: str, *, content: bool = False) -> tuple[Snapshot, bytes | None]:
+    descriptor, parent, leaf = _open_locator(locator, what)
     digest = hashlib.sha256()
     pieces = [] if content else None
     count = 0
@@ -194,6 +411,8 @@ def _capture(path: Path, what: str, *, content: bool = False) -> tuple[Snapshot,
             raise RetainError(f"{what} is not a regular file")
         if before.st_nlink != 1:
             raise RetainError(f"{what} must have exactly one hard link")
+        if before.st_size > MAX_RETAINED_BYTES:
+            raise RetainError(f"{what} is larger than the {MAX_RETAINED_BYTES}-byte retained limit")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             while block := stream.read(1024 * 1024):
                 digest.update(block)
@@ -201,27 +420,29 @@ def _capture(path: Path, what: str, *, content: bool = False) -> tuple[Snapshot,
                 if pieces is not None:
                     pieces.append(block)
         after = os.fstat(descriptor)
+        try:
+            named = _named_status(locator, parent, leaf)
+        except OSError as error:
+            raise RetainError(f"{what} disappeared while it was read: {error}") from error
     finally:
-        os.close(descriptor)
-    try:
-        named = path.lstat()
-    except OSError as error:
-        raise RetainError(f"{what} disappeared while it was read: {error}") from error
-    if _signature(before) != _signature(after) or _signature(after) != _signature(named):
+        _close_locator(descriptor, parent)
+    changed = _signature(before) != _signature(after) or _signature(after) != _signature(named)
+    if changed:
         raise RetainError(f"{what} changed while it was read")
     if count != before.st_size:
         raise RetainError(f"{what} changed length while it was read")
-    snapshot = Snapshot(path, what, _signature(before), count, digest.hexdigest())
+    snapshot = Snapshot(_display(locator), locator, what, _signature(before), count, digest.hexdigest())
     return snapshot, b"".join(pieces) if pieces is not None else None
 
 
 def _remember(
-    snapshots: dict[Path, Snapshot], path: Path, what: str, *, content: bool = False
+    snapshots: dict[Path, Snapshot], locator: Path | RunPath, what: str, *, content: bool = False
 ) -> tuple[Snapshot, bytes | None]:
+    path = _display(locator)
     existing = snapshots.get(path)
     if existing is not None and not content:
         return existing, None
-    snapshot, data = _capture(path, what, content=content)
+    snapshot, data = _capture(locator, what, content=content)
     if existing is not None and snapshot != existing:
         raise RetainError(f"{what} changed while the export was being prepared")
     snapshots[path] = snapshot
@@ -229,14 +450,34 @@ def _remember(
 
 
 def _recheck(snapshot: Snapshot) -> None:
-    found, _ = _capture(snapshot.path, snapshot.what)
+    found, _ = _capture(snapshot.locator, snapshot.what)
     if found.signature != snapshot.signature or found.sha256 != snapshot.sha256:
         raise RetainError(f"{snapshot.what} changed while the export was being written")
 
 
-def _source_path(root: Path, relative: PurePosixPath, what: str) -> Path:
-    path = root.joinpath(*relative.parts)
-    _check_ancestors(root, path, what)
+@contextmanager
+def _snapshot_stream(snapshot: Snapshot):
+    descriptor, parent, leaf = _open_locator(snapshot.locator, snapshot.what)
+    try:
+        before = os.fstat(descriptor)
+        if _signature(before) != snapshot.signature:
+            raise RetainError(f"{snapshot.what} changed before it was read again")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            yield stream
+        after = os.fstat(descriptor)
+        named = _named_status(snapshot.locator, parent, leaf)
+        if _signature(after) != snapshot.signature or _signature(named) != snapshot.signature:
+            raise RetainError(f"{snapshot.what} changed while it was read again")
+    finally:
+        _close_locator(descriptor, parent)
+
+
+def _source_path(root: SourceRoot, relative: PurePosixPath, what: str) -> RunPath:
+    root.check()
+    path = RunPath(root, relative)
+    descriptor, parent, _ = root.open_file(relative, what)
+    _close_locator(descriptor, parent)
+    root.check()
     return path
 
 
@@ -244,7 +485,7 @@ def _git(workspace: Path, *arguments: str) -> bytes:
     environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     try:
         return subprocess.run(
-            ["git", "-C", str(workspace), *arguments],
+            ["git", "--no-replace-objects", "-C", str(workspace), *arguments],
             check=True,
             capture_output=True,
             env=environment,
@@ -345,14 +586,15 @@ def _tracked(
     return spec, snapshot, relative
 
 
-def _source_run(context: HostedContext, run: Path) -> Path:
-    run = _regular_directory(Path(run), "RUN")
+def _source_run(context: HostedContext, run: Path) -> SourceRoot:
+    run = Path(os.path.abspath(run))
     if not run.is_relative_to(context.runner_temp):
         raise RetainError("RUN must be below RUNNER_TEMP on this hosted job")
     artifact_root = context.runner_temp / "retained-artifact"
     if run == artifact_root or run.is_relative_to(artifact_root):
         raise RetainError("RUN must be separate from the retained artifact root")
-    return run
+    relative = run.relative_to(context.runner_temp)
+    return SourceRoot(context.runner_temp, PurePosixPath(*relative.parts))
 
 
 def _output(context: HostedContext, run: Path, out: Path) -> tuple[Path, PurePosixPath]:
@@ -388,7 +630,7 @@ def _output(context: HostedContext, run: Path, out: Path) -> tuple[Path, PurePos
 
 def _manifest(
     context: HostedContext,
-    run: Path,
+    run: SourceRoot,
     spec: Spec,
     spec_snapshot: Snapshot,
     snapshots: dict[Path, Snapshot],
@@ -515,7 +757,7 @@ def _defense(manifest: dict, spec: Spec) -> dict:
     }
 
 
-def _docker_clock(run: Path, snapshots: dict[Path, Snapshot]) -> dict:
+def _docker_clock(run: SourceRoot, snapshots: dict[Path, Snapshot]) -> dict:
     path = _source_path(run, PurePosixPath("docker-events.ndjson"), "the Docker event stream")
     _, data = _remember(snapshots, path, "the Docker event stream", content=True)
     times = []
@@ -540,21 +782,21 @@ def _docker_clock(run: Path, snapshots: dict[Path, Snapshot]) -> dict:
     }
 
 
-def _pcap(path: Path) -> dict:
-    with path.open("rb") as source:
+def _pcap(snapshot: Snapshot) -> dict:
+    with _snapshot_stream(snapshot) as source:
         header = source.read(24)
         if len(header) != 24:
-            raise RetainError(f"{path.name}: the PCAP global header is truncated")
+            raise RetainError(f"{snapshot.path.name}: the PCAP global header is truncated")
         order = PCAP_MAGIC.get(header[:4])
         if order is None:
-            raise RetainError(f"{path.name}: the file is not classic PCAP")
+            raise RetainError(f"{snapshot.path.name}: the file is not classic PCAP")
         endian, resolution = order
         try:
             major, minor, _zone, _accuracy, snaplen, link_type = struct.unpack(endian + "HHIIII", header[4:])
         except struct.error as error:
-            raise RetainError(f"{path.name}: the PCAP global header cannot be read") from error
+            raise RetainError(f"{snapshot.path.name}: the PCAP global header cannot be read") from error
         if (major, minor) != (2, 4) or snaplen <= 0:
-            raise RetainError(f"{path.name}: the PCAP header is not supported")
+            raise RetainError(f"{snapshot.path.name}: the PCAP header is not supported")
         packets = captured = wire = 0
         whole = True
         while True:
@@ -562,19 +804,21 @@ def _pcap(path: Path) -> dict:
             if not record:
                 break
             if len(record) != 16:
-                raise RetainError(f"{path.name}: packet {packets + 1}'s header is truncated")
+                raise RetainError(f"{snapshot.path.name}: packet {packets + 1}'s header is truncated")
             try:
                 _seconds, fraction, included, original = struct.unpack(endian + "IIII", record)
             except struct.error as error:
-                raise RetainError(f"{path.name}: packet {packets + 1}'s header cannot be read") from error
+                raise RetainError(
+                    f"{snapshot.path.name}: packet {packets + 1}'s header cannot be read"
+                ) from error
             limit = 1_000_000_000 if resolution == "nanoseconds" else 1_000_000
             if fraction >= limit or included > snaplen or included > original:
-                raise RetainError(f"{path.name}: packet {packets + 1}'s header is invalid")
+                raise RetainError(f"{snapshot.path.name}: packet {packets + 1}'s header is invalid")
             remaining = included
             while remaining:
                 block = source.read(min(remaining, 1024 * 1024))
                 if not block:
-                    raise RetainError(f"{path.name}: packet {packets + 1}'s bytes are truncated")
+                    raise RetainError(f"{snapshot.path.name}: packet {packets + 1}'s bytes are truncated")
                 remaining -= len(block)
             packets += 1
             captured += included
@@ -582,7 +826,7 @@ def _pcap(path: Path) -> dict:
             whole = whole and included == original
     compressor = lzma.LZMACompressor(format=lzma.FORMAT_XZ, preset=9)
     compressed = 0
-    with path.open("rb") as source:
+    with _snapshot_stream(snapshot) as source:
         while block := source.read(1024 * 1024):
             compressed += len(compressor.compress(block))
     compressed += len(compressor.flush())
@@ -598,21 +842,22 @@ def _pcap(path: Path) -> dict:
     }
 
 
-def _counter(path: Path) -> dict[str, int]:
+def _counter(snapshot: Snapshot) -> dict[str, int]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace").rstrip("\r\n")
+        with _snapshot_stream(snapshot) as source:
+            text = source.read().decode("utf-8", errors="replace").rstrip("\r\n")
     except OSError as error:
-        raise RetainError(f"{path.name}: tcpdump's counters cannot be read: {error}") from error
+        raise RetainError(f"{snapshot.path.name}: tcpdump's counters cannot be read: {error}") from error
     blocks = list(COUNTER_BLOCK.finditer(text))
     if not blocks or blocks[-1].end() != len(text):
-        raise RetainError(f"{path.name}: tcpdump's log does not end with a complete counter block")
+        raise RetainError(f"{snapshot.path.name}: tcpdump's log does not end with a complete counter block")
     return {name: int(value) for name, value in zip(COUNTER_NAMES, blocks[-1].groups(), strict=True)}
 
 
-def _contains(path: Path, token: str) -> bool:
+def _contains(snapshot: Snapshot, token: str) -> bool:
     wanted = token.encode()
     overlap = b""
-    with path.open("rb") as source:
+    with _snapshot_stream(snapshot) as source:
         while block := source.read(1024 * 1024):
             combined = overlap + block
             if wanted in combined:
@@ -622,7 +867,7 @@ def _contains(path: Path, token: str) -> bool:
 
 
 def _packet_files(
-    run: Path,
+    run: SourceRoot,
     manifest: dict,
     spec: Spec,
     containers: dict,
@@ -700,15 +945,11 @@ def _packet_files(
             raise RetainError(f"packet capture on {host} does not exactly match its ready interfaces")
 
         folder_relative = PurePosixPath("raw/hosts") / host / CAPTURE_DIR
-        folder = _source_path(run, folder_relative / "placeholder", f"the packet folder on {host}").parent
-        if not folder.is_dir() or folder.is_symlink():
-            raise RetainError(f"the packet folder on {host} is not a real directory")
         actual_names = set()
-        for child in folder.iterdir():
-            status = child.lstat()
+        for name, status in run.list_dir(folder_relative, f"the packet folder on {host}"):
             if not stat.S_ISREG(status.st_mode) or stat.S_ISLNK(status.st_mode) or status.st_nlink != 1:
                 raise RetainError(f"the packet folder on {host} contains a non-regular or linked entry")
-            actual_names.add(child.name)
+            actual_names.add(name)
         expected_folder_names = expected_names | {f"{interface}.log" for interface in expected_interfaces}
         if actual_names != expected_folder_names:
             raise RetainError(f"the packet folder on {host} has a missing or undeclared file")
@@ -723,7 +964,7 @@ def _packet_files(
                 raise RetainError(f"packet_capture.hosts.{host}.files.{name}.file is not canonical")
             pcap_path = _source_path(run, run_path, f"packet capture {host}/{name}")
             pcap_snapshot, _ = _remember(snapshots, pcap_path, f"packet capture {host}/{name}")
-            facts = _pcap(pcap_path)
+            facts = _pcap(pcap_snapshot)
             facts.update({"bytes": pcap_snapshot.bytes, "sha256": pcap_snapshot.sha256})
             for key, value in facts.items():
                 if record.get(key) != value:
@@ -733,12 +974,12 @@ def _packet_files(
                     f"packet capture {host}/{name} is empty or truncated by its snapshot length"
                 )
             for mark in marks_by_interface[interface]:
-                if not _contains(pcap_path, mark["token"]):
+                if not _contains(pcap_snapshot, mark["token"]):
                     raise RetainError(f"packet capture {host}/{name} does not contain its ready token")
             counter_run = run_path.with_suffix(".log")
             counter_path = _source_path(run, counter_run, f"tcpdump counters {host}/{interface}")
             counter_snapshot, _ = _remember(snapshots, counter_path, f"tcpdump counters {host}/{interface}")
-            counts = _counter(counter_path)
+            counts = _counter(counter_snapshot)
             if record.get("tcpdump") != counts:
                 raise RetainError(f"packet capture {host}/{name} has other counters than its manifest")
             if (
@@ -764,7 +1005,7 @@ def _packet_files(
     return capture, planned
 
 
-def _wazuh_files(run: Path, spec: Spec, snapshots: dict[Path, Snapshot]) -> list[PlannedFile]:
+def _wazuh_files(run: SourceRoot, spec: Spec, snapshots: dict[Path, Snapshot]) -> list[PlannedFile]:
     manager = spec.manager
     assert manager is not None
     mappings = (
@@ -802,61 +1043,129 @@ def _wazuh_files(run: Path, spec: Spec, snapshots: dict[Path, Snapshot]) -> list
             for number, line in enumerate(data.splitlines(), start=1):
                 if line:
                     _json_bytes(line, f"{role} line {number}")
+            kind = run_path.parent.name
+            _same_as_collected(run, manager, kind, data, snapshots)
             stored = PurePosixPath("files") / run_path
         planned.append(PlannedFile(stored, run_path, role, source=snapshot))
     return planned
 
 
-def _step_files(run: Path, manifest: dict, spec: Spec, snapshots: dict[Path, Snapshot]) -> list[PlannedFile]:
+def _same_as_collected(
+    run: SourceRoot,
+    manager: str,
+    kind: str,
+    live: bytes,
+    snapshots: dict[Path, Snapshot],
+) -> None:
+    relative = PurePosixPath("raw/hosts") / manager / "var/ossec/logs" / kind
+    actual = run.walk_files(relative, f"the collected Wazuh {kind} folder")
+    ordered = []
+    seen_days = set()
+    expected_prefix = "ossec-archive-" if kind == "archives" else "ossec-alerts-"
+    for path in actual:
+        parts = path.relative.relative_to(relative).parts
+        if len(parts) != 3:
+            raise RetainError(
+                f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files"
+            )
+        year, month, filename = parts
+        match = wazuh.DAILY.fullmatch(filename)
+        if (
+            not year.isascii()
+            or not year.isdecimal()
+            or month not in wazuh.MONTHS
+            or match is None
+            or not filename.startswith(expected_prefix)
+            or not filename.endswith(".json.gz")
+        ):
+            raise RetainError(
+                f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files"
+            )
+        day = (int(year), wazuh.MONTHS.index(month), int(match.group(1)))
+        if day in seen_days:
+            raise RetainError(f"the collected Wazuh {kind} folder repeats one daily JSON gzip file")
+        seen_days.add(day)
+        ordered.append((day, path))
+    if not ordered:
+        raise RetainError(f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files")
+
+    digest = hashlib.sha256()
+    count = 0
+    for _day, path in sorted(ordered, key=lambda item: item[0]):
+        relative_path = path.relative.as_posix()
+        snapshot, _ = _remember(snapshots, path, f"collected Wazuh file {relative_path}")
+        try:
+            with _snapshot_stream(snapshot) as compressed:
+                with gzip.GzipFile(fileobj=compressed, mode="rb") as source:
+                    while block := source.read(1024 * 1024):
+                        digest.update(block)
+                        count += len(block)
+        except (OSError, EOFError, gzip.BadGzipFile) as error:
+            raise RetainError(
+                f"collected Wazuh file {relative_path} cannot be decompressed: {error}"
+            ) from error
+    if count != len(live) or digest.hexdigest() != hashlib.sha256(live).hexdigest():
+        raise RetainError(f"the live Wazuh {kind} stream differs from the collected daily logs")
+
+
+def _step_files(
+    run: SourceRoot, manifest: dict, spec: Spec, snapshots: dict[Path, Snapshot]
+) -> list[PlannedFile]:
     path_record = manifest.get("path")
     if not isinstance(path_record, dict):
         raise RetainError("the source manifest has no completed path record")
+    section = range_path.section(spec)
+    spec_steps = section.get("steps") if isinstance(section, dict) else None
+    if not isinstance(spec_steps, list) or len(spec_steps) != len(spec.steps):
+        raise RetainError("the tracked spec has no complete path identity")
+    expected = []
+    for number, entry in enumerate(spec_steps, start=1):
+        if not isinstance(entry, dict):
+            raise RetainError(f"step {number} of the tracked spec has no identity")
+        step_id = entry.get("id")
+        host = entry.get("host")
+        technique = entry.get("technique")
+        if (
+            not isinstance(step_id, str)
+            or len(_relative(step_id, f"tracked spec step {number} id").parts) != 1
+            or not range_path.STEP_ID.fullmatch(step_id)
+            or not isinstance(host, str)
+            or not isinstance(technique, str)
+            or (technique, host) != spec.steps[number - 1]
+        ):
+            raise RetainError(f"step {number} of the tracked spec has no valid id, host and technique")
+        expected.append((step_id, host, technique))
     planned_ids = path_record.get("planned")
     steps = path_record.get("steps")
     if (
         not isinstance(planned_ids, list)
-        or not planned_ids
-        or len(planned_ids) != len(spec.steps)
-        or len(set(planned_ids)) != len(planned_ids)
-        or not all(isinstance(value, str) and value for value in planned_ids)
+        or planned_ids != [step_id for step_id, _, _ in expected]
         or not isinstance(steps, list)
-        or [entry.get("id") if isinstance(entry, dict) else None for entry in steps] != planned_ids
+        or [
+            (entry.get("id"), entry.get("host"), entry.get("technique")) if isinstance(entry, dict) else None
+            for entry in steps
+        ]
+        != expected
         or path_record.get("stopped") is not None
         or path_record.get("skipped") is not None
     ):
-        raise RetainError("the source manifest's path did not complete every tracked step in order")
-    for step_id in planned_ids:
-        step_path = _relative(step_id, "a completed path step id")
-        if len(step_path.parts) != 1:
-            raise RetainError("a completed path step id must be one file-name component")
-    root = _source_path(run, PurePosixPath("raw/steps/placeholder"), "the raw step folder").parent
-    if not root.is_dir() or root.is_symlink():
-        raise RetainError("the raw step folder is not a real directory")
+        raise RetainError("the source manifest's path does not match every tracked step in order")
     actual_dirs = set()
-    for child in root.iterdir():
-        status = child.lstat()
+    for name, status in run.list_dir(PurePosixPath("raw/steps"), "the raw step folder"):
         if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
             raise RetainError("the raw step folder contains an entry that is not a real directory")
-        actual_dirs.add(child.name)
+        actual_dirs.add(name)
     if actual_dirs != set(planned_ids):
         raise RetainError("the raw step folders do not exactly match the completed path")
     planned = []
     required = {"command", "prereq.txt", "stdout", "stderr", "check.txt"}
     for step_id in planned_ids:
         relative_root = PurePosixPath("raw/steps") / step_id
-        folder = _source_path(run, relative_root / "placeholder", f"raw step {step_id}").parent
         names = set()
-        for path in sorted(folder.rglob("*")):
-            status = path.lstat()
-            relative = path.relative_to(folder)
-            if stat.S_ISLNK(status.st_mode):
-                raise RetainError(f"raw step {step_id}/{relative} is a link")
-            if stat.S_ISDIR(status.st_mode):
-                continue
-            if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
-                raise RetainError(f"raw step {step_id}/{relative} is not a single-link regular file")
+        for path in run.walk_files(relative_root, f"raw step {step_id}"):
+            run_path = path.relative
+            relative = run_path.relative_to(relative_root)
             names.add(relative.as_posix())
-            run_path = relative_root / PurePosixPath(relative.as_posix())
             snapshot, _ = _remember(snapshots, path, f"raw step file {run_path}")
             planned.append(
                 PlannedFile(
@@ -870,7 +1179,7 @@ def _step_files(run: Path, manifest: dict, spec: Spec, snapshots: dict[Path, Sna
 
 def _project(
     context: HostedContext,
-    run: Path,
+    run: SourceRoot,
     spec: Spec,
     spec_snapshot: Snapshot,
     snapshots: dict[Path, Snapshot],
@@ -933,6 +1242,11 @@ def _validate_plan(planned: list[PlannedFile], prefix: PurePosixPath) -> list[Pl
     artifacts = [(prefix / entry.stored_path).as_posix() for entry in planned]
     if len(artifacts) != len(set(artifacts)):
         raise RetainError("the selected files collide in the hosted artifact")
+    total = sum(entry.bytes for entry in planned)
+    if total > MAX_RETAINED_BYTES:
+        raise RetainError(
+            f"the selected retained files total {total} bytes, above the {MAX_RETAINED_BYTES}-byte limit"
+        )
     return planned
 
 
@@ -951,17 +1265,14 @@ def _write_payload(destination: Path, payload: bytes, what: str) -> None:
 
 def _copy_snapshot(snapshot: Snapshot, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    read_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     write_flags = (
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
-    source_fd = None
+    source_fd, source_parent, source_leaf = _open_locator(snapshot.locator, snapshot.what)
     try:
-        source_fd = os.open(snapshot.path, read_flags)
         target_fd = os.open(destination, write_flags, 0o600)
     except OSError as error:
-        if source_fd is not None:
-            os.close(source_fd)
+        _close_locator(source_fd, source_parent)
         raise RetainError(f"cannot copy {snapshot.what}: {error}") from error
     digest = hashlib.sha256()
     count = 0
@@ -980,11 +1291,13 @@ def _copy_snapshot(snapshot: Snapshot, destination: Path) -> None:
             target.flush()
             os.fsync(target.fileno())
         after = os.fstat(source_fd)
+        named = _named_status(snapshot.locator, source_parent, source_leaf)
     finally:
-        os.close(source_fd)
+        _close_locator(source_fd, source_parent)
         os.close(target_fd)
     if (
         _signature(after) != snapshot.signature
+        or _signature(named) != snapshot.signature
         or count != snapshot.bytes
         or digest.hexdigest() != snapshot.sha256
     ):
@@ -1033,6 +1346,24 @@ def _provenance(
     }
 
 
+def _publish(work: Path, out: Path) -> None:
+    """Atomically move ``work`` to a name that must still be absent."""
+
+    library = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = library.renameat2
+    except AttributeError as error:
+        raise RetainError("this hosted runner cannot publish without replacing an existing path") from error
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(AT_FDCWD, os.fsencode(work), AT_FDCWD, os.fsencode(out), RENAME_NOREPLACE) == 0:
+        return
+    number = ctypes.get_errno()
+    if number == errno.EEXIST:
+        raise RetainError(f"{out} appeared while the retained candidate was being written")
+    raise RetainError(f"cannot publish {out} without replacement: {os.strerror(number)}")
+
+
 def export(
     run: Path,
     spec_path: Path,
@@ -1044,32 +1375,41 @@ def export(
     context = _hosted(os.environ if environ is None else environ)
     snapshots: dict[Path, Snapshot] = {}
     spec, spec_snapshot, _ = _tracked(context, spec_path, snapshots)
-    run = _source_run(context, run)
-    out, prefix = _output(context, run, out)
-    projected, planned = _project(context, run, spec, spec_snapshot, snapshots)
-    planned = _validate_plan(planned, prefix)
-    provenance = _provenance(context, spec, projected, prefix, planned)
-
-    work = Path(tempfile.mkdtemp(prefix=f".{out.name}.partial-", dir=out.parent))
-    published = False
+    source = _source_run(context, run)
     try:
-        for entry in planned:
-            destination = work.joinpath(*entry.stored_path.parts)
-            if entry.payload is not None:
-                _write_payload(destination, entry.payload, entry.role)
-            else:
-                _copy_snapshot(entry.source, destination)
-        _write_payload(work / retained.PROVENANCE, _json_data(provenance), retained.PROVENANCE)
-        retained.verify_retained(work)
-        for snapshot in snapshots.values():
-            _recheck(snapshot)
-        if os.path.lexists(out):
-            raise RetainError(f"{out} appeared while the retained candidate was being written")
-        os.rename(work, out)
-        published = True
+        out, prefix = _output(context, source.original, out)
+        projected, planned = _project(context, source, spec, spec_snapshot, snapshots)
+        source.check()
+        planned = _validate_plan(planned, prefix)
+        provenance = _provenance(context, spec, projected, prefix, planned)
+        provenance_bytes = _json_data(provenance)
+        total = sum(entry.bytes for entry in planned) + len(provenance_bytes)
+        if total > MAX_RETAINED_BYTES:
+            raise RetainError(
+                f"the retained candidate totals {total} bytes, above the {MAX_RETAINED_BYTES}-byte limit"
+            )
+
+        work = Path(tempfile.mkdtemp(prefix=f".{out.name}.partial-", dir=out.parent))
+        published = False
+        try:
+            for entry in planned:
+                destination = work.joinpath(*entry.stored_path.parts)
+                if entry.payload is not None:
+                    _write_payload(destination, entry.payload, entry.role)
+                else:
+                    _copy_snapshot(entry.source, destination)
+            _write_payload(work / retained.PROVENANCE, provenance_bytes, retained.PROVENANCE)
+            retained.verify_retained(work)
+            for snapshot in snapshots.values():
+                _recheck(snapshot)
+            source.check()
+            _publish(work, out)
+            published = True
+        finally:
+            if not published:
+                shutil.rmtree(work, ignore_errors=True)
     finally:
-        if not published:
-            shutil.rmtree(work, ignore_errors=True)
+        source.close()
     return out, provenance
 
 

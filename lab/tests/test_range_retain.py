@@ -1,7 +1,9 @@
+import gzip
 import hashlib
 import ipaddress
 import json
 import lzma
+import shutil
 import struct
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -9,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from bluefire_lab.__main__ import main
+from bluefire_lab.range import path as range_path
 from bluefire_lab.range import retain, retained
 from bluefire_lab.range.spec import load
 
@@ -185,13 +188,17 @@ def source_run(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
     manager = spec.manager
     live = run / "live"
     live.mkdir()
-    (live / "archives.json").write_text('{"archive":"identity"}\n', encoding="utf-8")
-    (live / "alerts.json").write_text('{"alert":"identity"}\n', encoding="utf-8")
+    archive_bytes = b'{"archive":"identity"}\n'
+    alert_bytes = b'{"alert":"identity"}\n'
+    (live / "archives.json").write_bytes(archive_bytes)
+    (live / "alerts.json").write_bytes(alert_bytes)
+    write_collected(run, manager, "archives", archive_bytes)
+    write_collected(run, manager, "alerts", alert_bytes)
     startup = run / f"raw/hosts/{manager}/var/ossec/logs/ossec.log"
     startup.parent.mkdir(parents=True, exist_ok=True)
     startup.write_text("startup\nTotal rules enabled: '321'\n", encoding="utf-8")
 
-    step_ids = [f"s{number:02d}" for number in range(1, len(spec.steps) + 1)]
+    step_ids = [entry["id"] for entry in range_path.section(spec)["steps"]]
     for step_id in step_ids:
         folder = run / "raw/steps" / step_id
         folder.mkdir(parents=True)
@@ -244,7 +251,15 @@ def source_run(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "weaknesses": [],
         "path": {
             "planned": step_ids,
-            "steps": [{"id": step_id, "happened": "took effect"} for step_id in step_ids],
+            "steps": [
+                {
+                    "id": step_id,
+                    "host": host,
+                    "technique": technique,
+                    "happened": "took effect",
+                }
+                for step_id, (technique, host) in zip(step_ids, spec.steps, strict=True)
+            ],
             "goal": None,
             "stopped": None,
             "notes": [],
@@ -261,6 +276,14 @@ def source_run(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
     write_json(run / "manifest.json", manifest)
     out = Path(environment["RUNNER_TEMP"]) / "retained-artifact/lab/retained/packet-download"
     return environment, spec_path, run, out
+
+
+def write_collected(run: Path, manager: str, kind: str, data: bytes) -> None:
+    singular = "archive" if kind == "archives" else "alerts"
+    path = run / f"raw/hosts/{manager}/var/ossec/logs/{kind}/2026/Nov/ossec-{singular}-26.json.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wb") as stream:
+        stream.write(data)
 
 
 def manifest(run: Path) -> dict:
@@ -369,6 +392,44 @@ def test_refuses_a_spec_that_differs_from_the_tracked_commit(tmp_path):
     assert not out.exists()
 
 
+def test_git_replacement_refs_cannot_substitute_the_declared_head_spec(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    workspace = Path(environment["GITHUB_WORKSPACE"])
+    declared = environment["GITHUB_SHA"]
+    spec_path.write_bytes(spec_path.read_bytes() + b"\n")
+    replacement = commit(workspace)
+    subprocess.run(["git", "-C", workspace, "replace", declared, replacement], check=True)
+    subprocess.run(
+        ["git", "--no-replace-objects", "-C", workspace, "checkout", "--detach", "-q", declared],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            workspace,
+            "checkout",
+            replacement,
+            "--",
+            spec_path.relative_to(workspace),
+        ],
+        check=True,
+    )
+    replacement_spec = load(spec_path)
+    record = manifest(run)
+    record["spec"] = {
+        "file": spec_path.name,
+        "sha256": replacement_spec.sha256,
+        "text": replacement_spec.text,
+    }
+    write_json(run / "manifest.json", record)
+
+    with pytest.raises(retain.RetainError, match="byte-for-byte"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
 @pytest.mark.parametrize(
     ("problem", "message"),
     [
@@ -405,6 +466,30 @@ def test_refuses_an_incomplete_or_inconsistent_sensor_closure(tmp_path, problem,
     assert not out.exists()
 
 
+@pytest.mark.parametrize("problem", ["renamed id", "order", "host", "technique"])
+def test_refuses_a_source_path_identity_that_differs_from_the_tracked_spec(tmp_path, problem):
+    environment, spec_path, run, out = source_run(tmp_path)
+    record = manifest(run)
+    first = record["path"]["steps"][0]
+    if problem == "renamed id":
+        old = first["id"]
+        first["id"] = "renamed"
+        record["path"]["planned"][0] = "renamed"
+        (run / "raw/steps" / old).rename(run / "raw/steps/renamed")
+    elif problem == "order":
+        record["path"]["planned"][:2] = reversed(record["path"]["planned"][:2])
+        record["path"]["steps"][:2] = reversed(record["path"]["steps"][:2])
+    elif problem == "host":
+        first["host"] = next(host for host in load(spec_path).hosts if host != first["host"])
+    else:
+        first["technique"] = "T9999"
+    write_json(run / "manifest.json", record)
+
+    with pytest.raises(retain.RetainError, match="does not match every tracked step"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("kind", ["symbolic", "hard"])
 def test_refuses_linked_raw_sources(tmp_path, kind):
     environment, spec_path, run, out = source_run(tmp_path)
@@ -432,6 +517,43 @@ def test_refuses_an_existing_or_outside_output(tmp_path):
         retain.export(run, spec_path, tmp_path / "elsewhere", environment)
 
 
+def test_atomic_publish_never_replaces_a_directory_created_in_the_gap(tmp_path, monkeypatch):
+    environment, spec_path, run, out = source_run(tmp_path)
+    publish = retain._publish
+
+    def race(work, destination):
+        destination.mkdir()
+        publish(work, destination)
+
+    monkeypatch.setattr(retain, "_publish", race)
+
+    with pytest.raises(retain.RetainError, match="appeared while"):
+        retain.export(run, spec_path, out, environment)
+    assert out.is_dir()
+    assert list(out.iterdir()) == []
+    assert list(out.parent.glob(".packet-download.partial-*")) == []
+
+
+def test_run_root_swap_cannot_redirect_sources_outside_runner_temp(tmp_path, monkeypatch):
+    environment, spec_path, run, out = source_run(tmp_path)
+    validate = retain._source_run
+    moved = Path(environment["RUNNER_TEMP"]) / "moved-original"
+    outside = tmp_path / "outside-copy"
+
+    def swap_after_validation(context, requested):
+        approved = validate(context, requested)
+        shutil.copytree(approved.original, outside)
+        approved.original.rename(moved)
+        approved.original.symlink_to(outside, target_is_directory=True)
+        return approved
+
+    monkeypatch.setattr(retain, "_source_run", swap_after_validation)
+
+    with pytest.raises(retain.RetainError, match="RUN cannot be anchored safely|RUN changed"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
 def test_same_size_source_edit_before_publish_removes_the_private_candidate(tmp_path, monkeypatch):
     environment, spec_path, run, out = source_run(tmp_path)
     original = retain._copy_snapshot
@@ -440,8 +562,9 @@ def test_same_size_source_edit_before_publish_removes_the_private_candidate(tmp_
     def copy_then_edit(snapshot, destination):
         nonlocal edited
         original(snapshot, destination)
-        if not edited and snapshot.path == run / "live/archives.json":
-            snapshot.path.write_bytes(snapshot.path.read_bytes().replace(b"identity", b"changed!"))
+        if not edited and snapshot.what == "complete raw Wazuh archive":
+            archive = run / "live/archives.json"
+            archive.write_bytes(archive.read_bytes().replace(b"identity", b"changed!"))
             edited = True
 
     monkeypatch.setattr(retain, "_copy_snapshot", copy_then_edit)
@@ -472,12 +595,21 @@ def test_calls_the_real_retained_verifier_before_atomic_publish(tmp_path, monkey
 
 def test_an_empty_but_complete_alert_stream_is_retained(tmp_path):
     environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
     (run / "live/alerts.json").write_bytes(b"")
+    write_collected(run, manager, "alerts", b"")
 
     retain.export(run, spec_path, out, environment)
-    assert (
-        out / f"files/raw/hosts/{load(spec_path).manager}/var/ossec/logs/alerts/alerts.json"
-    ).read_bytes() == b""
+    assert (out / f"files/raw/hosts/{manager}/var/ossec/logs/alerts/alerts.json").read_bytes() == b""
+
+
+def test_refuses_a_live_wazuh_stream_that_differs_from_the_collected_logs(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    (run / "live/alerts.json").write_bytes(b"")
+
+    with pytest.raises(retain.RetainError, match="live Wazuh alerts stream differs"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
 
 
 def test_refuses_packet_identity_bytes_above_the_fixed_limit(tmp_path, monkeypatch):
@@ -485,6 +617,17 @@ def test_refuses_packet_identity_bytes_above_the_fixed_limit(tmp_path, monkeypat
     monkeypatch.setattr(retain, "MAX_PCAP_BYTES", 1)
 
     with pytest.raises(retain.RetainError, match="above the 1-byte limit"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+def test_refuses_an_oversized_non_packet_source_before_buffering_or_publication(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    oversized = run / "raw/steps/s01/oversized.bin"
+    with oversized.open("wb") as stream:
+        stream.truncate(retain.MAX_RETAINED_BYTES + 1)
+
+    with pytest.raises(retain.RetainError, match="larger than the .* retained limit"):
         retain.export(run, spec_path, out, environment)
     assert not out.exists()
 
