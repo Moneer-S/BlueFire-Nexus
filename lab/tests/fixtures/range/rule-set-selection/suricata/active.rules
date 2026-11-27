@@ -1,0 +1,2 @@
+# Made up for a test.
+alert http any any -> any any (msg:"Made-up request"; flow:established,to_server; sid:9000001; rev:1;)

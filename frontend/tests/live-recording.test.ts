@@ -11,6 +11,14 @@ function valid() {
   });
 }
 
+function correlation(): Recording {
+  const value = valid();
+  Object.assign(value.events[0] ?? {}, { user: "lab" });
+  Object.assign(value.events[2] ?? {}, { user: "lab" });
+  Object.assign(value.alerts[0] ?? {}, { events: ["1-1", "2-2"] });
+  return value;
+}
+
 function copy(): Record<string, unknown> {
   return JSON.parse(JSON.stringify(valid())) as Record<string, unknown>;
 }
@@ -56,6 +64,43 @@ describe("reading a recording", () => {
     const value = valid();
     value.alerts.push(alert("a2", "1", 10.1, ["1-7"]));
     expect(() => readRecording(value)).toThrow('Alert "a2" names the event "1-7", which is not in the recording.');
+  });
+
+  it("keeps an after-run correlation's earlier-step evidence and terminal event", () => {
+    const read = readRecording(correlation());
+    expect(read.alerts[0]?.events).toEqual(["1-1", "2-2"]);
+    expect(read.alerts[0]?.step).toBe("2");
+  });
+
+  it.each([
+    [
+      "terminal step",
+      (value: Recording) => Object.assign(value.alerts[0] ?? {}, { events: ["2-2", "1-1"] }),
+      'Alert "a1" does not end with a terminal event of its step "2".',
+    ],
+    ["terminal time", (value: Recording) => Object.assign(value.alerts[0] ?? {}, { time: at(20.3) }), 'Alert "a1" has the time 2026-01-01T10:00:20.300Z, not the time of its terminal event.'],
+    [
+      "future evidence",
+      (value: Recording) => Object.assign(value.alerts[0] ?? {}, { events: ["1-1", "2-2", "2-1"], time: at(20.2) }),
+      'Alert "a1" names evidence after its terminal event.',
+    ],
+    [
+      "another observed user",
+      (value: Recording) => Object.assign(value.events[2] ?? {}, { user: "another-user" }),
+      'Alert "a1" names events of different observed users.',
+    ],
+    [
+      "a live cross-step match",
+      (value: Recording) => {
+        Object.assign(value.network.detectors[0] ?? {}, { when: "live" });
+        Object.assign(value.alerts[0] ?? {}, { raised: at(20.4) });
+      },
+      'Alert "a1" names an event of another step.',
+    ],
+  ] as const)("refuses correlation evidence without one real %s", (_case, change, message) => {
+    const value = correlation();
+    change(value);
+    expect(() => readRecording(value)).toThrow(message);
   });
 
   it("refuses two steps with the same id", () => {

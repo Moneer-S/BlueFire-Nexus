@@ -775,13 +775,31 @@ function agree(recording: Recording): void {
     if (ends.length > 0) lastWindow = { step, at: maximum(ends) };
   }
 
-  // An alert comes after the first event it names, at its moment, on the host of those events.
+  // An alert comes after the first event it names, at its moment, on the host of those events. An
+  // after-run correlation ends with its terminal event; earlier evidence may belong to earlier steps.
   const eventTime = new Map(events.map((event) => [event.id, timeOf(event.time)]));
   const eventHost = new Map(events.map((event) => [event.id, event.host]));
+  const eventStep = new Map(events.map((event) => [event.id, event.step]));
+  const eventUser = new Map(events.map((event) => [event.id, event.user]));
+  const detectorWhen = new Map(recording.network.detectors.map((detector) => [detector.id, detector.when]));
   for (const alert of alerts) {
     if (alert.events.length === 0) continue;
     if (alert.events.some((id) => eventHost.get(id) !== alert.host)) fail(`Alert ${JSON.stringify(alert.id)} is on the host ${JSON.stringify(alert.host)}, but an event it matched is on another host: an alert is on the host of its events.`);
-    const earliest = minimum(alert.events.map((id) => eventTime.get(id) ?? Number.POSITIVE_INFINITY));
+    const times = alert.events.map((id) => eventTime.get(id) ?? Number.POSITIVE_INFINITY);
+    const crossStep = alert.events.some((id) => eventStep.get(id) !== alert.step);
+    const correlation = detectorWhen.get(alert.detector) === "after the run" && crossStep;
+    if (correlation) {
+      const terminalId = alert.events[alert.events.length - 1] ?? "";
+      const terminal = eventTime.get(terminalId) ?? Number.POSITIVE_INFINITY;
+      if (eventStep.get(terminalId) !== alert.step) fail(`Alert ${JSON.stringify(alert.id)} does not end with a terminal event of its step ${JSON.stringify(alert.step)}.`);
+      if (timeOf(alert.time) !== terminal) fail(`Alert ${JSON.stringify(alert.id)} has the time ${alert.time}, not the time of its terminal event.`);
+      if (maximum(times) > terminal) fail(`Alert ${JSON.stringify(alert.id)} names evidence after its terminal event.`);
+      const users = new Set(alert.events.map((id) => eventUser.get(id)).filter((user): user is string => user !== undefined && user !== ""));
+      if (users.size > 1) fail(`Alert ${JSON.stringify(alert.id)} names events of different observed users.`);
+    } else if (crossStep) {
+      fail(`Alert ${JSON.stringify(alert.id)} names an event of another step.`);
+    }
+    const earliest = minimum(times);
     if (alertMoment(alert) < earliest) fail(`Alert ${JSON.stringify(alert.id)} is earlier than the earliest event it matched: its ${alert.raised === undefined ? "time" : "raised"}, ${alert.raised ?? alert.time}, comes before that event.`);
   }
 }

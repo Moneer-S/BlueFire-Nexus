@@ -1,0 +1,38 @@
+title: SSH Private Key Files Searched With Find
+name: bluefire_private_ssh_key_search
+id: 9b0f529b-98e9-4e73-93a3-55e2e9db0b19
+status: experimental
+description: >-
+  find was asked for files named like SSH private keys. The atomic rule is an
+  informational input to an ordered correlation rather than an alert alone.
+references:
+  - https://attack.mitre.org/techniques/T1552/004/
+author: BlueFire lab
+date: 2026-11-26
+tags:
+  - attack.credential-access
+  - attack.t1552.004
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_image:
+    Image|endswith: /find
+  selection_predicate:
+    CommandLine|contains:
+      - ' -name '
+      - ' -iname '
+      - ' -path '
+      - ' -ipath '
+      - ' -regex '
+      - ' -iregex '
+  selection_key:
+    CommandLine|contains:
+      - id_rsa
+      - id_dsa
+      - id_ecdsa
+      - id_ed25519
+  condition: all of selection_*
+falsepositives:
+  - An administrator taking stock of the SSH keys on a host
+level: informational

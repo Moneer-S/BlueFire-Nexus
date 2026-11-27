@@ -324,7 +324,7 @@ from that defense's sensors and `visibility.kept` is the exact count retained.
 | `rule` | object | `{ "id", "title", "level", "origin" }`. `level` is one of Sigma's levels: `informational`, `low`, `medium`, `high`, `critical`. `origin` is `pinned` for a published rule and `lab` for an accepted rule written in this repository. |
 | `counts` | boolean | True when the match counts as an alert: its level is high or critical. A lower level is a match for review. This holds for both origins: a counting match of a lab rule goes toward `outcome_with_lab_rules` and `first_alert_with_lab_rules` only, never toward `outcome` or `first_alert`. |
 | `step` | string | The id of the step the matched event belongs to. |
-| `events` | array of strings | The ids of the matched events. The alert's moment (its `raised` time where its detector ran live, else its `time`) is not earlier than the earliest of them; it can be earlier than a later one. |
+| `events` | array of strings | The ids of the matched events, in evidence order. Usually they belong to the alert's step. For a multi-event correlation whose detector ran after the run, earlier evidence may belong to earlier steps on the same host; the last id is its terminal event, belongs to the alert's step, and has the alert's `time`. No evidence is later than that terminal event, and observed users do not disagree. A live alert's moment (`raised`) is not earlier than the earliest event; it can be earlier than a later event of its own step. |
 | `launcher_only` | boolean | Optional. True when the rule matched only the one shell command that carried the whole test, not what the test did. Such a match never counts, and its `events` is empty: that command is the step's `command`, not one of its events. |
 
 A Suricata alert is an after-run alert: `time` is the matched packet event's
@@ -480,7 +480,11 @@ follows this format and its parts agree with each other:
   is `owner/name`.
 - Every id that a step, an event, an alert or a link names exists, and ids are
   unique. An event is on the host of its sensor. An alert's events belong to the
-  alert's step and are on the alert's host.
+  alert's step and are on the alert's host, except an after-run multi-event
+  correlation may name evidence from earlier steps on that host. Its last event
+  is the terminal one, belongs to the alert's step and has the alert's time;
+  every other event is no later, and events with observed users name the same
+  user.
 - An alert `counts` exactly when its rule's level is `high` or `critical` and it
   is not `launcher_only`; a `launcher_only` alert has no events, and one that
   counts has at least one. An alert of the detector `pinned` has the origin

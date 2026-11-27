@@ -1,0 +1,14 @@
+title: Made-up process start
+id: 00000000-0000-4000-8000-000000000001
+name: made_up_process_start
+status: test
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection:
+    Image|endswith: /made-up
+  condition: selection
+falsepositives:
+  - This rule is made up for a test.
+level: low

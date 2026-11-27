@@ -10,7 +10,9 @@ mapping can be checked against the line it came from.
 `labels.*` holds keyword values only: `labels.origin` and `labels.job`, and for
 a line tied to a step of the path `labels.step_id` and `labels.tied_by` (see
 `score`); `labels.event_id` on an alert names the `event.id` of its event in
-the archive; and `labels.time_source`, which says where `@timestamp` comes from:
+the archive; `labels.evidence_event_ids` on a multi-event match is a JSON list
+of every contributing archive event id, with that terminal `event_id` last;
+and `labels.time_source`, which says where `@timestamp` comes from:
 
 - `rsyslog`: the time rsyslog wrote on the line, in microseconds, which the
   manager decoded into `predecoder.timestamp`;
@@ -372,6 +374,31 @@ def _labels(document: dict, origin: str, job: str | None, time_source: str, **mo
     document["labels"] = labels
 
 
+def evidence_ids(document: dict) -> list[str]:
+    """The archive ids a match rests on, terminal id last; old one-event lines still work."""
+
+    labels = document.get("labels") or {}
+    terminal = labels.get("event_id")
+    encoded = labels.get("evidence_event_ids")
+    if encoded is None:
+        return [terminal] if isinstance(terminal, str) and terminal else []
+    try:
+        found = json.loads(encoded)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ConversionError("labels.evidence_event_ids is not a JSON list of archive event ids") from error
+    if (
+        not isinstance(found, list)
+        or not found
+        or any(not isinstance(value, str) or not value for value in found)
+        or len(set(found)) != len(found)
+        or found[-1] != terminal
+    ):
+        raise ConversionError(
+            "labels.evidence_event_ids must name distinct archive event ids with labels.event_id last"
+        )
+    return found
+
+
 def event(
     raw: dict,
     origin: str,
@@ -429,6 +456,7 @@ def match(
     step: str | None = None,
     tied_by: str | None = None,
     event_id: str | None = None,
+    evidence_event_ids: list[str] | None = None,
 ) -> dict:
     """A match of a rule that was evaluated after the run, as an ECS alert at the time of its event.
 
@@ -436,7 +464,8 @@ def match(
     `title`, `level`, `author` and `reference`. The line holds the event's own
     fields again, without `wazuh.*` and without a rule the manager matched on
     it; `labels.event_id` names the event, `labels.level` gives the rule's own
-    level, and there is no `event.created`: nothing raised this alert while the
+    level, a multi-event match keeps all contributors in
+    `labels.evidence_event_ids`, and there is no `event.created`: nothing raised this alert while the
     run lasted.
     """
 
@@ -454,6 +483,18 @@ def match(
     _put(document, "rule.ruleset", ruleset)
     _put(document, "rule.author", rule.get("author"))
     _put(document, "rule.reference", rule.get("reference"))
+    evidence = evidence_event_ids or ([event_id] if event_id else [])
+    if evidence and (
+        any(not isinstance(value, str) or not value for value in evidence)
+        or len(set(evidence)) != len(evidence)
+        or evidence[-1] != event_id
+    ):
+        raise ConversionError(
+            "a match's evidence must name distinct archive events with its terminal event last"
+        )
+    encoded_evidence = (
+        json.dumps(evidence, separators=(",", ":"), ensure_ascii=False) if len(evidence) > 1 else None
+    )
     _labels(
         document,
         origin,
@@ -462,6 +503,7 @@ def match(
         step_id=step,
         tied_by=tied_by,
         event_id=event_id,
+        evidence_event_ids=encoded_evidence,
         level=rule.get("level"),
     )
     return checked(document)

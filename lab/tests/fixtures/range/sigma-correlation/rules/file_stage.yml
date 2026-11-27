@@ -1,0 +1,12 @@
+title: Made Up - File Stage
+name: made_up_file_stage
+id: 10000000-0000-4000-8000-000000000006
+status: test
+author: The lab's tests
+logsource:
+    category: file_event
+detection:
+    selection:
+        TargetFilename: /tmp/made-up-second
+    condition: selection
+level: low

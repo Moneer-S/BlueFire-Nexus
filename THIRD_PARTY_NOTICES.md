@@ -402,10 +402,13 @@ those runs installed.
 
 Each `lab-run` artifact includes the SigmaHQ rules used and their license.
 
-The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following images, packages,
-rules and tools at the pins their spec files and workflow give, when a range is built or runs.
-None of them is copied into this repository. The nginx image runs unchanged; the others are the base of images the lab
-builds from a spec (`bluefire-lab range render`), which add the lab's configuration files.
+The ranges (`lab/range/`, `.github/workflows/range-one.yml`) pull the following
+images, packages, rules and tools at the pins their spec files and workflow give,
+when a range is built or runs. Except for the verbatim ET Open subset described
+above, none of them is copied into this repository. The nginx image runs unchanged; the
+others are external programs, fetched rule data, or the base of images the lab
+builds from a spec (`bluefire-lab range render`), which adds the lab configuration
+files.
 
 | Project | Pin | Licence | Use |
 |---|---|---|---|
@@ -416,6 +419,8 @@ builds from a spec (`bluefire-lab range render`), which add the lab's configurat
 | [Wazuh agent](https://github.com/wazuh/wazuh) | package `wazuh-agent_4.14.10-1_amd64.deb` from `packages.wazuh.com`, SHA-512 `5ee41846e81b2f5f5017bb0f968ac039443f09a400e5feb8121a4e52db6bb8d1c91683667b03a657a0236c858bd1f159026b493ace504ec8f92e491e6c8ae04d` | GPL-2.0 | The agent inside each watched host, with the lab's edits of its stock `ossec.conf` |
 | [snoopy](https://github.com/a2o/snoopy) | Ubuntu noble package `snoopy` `2.5.1-1`, from the snapshot above | GPL-2.0 | Writes the program starts on a watched host to syslog, with the file each exec call named |
 | [SigmaHQ rules](https://github.com/SigmaHQ/sigma) | commit `552f3fee420ef232a8e5790c4fae591847e32347` (release `r2026-07-01`): the folders `rules/linux/process_creation`, `rules/linux/file_event`, `rules/linux/builtin` and `rules/web/webserver_generic` and the file `LICENSE`, every file checked against the SHA-256 in `lab/range/range-one.rules.lock` | [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License). The `LICENSE` file fetched with them is a short notice, not the licence's text: it says that the rules of the SigmaHQ repositories are released under the Detection Rule License 1.1, with a link to it, and that the Sigma specification and logo are public domain | Rules of the defense `sigma-public` of range one. A run fetches them file by file from `raw.githubusercontent.com` into `rules/sigma/` of its own folder, with that `LICENSE` and a file `SOURCE` that names the repository and commit, and Zircolite evaluates them after the run over the events the agents recorded. The run's folder is what the `range-one` CI job uploads as the artifact `range-one-run`, so that artifact holds the rules with their licence notice. Each match the lab writes (`alerts.sigma.ecs.ndjson`, the manifest and `score.md`) names its rule's title, id and author, and the recording names each rule that matched with its author in its notes. No rule file is copied into this repository |
+| [Theori AIPT detections](https://github.com/theori-io/aipt-detections) | commit `["9e4653db", "4d9c9aaa", "64383543", "48953dbe", "89322848"]`: 62 Sigma documents, `sigma/pipelines/aipt-placeholders.yaml`, 4 Suricata rule files and `suricata/artex-ui-assets.md5`, plus `LICENSE`, each checked by `lab/range/range-one.rules.lock` | [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License); the fetched `LICENSE` and rule authors remain with every run copy | The `aipt-sigma` and `aipt-suricata` inputs of the `ai-tool-packs` defense. Files are fetched separately at the commit; retired rules and non-rule files not declared as support data stay out. No source file is committed here |
+| [ThreatDefence Agentic Attack Detections](https://github.com/ThreatDefence/agentic-attack-detections) | commit `["12e37af3", "bcce482d", "0053e724", "1a31ba43", "a7ce0e64"]`: 349 Sigma documents and 74 active Suricata rule files, plus `LICENSE`, each checked by `lab/range/range-one.rules.lock` | MIT, Copyright (c) 2026 ThreatDefence Pty Ltd and contributors; the fetched complete licence remains with every run copy | The `agentic-sigma` and `agentic-suricata` inputs of the `ai-tool-packs` defense. Files are fetched separately at the commit; 77 `.rules` candidates without an active signature stay out. No source file is committed here |
 | [Zircolite](https://github.com/wagga40/Zircolite) | 4.7.1, the release archive checked against the SHA-256 that `.github/workflows/range-one.yml` gives, the same as `lab.yml` | LGPL-3.0-or-later | The rule engine of range one's public Sigma rules: a separate program, run after the run over the run's files and never inside the range |
 
 The tests in `lab/tests/fixtures/range/wazuh/` hold short excerpts of the stock `ossec.conf` files

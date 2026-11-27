@@ -8,6 +8,7 @@ conftest.py). Nothing is fetched from a network.
 
 import hashlib
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from bluefire_lab.range import spec as range_spec
 
 SMALL = Path(__file__).parent / "fixtures" / "range" / "small" / "small.yaml"
 RULE_SET = Path(__file__).parent / "fixtures" / "range" / "rule-set"
+SELECTION = Path(__file__).parent / "fixtures" / "range" / "rule-set-selection"
 COMMIT = "b" * 40
 MADE_UP = {
     "kind": "sigma",
@@ -56,18 +58,55 @@ def defended(folder: Path = RULE_SET) -> range_spec.Spec:
 TRACKED_FILES = {
     "rules/LICENSE": b"made-up licence\r\n",
     "rules/classification.config": b"config kept byte for byte\n",
-    "rules/alpha.rules": b'alert tcp any any -> any any (msg:"alpha"; sid:1;)\r\n\xff',
+    "rules/alpha.rules": b'alert tcp any any -> any any (msg:"alpha"; sid:1;)\r\n',
     "rules/nested/beta.rules": b'alert icmp any any -> any any (msg:"beta"; sid:2;)\n',
+}
+
+TRACKED_SIGMA_FILES = {
+    "atomic.yml": b"""title: Tracked atomic rule
+id: 00000000-0000-4000-8000-000000000001
+status: test
+description: A harmless tracked-rule fixture.
+author: The lab's tests
+date: 2026-11-26
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection:
+    Image|endswith: /bash
+  condition: selection
+level: high
+""",
+    "correlation.yaml": b"""title: Tracked correlation rule
+id: 00000000-0000-4000-8000-000000000002
+status: test
+description: A harmless tracked-correlation fixture.
+author: The lab's tests
+date: 2026-11-26
+correlation:
+  type: event_count
+  rules:
+    - 00000000-0000-4000-8000-000000000001
+  group-by:
+    - Computer
+  timespan: 1m
+  condition:
+    gte: 2
+level: high
+""",
+    "NOTICE.txt": b"auxiliary provenance is retained\n",
 }
 
 
 def tracked(
     repository: Path,
     *,
+    kind: str = "suricata",
     manifest_data: bytes | None = None,
     files: dict[str, bytes] | None = None,
 ) -> tuple[range_spec.Spec, bytes, dict[str, str]]:
-    """A spec whose Suricata rules are tracked behind a manifest in a stand-in worktree."""
+    """A spec whose rules are tracked behind a manifest in a stand-in worktree."""
 
     repository.mkdir()
     (repository / ".git").write_text("gitdir: elsewhere\n")
@@ -85,7 +124,7 @@ def tracked(
     document = range_spec.read(SMALL.read_text())
     document["rule_sets"] = {
         "published": {
-            "kind": "suricata",
+            "kind": kind,
             "source": "lab/rules/published/SHA256SUMS",
             "sha256": hashlib.sha256(manifest_data).hexdigest(),
             "version": "7",
@@ -95,12 +134,13 @@ def tracked(
         {
             "id": "packets",
             "name": "Packets with published rules",
-            "sensors": ["packet-capture"],
+            "sensors": ["packet-capture" if kind == "suricata" else "wazuh-agent"],
             "rules": ["published"],
         }
     ]
-    document["hosts"]["web"]["packages"].append("tcpdump")
-    document["hosts"]["web"]["capture"] = "packets"
+    if kind == "suricata":
+        document["hosts"]["web"]["packages"].append("tcpdump")
+        document["hosts"]["web"]["capture"] = "packets"
     return range_spec.parse(document, folder=repository / "lab" / "range"), manifest_data, hashes
 
 
@@ -145,6 +185,214 @@ def test_a_run_fetches_the_rules_by_the_lock_with_the_licence_and_a_line_that_sa
     assert len(asked) == len(made["lock"]) == made["files"] + 1
     assert made["folder"] == "rules/made-up" and made["digest"] == DIGEST
     assert rulesets.held(tmp_path, "made-up", made["lock"]) == folder
+
+
+def selection_spec(
+    tmp_path: Path,
+    kind: str,
+    folder: str,
+    *,
+    rule_paths: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
+    pipelines: tuple[str, ...] = (),
+    hash_files: tuple[str, ...] = (),
+) -> range_spec.Spec:
+    """A parsed spec changed only to exercise made-up format-aware discovery."""
+
+    spec = defended(tmp_path)
+    rule_set = replace(
+        spec.rule_sets[0],
+        kind=kind,
+        folders=(folder,),
+        rule_paths=rule_paths,
+        include="rules",
+        exclude=exclude,
+        pipelines=pipelines,
+        hash_files=hash_files,
+    )
+    return replace(spec, rule_sets=(rule_set,))
+
+
+def test_a_sigma_set_locks_only_rules_in_selected_source_paths_and_records_what_was_left_out(
+    tmp_path: Path, served
+) -> None:
+    spec = selection_spec(tmp_path, "sigma", "sigma", rule_paths=("sigma/source",))
+    asked: list[str] = []
+    upstream = served(SELECTION, asked=asked)
+
+    def fetched(url: str) -> bytes:
+        assert "sigma/tests/valid-looking.yml" not in url
+        return upstream(url)
+
+    rulesets.lock(spec, fetched)
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {"LICENSE", "sigma/source/atomic.yml", "sigma/source/correlation.yml"}
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": ["sigma/source"],
+        "exclude": [],
+        "pipelines": [],
+        "selected files": 2,
+        "left out files": 4,
+        "left out by reason": {
+            "Sigma pipeline": 1,
+            "not a Sigma rule or correlation": 1,
+            "not YAML": 1,
+            "outside selected source paths": 1,
+        },
+    }
+    assert len([url for url in asked if "raw.githubusercontent.com" in url]) == 6
+
+
+def test_a_sigma_value_placeholder_pipeline_is_explicitly_locked_beside_the_rules(
+    tmp_path: Path, served
+) -> None:
+    pipeline = "sigma/source/pipeline.yml"
+    spec = selection_spec(
+        tmp_path,
+        "sigma",
+        "sigma",
+        rule_paths=("sigma/source",),
+        pipelines=(pipeline,),
+    )
+
+    rulesets.lock(spec, served(SELECTION))
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {
+        "LICENSE",
+        pipeline,
+        "sigma/source/atomic.yml",
+        "sigma/source/correlation.yml",
+    }
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": ["sigma/source"],
+        "exclude": [],
+        "pipelines": [pipeline],
+        "selected files": 3,
+        "left out files": 3,
+        "left out by reason": {
+            "not a Sigma rule or correlation": 1,
+            "not YAML": 1,
+            "outside selected source paths": 1,
+        },
+    }
+    assert f"{rulesets.PIPELINE}{pipeline}" in (tmp_path / "made-up.lock").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "vars: {}\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  bad-name:\n    - value\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source: value\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source:\n    - ''\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source:\n    - value\n    - value\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source:\n    - value\ntransformations:\n  - type: field_name_mapping\n",
+    ],
+)
+def test_a_declared_sigma_pipeline_must_have_exact_value_placeholder_shapes(text: str) -> None:
+    assert (
+        rulesets.sigma_pipeline_reason("sigma/pipelines/values.yml", text.encode())
+        == "not a Sigma value-placeholder pipeline"
+    )
+
+
+def test_a_suricata_set_locks_only_active_rule_files_and_keeps_an_exact_exclusion_distinct(
+    tmp_path: Path, served
+) -> None:
+    omitted = ("suricata/retired.rules",)
+    spec = selection_spec(tmp_path, "suricata", "suricata", exclude=omitted)
+    asked: list[str] = []
+
+    rulesets.lock(spec, served(SELECTION, asked=asked))
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {"LICENSE", "suricata/active.rules"}
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": [],
+        "exclude": list(omitted),
+        "pipelines": [],
+        "selected files": 1,
+        "left out files": 4,
+        "left out by reason": {
+            "excluded by the spec": 1,
+            "no active Suricata rule": 1,
+            "not a Suricata .rules file": 2,
+        },
+    }
+    assert not any(url.endswith("/suricata/retired.rules") for url in asked)
+
+
+def test_a_suricata_hash_dataset_is_selected_by_exact_name_and_bound_into_the_lock(
+    tmp_path: Path, served
+) -> None:
+    hashes = "suricata/exposed-assets.md5"
+    spec = selection_spec(
+        tmp_path,
+        "suricata",
+        "suricata",
+        exclude=("suricata/retired.rules",),
+        hash_files=(hashes,),
+    )
+
+    rulesets.lock(spec, served(SELECTION))
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {"LICENSE", "suricata/active.rules", hashes}
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": [],
+        "exclude": ["suricata/retired.rules"],
+        "pipelines": [],
+        "selected files": 2,
+        "left out files": 3,
+        "left out by reason": {
+            "excluded by the spec": 1,
+            "no active Suricata rule": 1,
+            "not a Suricata .rules file": 1,
+        },
+        "hash files": [hashes],
+    }
+    assert f"{rulesets.HASH_FILE}{hashes}" in (tmp_path / "made-up.lock").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "reason"),
+    [
+        ("hashes.md5", b"0" * 32 + b"\n" + b"abcdef0123456789abcdef0123456789\r\n", None),
+        ("hashes.sha1", b"0" * 40 + b"\n", None),
+        ("hashes.sha256", b"0" * 64 + b"\n", None),
+        ("hashes.txt", b"0" * 32 + b"\n", "not a Suricata hash file"),
+        ("hashes.md5", b"", "not one 128-bit hexadecimal hash per line"),
+        ("hashes.md5", b"0" * 31 + b"\n", "not one 128-bit hexadecimal hash per line"),
+        ("hashes.md5", b"0" * 32 + b" extra\n", "not one 128-bit hexadecimal hash per line"),
+        ("hashes.md5", b"\xff\n", "Suricata hash file is not ASCII"),
+    ],
+)
+def test_a_suricata_hash_dataset_is_one_exact_hash_per_line(
+    path: str, data: bytes, reason: str | None
+) -> None:
+    assert rulesets.suricata_hash_reason(path, data) == reason
+
+
+def test_locking_refuses_a_filter_that_does_not_describe_the_pinned_folders(tmp_path: Path, served) -> None:
+    missing = selection_spec(tmp_path, "suricata", "suricata", exclude=("suricata/missing.rules",))
+    unmatched = selection_spec(tmp_path, "suricata", "suricata", rule_paths=("suricata/missing",))
+
+    with pytest.raises(
+        range_spec.SpecError, match="exclude names suricata/missing.rules, which the configured"
+    ):
+        rulesets.lock(missing, served(SELECTION))
+    with pytest.raises(range_spec.SpecError, match="rule_paths names suricata/missing, which match no file"):
+        rulesets.lock(unmatched, served(SELECTION))
 
 
 @pytest.mark.parametrize("existing", ["rules-link", "set-link", "set-folder"])
@@ -284,6 +532,61 @@ def test_a_tracked_manifest_and_every_listed_file_are_copied_byte_for_byte(tmp_p
     assert rulesets.held(tmp_path / "run", "published", made["lock"]) == copied
 
 
+def test_a_tracked_sigma_manifest_counts_and_digests_only_its_executable_rules(tmp_path: Path) -> None:
+    spec, manifest_data, hashes = tracked(tmp_path / "repository", kind="sigma", files=TRACKED_SIGMA_FILES)
+
+    made = rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    copied = tmp_path / "run" / "rules" / "published"
+    assert made["kind"] == "sigma" and made["files"] == 2
+    assert (copied / "atomic.yml").read_bytes() == TRACKED_SIGMA_FILES["atomic.yml"]
+    assert (copied / "correlation.yaml").read_bytes() == TRACKED_SIGMA_FILES["correlation.yaml"]
+    assert (copied / "NOTICE.txt").read_bytes() == TRACKED_SIGMA_FILES["NOTICE.txt"]
+    assert made["lock"]["SHA256SUMS"] == hashlib.sha256(manifest_data).hexdigest()
+    listing = "".join(f"{hashes[path]}  {path}\n" for path in ("atomic.yml", "correlation.yaml"))
+    assert made["digest"] == hashlib.sha256(listing.encode()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("kind", "path", "data", "reason"),
+    [
+        ("sigma", "bad.yml", b"title: not a rule\n", "not a Sigma rule or correlation"),
+        ("suricata", "bad.rules", b"# only a comment\n", "no active Suricata rule"),
+    ],
+)
+def test_a_tracked_manifest_refuses_a_listed_rule_file_that_is_not_executable(
+    tmp_path: Path, kind: str, path: str, data: bytes, reason: str
+) -> None:
+    spec, _, _ = tracked(tmp_path / "repository", kind=kind, files={path: data})
+
+    with pytest.raises(range_spec.SpecError, match=reason):
+        rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    assert not (tmp_path / "run" / "rules").exists()
+
+
+@pytest.mark.parametrize(
+    ("kind", "files", "message"),
+    [
+        ("sigma", {"NOTICE.txt": b"provenance only\n"}, "lists no sigma rule file"),
+        (
+            "suricata",
+            {"classification.config": b"config only\n"},
+            "lists no suricata rule file",
+        ),
+    ],
+)
+def test_a_tracked_manifest_must_list_a_rule_file_of_its_kind(
+    tmp_path: Path, kind: str, files: dict[str, bytes], message: str
+) -> None:
+    spec, _, _ = tracked(tmp_path / "repository", kind=kind, files=files)
+
+    with pytest.raises(range_spec.SpecError, match=message):
+        rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    assert not (tmp_path / "run" / "rules").exists()
+
+
 def test_a_changed_tracked_manifest_is_refused_before_a_run_folder_is_written(tmp_path: Path) -> None:
     spec, manifest_data, _ = tracked(tmp_path / "repository")
     source = tmp_path / "repository" / "lab" / "rules" / "published" / "SHA256SUMS"
@@ -401,32 +704,95 @@ def test_a_run_folders_rules_are_refused_when_an_expected_parent_is_a_link(tmp_p
 
 def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> None:
     spec = range_spec.load(Path(__file__).parents[1] / "range" / "range-one.yaml")
-    manifest_digest = "".join(
+    et_manifest_digest = "".join(
         ("a7b140e3", "95557d19", "a234b0fa", "465f4471", "39ba5071", "7ee6efcb", "0e23df6b", "7c6f30dc")
     )
-    rule_digest = "".join(
+    et_rule_digest = "".join(
         ("64294a19", "ec3946f5", "4c5e4cb3", "39a13766", "cd41aa69", "c2021d9f", "dbf7cbe4", "1efcc508")
     )
+    ordered_digest = "".join(
+        ("d489218c", "3a2cd098", "a23e04a7", "902f0a23", "53f2fca0", "2efd37cf", "bda141a9", "5ce47b41")
+    )
 
-    sigma, et_open = spec.rule_sets
+    sigma, et_open, aipt_sigma, aipt_suricata, agentic_sigma, agentic_suricata, ordered = spec.rule_sets
     locked = rulesets.locked(spec, sigma)
 
     assert (sigma.repo, sigma.licence, sigma.lock) == ("SigmaHQ/sigma", "LICENSE", "range-one.rules.lock")
     assert rulesets.wanted(sigma, locked) == sorted(locked)
     assert {path.split("/")[1] for path in locked if path != "LICENSE"} == {"linux", "web"}
+    assert len(locked) == 166 and rulesets.record(sigma, locked)["files"] == 165
     assert (et_open.kind, et_open.source_file, et_open.sha256, et_open.version) == (
         "suricata",
         "lab/rules/et-open/SHA256SUMS",
-        manifest_digest,
+        et_manifest_digest,
         "11342",
     )
     et_lock = rulesets.locked(spec, et_open)
     assert len(et_lock) == 13 and et_lock["SHA256SUMS"] == et_open.sha256
     assert sum(path.endswith(".rules") for path in et_lock) == 8
     assert rulesets.record(et_open, et_lock)["files"] == 8
-    assert rulesets.digest(et_open, et_lock) == rule_digest
+    assert rulesets.digest(et_open, et_lock) == et_rule_digest
+
+    aipt_sigma_lock = rulesets.locked(spec, aipt_sigma)
+    assert len(aipt_sigma_lock) == 64
+    assert rulesets.record(aipt_sigma, aipt_sigma_lock)["files"] == 63
+    assert sum(path.endswith((".yml", ".yaml")) for path in aipt_sigma_lock) == 63
+    assert aipt_sigma_lock.left_out == {"not YAML": 1, "outside selected source paths": 5}
+    assert rulesets.digest(aipt_sigma, aipt_sigma_lock) == "".join(
+        ("0ba4e884", "35928449", "e6c5792b", "7d0b6ead", "85c648fc", "d3b8af71", "32dea514", "266508f7")
+    )
+
+    aipt_suricata_lock = rulesets.locked(spec, aipt_suricata)
+    assert len(aipt_suricata_lock) == 6
+    assert rulesets.record(aipt_suricata, aipt_suricata_lock)["files"] == 5
+    assert sum(path.endswith(".rules") for path in aipt_suricata_lock) == 4
+    assert aipt_suricata.hash_files == ("suricata/artex-ui-assets.md5",)
+    assert aipt_suricata_lock.left_out == {
+        "excluded by the spec": 1,
+        "not a Suricata .rules file": 2,
+    }
+    assert rulesets.digest(aipt_suricata, aipt_suricata_lock) == "".join(
+        ("6dd0d8a2", "478f90df", "58ab8ace", "d3e75282", "6c0c4b3a", "2a39749a", "b37e1edf", "6563f5aa")
+    )
+
+    agentic_sigma_lock = rulesets.locked(spec, agentic_sigma)
+    assert len(agentic_sigma_lock) == 350
+    assert rulesets.record(agentic_sigma, agentic_sigma_lock)["files"] == 349
+    assert agentic_sigma_lock.left_out == {"outside selected source paths": 991}
+    assert rulesets.digest(agentic_sigma, agentic_sigma_lock) == "".join(
+        ("d3e1ba5c", "bebe8064", "88d817a9", "bd05742d", "a2f95702", "681a66fe", "a24d6d62", "6f6e01d0")
+    )
+
+    agentic_suricata_lock = rulesets.locked(spec, agentic_suricata)
+    assert len(agentic_suricata_lock) == 75
+    assert rulesets.record(agentic_suricata, agentic_suricata_lock)["files"] == 74
+    assert agentic_suricata_lock.left_out == {
+        "no active Suricata rule": 77,
+        "not a Suricata .rules file": 1,
+        "outside selected source paths": 1153,
+    }
+    assert rulesets.digest(agentic_suricata, agentic_suricata_lock) == "".join(
+        ("9093c538", "0087e1e9", "09c6efc8", "91c7d114", "60e4c063", "97772a6d", "bb386faf", "dc00833d")
+    )
+
+    ordered_lock = rulesets.locked(spec, ordered)
+    assert (ordered.kind, ordered.source_file, ordered.sha256, ordered.version) == (
+        "sigma",
+        "lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS",
+        ordered_digest,
+        "1",
+    )
+    assert len(ordered_lock) == 5 and ordered_lock["SHA256SUMS"] == ordered_digest
+    assert rulesets.record(ordered, ordered_lock)["files"] == 4
+    assert rulesets.digest(ordered, ordered_lock) == ordered_digest
     assert [(defense.id, defense.sensors, defense.rules) for defense in spec.defenses] == [
         ("wazuh-stock", ("wazuh-agent",), ("wazuh",)),
         ("sigma-public", ("wazuh-agent",), ("sigma",)),
         ("packets-et-open", ("packet-capture",), ("et-open",)),
+        (
+            "ai-tool-packs",
+            ("wazuh-agent", "packet-capture"),
+            ("aipt-sigma", "aipt-suricata", "agentic-sigma", "agentic-suricata"),
+        ),
+        ("ordered-credential", ("wazuh-agent",), ("ordered-credential",)),
     ]
