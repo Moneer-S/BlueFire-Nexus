@@ -1,10 +1,9 @@
 """One run judged by several defenses: what the import keeps, and what it refuses.
 
-Each recording here is built from the path through range one that the app ships, which
-holds one defense: its three agents and Wazuh's stock rules. The interface's reader is
-given the same recordings (frontend/tests/live-defenses.test.ts). Whether a verdict follows
-from the events and alerts of its view is checked here alone, as it is for a recording
-without defenses.
+Each recording here is built from the first defense's plain view of the path through
+range one that the app ships. The interface's reader is given the same recordings
+(frontend/tests/live-defenses.test.ts). Whether a verdict follows from the events and
+alerts of its view is checked here alone, as it is for a recording without defenses.
 """
 
 from __future__ import annotations
@@ -22,8 +21,57 @@ from bluefire.service import BlueFireService
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIPPED_PATH = ROOT / "bluefire" / "data" / "recordings" / "lab-range-one-path.json"
-VERDICT = ("visibility", "outcome", "first_event", "first_alert")
+VERDICT = (
+    "visibility",
+    "outcome",
+    "outcome_with_lab_rules",
+    "first_event",
+    "first_alert",
+    "first_alert_with_lab_rules",
+)
 TOP_IS_FIRST = "the top level of a recording with defenses holds the verdicts of its first defense."
+
+
+def plain_shipped() -> dict[str, Any]:
+    """The shipped path as one plain view, whether it already holds defenses or not."""
+
+    whole: dict[str, Any] = json.loads(SHIPPED_PATH.read_bytes())
+    defenses = whole.pop("defenses", None)
+    if not defenses:
+        return whole
+
+    first = defenses[0]
+    sensors, detectors = set(first["sensors"]), set(first["detectors"])
+    whole["network"]["sensors"] = [
+        sensor for sensor in whole["network"]["sensors"] if sensor["id"] in sensors
+    ]
+    whole["network"]["detectors"] = [
+        detector for detector in whole["network"]["detectors"] if detector["id"] in detectors
+    ]
+    whole["events"] = [event for event in whole["events"] if event["sensor"] in sensors]
+    held = {event["id"] for event in whole["events"]}
+    whole["alerts"] = [
+        alert
+        for alert in whole["alerts"]
+        if alert["detector"] in detectors and held.issuperset(alert["events"])
+    ]
+    whole["steps"] = [
+        {
+            **{key: item for key, item in step.items() if key not in VERDICT},
+            **{
+                key: item
+                for key, item in first["steps"][step["id"]].items()
+                if key in VERDICT
+            },
+        }
+        for step in whole["steps"]
+    ]
+    if "ordinary" in first:
+        whole["ordinary"] = copy.deepcopy(first["ordinary"])
+    else:
+        whole.pop("ordinary", None)
+    whole["score"] = copy.deepcopy(first["score"])
+    return whole
 
 
 def judged_twice() -> dict[str, Any]:
@@ -34,7 +82,7 @@ def judged_twice() -> dict[str, Any]:
     seen there, with no first alert, and its score follows.
     """
 
-    whole: dict[str, Any] = json.loads(SHIPPED_PATH.read_bytes())
+    whole = plain_shipped()
     whole["id"] = "range-one-judged-twice"
     stock = {
         "id": "wazuh-stock",
