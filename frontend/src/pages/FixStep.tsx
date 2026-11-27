@@ -268,14 +268,14 @@ function WhereToStart({ recording, row, start, home }: { recording: Recording; r
     </> : start.kind === "rule" ? <>
       {hint && start.review.length ? <>
         <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert.</b> {hint}</p>
-        {start.review.length > 1 ? <p className="fx-why">Of the {count(start.review.length)} published rules that matched it below alert level, it is the one at the highest level; a tie goes to the one that matched least ordinary activity.</p> : null}
+        {start.review.length > 1 ? <p className="fx-why">Of the {count(start.review.length)} rules in this defense that matched it below alert level, it is the one at the highest level; a tie goes to the one that matched least ordinary activity.</p> : null}
       </> : <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert. Start with a rule</b> that matches what the sensor recorded.</p>}
       <RuleHome home={home} />
     </> : start.kind === "lab alerted" ? <>
-      <p className="fx-lead"><b>One of the lab's own rules alerted on it, which the score does not count.</b> The score counts published rules only, and none of those alerted.</p>
+      <p className="fx-lead"><b>One of the lab's own rules alerted on it, which the score does not count.</b> The score counts rules in this defense only, and none of those alerted.</p>
       <p className="fx-why">The lab's own rules are the files under <code>lab/rules/linux/</code> in the repository.</p>
     </> : start.kind === "alerted" ? <>
-      <p className="fx-lead"><b>A published rule raised an alert on it.</b> There is nothing to fix here.</p>
+      <p className="fx-lead"><b>A rule in this defense raised an alert on it.</b> There is nothing to fix here.</p>
     </> : <p className="fx-lead">{start.why}</p>}
   </section>;
 }
@@ -291,7 +291,7 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
     <h2 id="fx-matched">Rules that matched it</h2>
     {start.kind === "rule" ? <>
       {/* Where a rule matched only the line that starts the test, which is listed below, an empty group says it matched nothing the test itself did. */}
-      {start.review.length ? <PublishedBelow matches={start.review} /> : <RuleGroup title="Published rules below alert level" empty={start.launcher.some((match) => match.rule.origin === "pinned") ? "No published rule matched what the test itself did, at any level." : "No published rule matched it, at any level."} matches={[]} />}
+      {start.review.length ? <PublishedBelow matches={start.review} /> : <RuleGroup title="Rules in this defense below alert level" empty={start.launcher.some((match) => match.rule.origin === "pinned") ? "No rule in this defense matched what the test itself did, at any level." : "No rule in this defense matched it, at any level."} matches={[]} />}
       <RuleGroup title="The lab's own rules that matched" empty={!recording.network.detectors.some((detector) => detector.id === "lab") ? "This run did not try the lab's own rules." : start.launcher.some((match) => match.rule.origin === "lab") ? "None of the lab's own rules matched what the test itself did." : "None of the lab's own rules matched it."} matches={start.lab} noted={note !== null} />
       {start.launcher.length ? <RuleGroup title="Matched only the line that starts the test, which never counts" matches={start.launcher} /> : null}
     </> : <>
@@ -317,8 +317,8 @@ function Matched({ recording, start }: { recording: Recording; start: StartWith 
 /** Published rules that matched below alert level, grouped as analyse mode groups them: those for review, and those at informational level, which nobody reviews. */
 function PublishedBelow({ matches }: { matches: RuleMatch[] }) {
   return <>
-    <RuleGroup title="Published rules below alert level: for review" matches={matches.filter((match) => !isInformational(match))} />
-    <RuleGroup title="Published rules at informational level: nobody reviews them" matches={matches.filter(isInformational)} />
+    <RuleGroup title="Rules in this defense below alert level: for review" matches={matches.filter((match) => !isInformational(match))} />
+    <RuleGroup title="Rules in this defense at informational level: nobody reviews them" matches={matches.filter(isInformational)} />
   </>;
 }
 
@@ -353,7 +353,7 @@ function RuleCard({ match, noted }: { match: RuleMatch; noted: boolean }) {
       <span className={`lv-mchip ${chip.className}`} title={chip.title}>{chip.words}</span>
       <b>{match.rule.title}</b>
       <span className="fx-rule-meta">
-        {match.rule.origin === "lab" ? "the lab's own" : "published"}
+        {match.rule.origin === "lab" ? "the lab's own" : "in this defense"}
         {" · "}{events ? `on ${plural(events, "event")}` : "on no event"}
         {match.ordinary !== undefined && match.ordinary !== null ? <> · {match.ordinary === 0 ? "nothing" : plural(match.ordinary, "event")} in ordinary activity</> : null}
       </span>
