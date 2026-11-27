@@ -10,6 +10,7 @@ host sensor.
 
 from __future__ import annotations
 
+import hashlib
 import lzma
 import re
 import struct
@@ -22,11 +23,12 @@ MAGIC = {
     b"\x4d\x3c\xb2\xa1": ("<", "nanoseconds"),
     b"\xa1\xb2\x3c\x4d": (">", "nanoseconds"),
 }
-COUNTERS = {
-    "captured": re.compile(r"(?m)^([0-9]+) packets captured$"),
-    "received by filter": re.compile(r"(?m)^([0-9]+) packets received by filter$"),
-    "dropped by kernel": re.compile(r"(?m)^([0-9]+) packets dropped by kernel$"),
-}
+COUNTER_NAMES = ("captured", "received by filter", "dropped by kernel")
+COUNTER_BLOCK = re.compile(
+    r"(?m)^([0-9]+) packets? captured\r?\n"
+    r"([0-9]+) packets? received by filter\r?\n"
+    r"([0-9]+) packets? dropped by kernel$"
+)
 
 
 class CaptureError(ValueError):
@@ -38,7 +40,14 @@ def pcap(path: Path) -> dict:
 
     size = path.stat().st_size
     with path.open("rb") as source:
-        header = source.read(24)
+        digest = hashlib.sha256()
+
+        def read(size_: int) -> bytes:
+            block_ = source.read(size_)
+            digest.update(block_)
+            return block_
+
+        header = read(24)
         if len(header) != 24:
             raise CaptureError("the global header is truncated")
         byte_order = MAGIC.get(header[:4])
@@ -46,9 +55,7 @@ def pcap(path: Path) -> dict:
             raise CaptureError("the file is not classic PCAP, or its byte order is unknown")
         endian, resolution = byte_order
         try:
-            major, minor, _zone, _accuracy, snaplen, link_type = struct.unpack(
-                endian + "HHIIII", header[4:]
-            )
+            major, minor, _zone, _accuracy, snaplen, link_type = struct.unpack(endian + "HHIIII", header[4:])
         except struct.error as error:
             raise CaptureError(f"the global header cannot be read: {error}") from error
         if (major, minor) != (2, 4):
@@ -59,7 +66,7 @@ def pcap(path: Path) -> dict:
         packets = captured = wire = 0
         whole = True
         while True:
-            record = source.read(16)
+            record = read(16)
             if not record:
                 break
             if len(record) != 16:
@@ -72,9 +79,12 @@ def pcap(path: Path) -> dict:
                 raise CaptureError(
                     f"packet {packets + 1} says it kept {included} of {original} bytes with snap length {snaplen}"
                 )
-            payload = source.read(included)
-            if len(payload) != included:
-                raise CaptureError(f"packet {packets + 1}'s {included} bytes are truncated")
+            remaining = included
+            while remaining:
+                block = read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise CaptureError(f"packet {packets + 1}'s {included} bytes are truncated")
+                remaining -= len(block)
             packets += 1
             captured += included
             wire += original
@@ -83,6 +93,7 @@ def pcap(path: Path) -> dict:
             _ = seconds
     return {
         "bytes": size,
+        "sha256": digest.hexdigest(),
         "packets": packets,
         "captured packet bytes": captured,
         "wire packet bytes": wire,
@@ -96,13 +107,27 @@ def pcap(path: Path) -> dict:
 def tcpdump_counts(text: str) -> dict[str, int]:
     """The three delivery counters tcpdump writes when it exits cleanly."""
 
-    found = {}
-    for name, pattern in COUNTERS.items():
-        values = pattern.findall(text)
-        if not values:
-            raise CaptureError(f"tcpdump's log has no '{name}' counter")
-        found[name] = int(values[-1])
-    return found
+    clean = text.rstrip("\r\n")
+    blocks = list(COUNTER_BLOCK.finditer(clean))
+    if not blocks or blocks[-1].end() != len(clean):
+        raise CaptureError("tcpdump's log does not end with one complete delivery-counter block")
+    return {name: int(value) for name, value in zip(COUNTER_NAMES, blocks[-1].groups(), strict=True)}
+
+
+def contains(path: Path, value: str) -> bool:
+    """Whether a file contains a short readiness token, without reading the file whole."""
+
+    wanted = value.encode("utf-8")
+    if not wanted:
+        return False
+    overlap = b""
+    with path.open("rb") as source:
+        while block := source.read(1024 * 1024):
+            combined = overlap + block
+            if wanted in combined:
+                return True
+            overlap = combined[-(len(wanted) - 1) :] if len(wanted) > 1 else b""
+    return False
 
 
 def xz_size(path: Path) -> int:
@@ -119,17 +144,66 @@ def xz_size(path: Path) -> int:
 def analyse(out: Path, capture: dict) -> dict:
     """Validate every copied capture and add per-file delivery facts to the manifest section."""
 
+    capture["analysed"] = False
     findings: list[str] = []
+    if capture.get("collect_error"):
+        findings.append(f"packet capture finalization failed: {capture['collect_error']}")
     raw = Path(out) / "raw" / "hosts"
-    for host, entry in capture.get("hosts", {}).items():
+    hosts = capture.get("hosts") or {}
+    if not hosts:
+        findings.append("the packet capture names no host")
+    for host, entry in hosts.items():
+        if entry.get("started") is not True:
+            findings.append(f"{host}: the packet capture host did not start")
+        ready = entry.get("ready")
+        marks = ready if isinstance(ready, list) else []
+        if not marks:
+            findings.append(f"{host}: the packet capture has no ready mark")
+        for number, mark in enumerate(marks, start=1):
+            where = mark.get("network") or f"mark {number}"
+            if mark.get("seen") is not True:
+                findings.append(f"{host}: the ready mark on {where} was not seen")
+            elif not mark.get("interface"):
+                findings.append(f"{host}: the ready mark on {where} names no interface")
+            elif not isinstance(mark.get("token"), str) or not mark["token"]:
+                findings.append(f"{host}: the ready mark on {where} names no token")
+
+        stopped = entry.get("stopped")
+        if not isinstance(stopped, dict):
+            findings.append(f"{host}: the packet capture was not stopped cleanly")
+        elif stopped.get("cleanly") is not True:
+            detail = f": {stopped['error']}" if stopped.get("error") else ""
+            findings.append(f"{host}: the packet capture was not stopped cleanly{detail}")
+        elif stopped.get("error"):
+            findings.append(f"{host}: the packet capture stop reported an error: {stopped['error']}")
+
+        collected = entry.get("collected")
+        if not isinstance(collected, dict):
+            findings.append(f"{host}: the packet capture was not copied out")
+        else:
+            if collected.get("copied") is not True:
+                detail = f": {collected['error']}" if collected.get("error") else ""
+                findings.append(f"{host}: the packet capture was not copied out{detail}")
+            elif collected.get("error"):
+                findings.append(f"{host}: the packet copy reported an error: {collected['error']}")
+            refused = collected.get("refused") or []
+            if refused:
+                findings.append(f"{host}: the packet copy refused {len(refused)} archive member(s)")
+
         folder = raw / host / CAPTURE_DIR
-        expected = {mark["interface"] for mark in entry.get("ready", []) if mark.get("interface")}
+        expected = {mark["interface"] for mark in marks if mark.get("seen") is True and mark.get("interface")}
+        by_interface = {
+            interface: [mark for mark in marks if mark.get("interface") == interface]
+            for interface in expected
+        }
         files: dict[str, dict] = {}
         if not folder.is_dir():
             findings.append(f"{host}: the packet capture folder was not copied out")
             entry["files"] = files
             continue
         pcaps = sorted(path for path in folder.glob("*.pcap") if path.is_file() and not path.is_symlink())
+        if not pcaps:
+            findings.append(f"{host}: the packet capture folder holds no PCAP file")
         seen = {path.stem for path in pcaps}
         for interface in sorted(expected - seen):
             findings.append(f"{host}: {interface}.pcap was not copied out")
@@ -141,6 +215,12 @@ def analyse(out: Path, capture: dict) -> dict:
             try:
                 record.update(pcap(path))
                 record["xz -9 bytes"] = xz_size(path)
+                for mark in by_interface.get(path.stem, []):
+                    token = mark.get("token")
+                    if isinstance(token, str) and token and not contains(path, token):
+                        findings.append(
+                            f"{host}: {path.name} does not hold its ready mark on {mark.get('network')}"
+                        )
             except (OSError, CaptureError) as error:
                 record["error"] = str(error)
                 findings.append(f"{host}: {path.name}: {error}")
@@ -163,6 +243,11 @@ def analyse(out: Path, capture: dict) -> dict:
                     f"{host}: {path.name} holds {record['packets']} packets and tcpdump says it captured "
                     f"{counts['captured']}"
                 )
+            if counts and counts["received by filter"] != counts["captured"] + counts["dropped by kernel"]:
+                findings.append(
+                    f"{host}: {path.name}: tcpdump received {counts['received by filter']} packets by the "
+                    f"filter, captured {counts['captured']} and dropped {counts['dropped by kernel']}"
+                )
             if counts.get("dropped by kernel", 0):
                 findings.append(
                     f"{host}: {path.name}: {counts['dropped by kernel']} packets dropped by the kernel"
@@ -171,6 +256,7 @@ def analyse(out: Path, capture: dict) -> dict:
         entry["files"] = files
     capture["delivery_findings"] = findings
     capture["delivery_gap"] = bool(findings)
+    capture["analysed"] = True
     return capture
 
 
@@ -181,14 +267,22 @@ def markdown(manifest: dict) -> str:
     lines = ["# Packet capture", ""]
     if not capture:
         return "\n".join(lines + ["This range asked for no packet capture.", ""])
+    hosts = capture.get("hosts") or {}
+    started = sum(1 for entry in hosts.values() if entry.get("started") is True)
+    if not started:
+        introduction = "Packet capture was requested, but no capture host started."
+    elif started != len(hosts):
+        introduction = f"tcpdump started on {started} of {len(hosts)} packet capture hosts."
+    else:
+        introduction = "tcpdump started inside each listed packet capture host."
     lines += [
-        "tcpdump ran inside each listed range host. It recorded whole packets on each non-loopback range "
-        "interface and left out ports 1514 and 1515, the host sensors' channel to the manager.",
+        introduction + " It was configured for whole packets on each non-loopback range interface and left "
+        "out ports 1514 and 1515, the host sensors' channel to the manager.",
         "",
         "| Host | Interface | Packets | Kernel drops | Raw bytes | xz -9 bytes |",
         "| --- | --- | ---: | ---: | ---: | ---: |",
     ]
-    for host, entry in capture.get("hosts", {}).items():
+    for host, entry in hosts.items():
         for name, record in (entry.get("files") or {}).items():
             counts = record.get("tcpdump") or {}
             lines.append(
@@ -196,7 +290,14 @@ def markdown(manifest: dict) -> str:
                 f"{counts.get('dropped by kernel', 'not read')} | {record.get('bytes', 'not read')} | "
                 f"{record.get('xz -9 bytes', 'not read')} |"
             )
-    lines += ["", "Delivery gap: " + ("yes" if capture.get("delivery_gap") else "no") + "."]
+    gap = capture.get("delivery_gap")
+    if capture.get("analysed") is not True or gap is None:
+        delivery = "not assessed"
+    else:
+        delivery = "yes" if gap else "no"
+    lines += ["", f"Delivery gap: {delivery}."]
+    if capture.get("collect_error"):
+        lines.append(f"Collection or analysis error: {str(capture['collect_error']).replace(chr(10), ' ')}")
     for finding in capture.get("delivery_findings") or []:
         lines.append(f"- {finding}")
     return "\n".join(lines) + "\n"

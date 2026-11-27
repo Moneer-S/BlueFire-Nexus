@@ -469,6 +469,33 @@ def defended(change=None) -> dict:
     return document
 
 
+def manifest_defended(change=None) -> dict:
+    """The small spec with a tracked Suricata manifest and the packet capture it reads."""
+
+    document = small()
+    document["rule_sets"] = {
+        "published": {
+            "kind": "suricata",
+            "source": "lab/rules/published/SHA256SUMS",
+            "sha256": "a" * 64,
+            "version": "7",
+        }
+    }
+    document["defenses"] = [
+        {
+            "id": "packets",
+            "name": "Packets with published rules",
+            "sensors": ["packet-capture"],
+            "rules": ["published"],
+        }
+    ]
+    document["hosts"]["web"]["packages"].append("tcpdump")
+    document["hosts"]["web"]["capture"] = "packets"
+    if change:
+        change(document)
+    return document
+
+
 def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
     spec = range_spec.parse(defended())
 
@@ -495,6 +522,36 @@ def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
     )
     assert range_spec.parse(only_records).defenses[2].rules == ()
     assert range_spec.parse(small()).defenses == () and range_spec.parse(small()).rule_sets == ()
+
+
+def test_a_tracked_manifest_rule_set_keeps_the_repository_sets_positional_fields() -> None:
+    found = range_spec.parse(manifest_defended()).rule_sets[0]
+
+    assert found == range_spec.RuleSet(
+        "published",
+        "suricata",
+        source_file="lab/rules/published/SHA256SUMS",
+        sha256="a" * 64,
+        version="7",
+    )
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"source": "lab/rules/published.tar.gz"}, "source must be a SHA256SUMS manifest"),
+        ({"source": "../SHA256SUMS"}, "source must be a SHA256SUMS manifest"),
+        ({"sha256": "A" * 64}, "sha256 must be 64 lower-case hex digits"),
+        ({"sha256": "a" * 63}, "sha256 must be 64 lower-case hex digits"),
+        ({"version": "two\nlines"}, "version must be one short line"),
+        ({"version": 7}, "version must be one short line"),
+    ],
+)
+def test_a_tracked_manifest_pin_is_strict(values: dict, message: str) -> None:
+    document = manifest_defended(lambda d: d["rule_sets"]["published"].update(values))
+
+    with pytest.raises(range_spec.SpecError, match=message):
+        range_spec.parse(document)
 
 
 def change_set(**values):
@@ -589,6 +646,39 @@ def test_a_defense_that_names_the_agents_needs_a_spec_with_wazuh() -> None:
     with pytest.raises(
         range_spec.SpecError,
         match="the sensor wazuh-agent is the agent of defense.wazuh, and the spec has none",
+    ):
+        range_spec.parse(document)
+
+
+def test_a_packet_capture_defense_needs_a_host_that_captures_packets() -> None:
+    document = a_spec(
+        defenses=[
+            {
+                "id": "packets",
+                "name": "Recorded packets",
+                "sensors": ["packet-capture"],
+                "rules": [],
+            }
+        ]
+    )
+
+    with pytest.raises(
+        range_spec.SpecError,
+        match="a defense with sensor packet-capture needs at least one host with capture: packets",
+    ):
+        range_spec.parse(document)
+
+
+def test_every_network_interface_of_a_capture_host_needs_a_peer() -> None:
+    document = small()
+    document["networks"]["alone"] = {}
+    document["hosts"]["web"]["networks"].append("alone")
+    document["hosts"]["web"]["packages"].append("tcpdump")
+    document["hosts"]["web"]["capture"] = "packets"
+
+    with pytest.raises(
+        range_spec.SpecError,
+        match="host web: capture packets needs a peer on network alone, so capture_ready can mark that interface",
     ):
         range_spec.parse(document)
 

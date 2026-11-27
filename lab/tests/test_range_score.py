@@ -997,7 +997,7 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         ],
     )
 
-    stock, public = judged(folder, program)["score"]["defenses"]
+    stock, public, packets = judged(folder, program)["score"]["defenses"]
 
     assert (stock["id"], stock["detectors"], public["id"], public["detectors"]) == (
         "wazuh-stock",
@@ -1006,6 +1006,9 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         ["sigma"],
     )
     assert stock["sensors"] == public["sensors"] == ["wazuh-agent-web", "wazuh-agent-db", "wazuh-agent-build"]
+    assert packets["id"] == "packets-et-open" and packets["judged"] is False
+    assert "no Suricata image was given" in packets["not judged"]
+    assert "its sensor packet-capture was unavailable" in packets["not judged"]
     # Both have the same sensors, so they saw the same events; each alerted on what its own rules matched.
     steps = {entry["id"]: {step["id"]: step for step in entry["steps"]} for entry in (stock, public)}
     assert [(s["visibility"], s["outcome"], s["events"]) for s in steps["wazuh-stock"].values()] == [
@@ -1048,7 +1051,8 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         "20.05 s after the first step started, 0.15 s before the goal: Made Up - A Rule That Counts"
         in summary
     )
-    assert "| `wazuh-stock` | `sigma-public` |" in summary and "| alerted | seen | 5715 |" in summary
+    assert "| `wazuh-stock` | `sigma-public` | `packets-et-open` |" in summary
+    assert "| alerted | seen | not judged | 5715 |" in summary
 
 
 def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_path: Path, monkeypatch) -> None:
@@ -1144,7 +1148,8 @@ def test_a_defense_with_live_rules_and_a_rule_set_tells_each_alert_and_match_as_
         "  - {id: both, name: The stock rules and the public Sigma rules, sensors: [wazuh-agent],\n"
         "     rules: [wazuh, sigma]}\n"
     )
-    text = text[: text.index("defenses:")] + both + text[text.index("networks:") :]
+    # This focused spec has no packet defense, so leave out its otherwise-unused ET Open set too.
+    text = text[: text.index("  et-open:\n")] + both + text[text.index("networks:") :]
     rewrite(folder, lambda m: m["spec"].update(text=text))
     same_id = {**HIGH, "id": "100", "title": "Made Up - Same Id in Another Detector"}
     program = matching(
@@ -1188,7 +1193,7 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
 
     manifest = judged(folder)
 
-    stock, public = manifest["score"]["defenses"]
+    stock, public, packets = manifest["score"]["defenses"]
     assert stock["judged"] is True and stock["outcomes"]["alerted"] == 1
     assert public == {
         "id": "sigma-public",
@@ -1199,6 +1204,9 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
         "judged": False,
         "not judged": "its rule set sigma was not evaluated: no rule engine was given (--engine <path to Zircolite>)",
     }
+    assert packets["id"] == "packets-et-open" and packets["judged"] is False
+    assert "no Suricata image was given" in packets["not judged"]
+    assert "its sensor packet-capture was unavailable" in packets["not judged"]
     assert not (folder / "alerts.sigma.ecs.ndjson").exists()
     summary = (folder / "score.md").read_text()
     assert (
@@ -1213,6 +1221,10 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
     assert {alert["detector"] for alert in made["alerts"]} == {"pinned"}
     assert any(
         note.startswith("The defense sigma-public of the spec is not in this recording")
+        for note in made["notes"]
+    )
+    assert any(
+        note.startswith("The defense packets-et-open of the spec is not in this recording")
         for note in made["notes"]
     )
 
@@ -1233,6 +1245,7 @@ def test_every_section_of_the_score_of_a_run_that_did_not_end_sealed_is_headed_n
         "### Path of range-one",
         "### Ordinary day of range-one",
         "### Rule set sigma of range-one",
+        "### Rule set et-open of range-one",
     ]
     assert all(": not a result, the run ended invalid (exit code 4)" in heading for heading in headings)
 
@@ -1326,6 +1339,7 @@ def test_a_run_judged_by_another_spec_keeps_the_rule_sets_it_fetched_itself(
     assert [(d["id"], d["judged"]) for d in again["score"]["defenses"]] == [
         ("wazuh-stock", True),
         ("sigma-public", True),
+        ("packets-et-open", False),
     ]
 
 
@@ -1359,6 +1373,7 @@ def test_range_rules_refuses_a_rule_set_of_the_name_of_one_the_run_fetched_itsel
     assert [(d["id"], d["judged"]) for d in judged(folder, program)["score"]["defenses"]] == [
         ("wazuh-stock", True),
         ("sigma-public", True),
+        ("packets-et-open", False),
     ]
 
 

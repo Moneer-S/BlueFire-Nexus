@@ -10,11 +10,11 @@ also reads which accounts and addresses the path uses. The other sections (the
 sentence, the executor and the rest of the path) are accepted here and read by
 the parts of the lab that use them.
 
-`rule_sets` names public rule sets, each pinned to a commit of its repository,
-and `defenses` the named defenses that judge a run: each one the kinds of
-sensor it records with and the rules it runs, which are the rules the Wazuh
-manager runs live (`wazuh`) or a rule set of `rule_sets`, evaluated after the
-run.
+`rule_sets` names public rule sets, each pinned to a commit of its repository
+or carried as tracked files pinned by a SHA-256 manifest. `defenses` names the
+defenses that judge a run: each one the kinds of sensor it records with and
+the rules it runs, which are the rules the Wazuh manager runs live (`wazuh`)
+or a rule set of `rule_sets`, evaluated after the run.
 
 What a host may have planted in it is a closed list: accounts, keys,
 known_hosts, dirs, files, database, sshd, packages, services, serve and
@@ -27,7 +27,7 @@ import hashlib
 import ipaddress
 import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -192,8 +192,12 @@ class Atomics:
 
 @dataclass(frozen=True)
 class RuleSet:
-    """A public rule set, pinned: the folders the lab takes from a repository at a commit, its licence
-    file, and the lock file beside the spec that gives the SHA-256 of each of those files."""
+    """A pinned public rule set.
+
+    Repository sets use ``repo`` through ``lock``. A tracked set keeps those
+    positional fields in place for compatibility and uses ``source_file``,
+    ``sha256`` and ``version`` for its repository-relative manifest.
+    """
 
     name: str
     kind: str
@@ -550,6 +554,18 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
         spec = replace(spec, activity=parse_activity(data["activity"], hosts, data.get("path"), watch))
     rule_sets = _rule_sets(data["rule_sets"], atomics) if "rule_sets" in data else ()
     defenses = _defenses(data["defenses"], rule_sets, wazuh) if "defenses" in data else ()
+    capture_hosts = [host for host in hosts.values() if host.capture == "packets"]
+    if any(PACKET_CAPTURE in defense.sensors for defense in defenses) and not capture_hosts:
+        raise SpecError(
+            f"a defense with sensor {PACKET_CAPTURE} needs at least one host with capture: packets"
+        )
+    for host in capture_hosts:
+        for network in host.networks:
+            if not any(other.name != host.name and network in other.networks for other in hosts.values()):
+                raise SpecError(
+                    f"host {host.name}: capture packets needs a peer on network {network}, so capture_ready "
+                    "can mark that interface"
+                )
     unused = [found.name for found in rule_sets if not any(found.name in d.rules for d in defenses)]
     if unused:
         raise SpecError(
@@ -1133,7 +1149,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
     if not isinstance(value, dict) or not value:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
     repository_keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
-    archive_keys = {"kind", "source", "sha256", "version"}
+    manifest_keys = {"kind", "source", "sha256", "version"}
     found = []
     for name, settings in value.items():
         if not isinstance(name, str) or not NAME.match(name) or len(name) > 64:
@@ -1154,7 +1170,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
         if not isinstance(settings, dict):
             raise SpecError(f"{where} must be a mapping")
         local = "source" in settings or "sha256" in settings or "version" in settings
-        keys = archive_keys if local else repository_keys
+        keys = manifest_keys if local else repository_keys
         entry = _mapping(settings, where, keys, keys)
         if entry["kind"] not in RULE_KINDS:
             raise SpecError(
@@ -1163,15 +1179,15 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
             )
         if local:
             if entry["kind"] != "suricata":
-                raise SpecError(f"{where}: a rule archive of the repository must have kind suricata")
+                raise SpecError(f"{where}: a tracked rule manifest must have kind suricata")
             source = entry["source"]
             if (
                 not isinstance(source, str)
                 or not RELATIVE.match(source)
-                or not source.endswith(".tar.gz")
+                or PurePosixPath(source).name != "SHA256SUMS"
             ):
                 raise SpecError(
-                    f"{where}: source must be a .tar.gz file inside the repository, relative to its root"
+                    f"{where}: source must be a SHA256SUMS manifest inside the repository, relative to its root"
                 )
             digest = entry["sha256"]
             if not isinstance(digest, str) or not SHA256.match(digest):

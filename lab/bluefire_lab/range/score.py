@@ -81,6 +81,9 @@ counted. The score above stays the detail of the manager's live rules.
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
+import json
 import math
 import posixpath
 import re
@@ -90,11 +93,12 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ..recording import outcome as score_word
 from ..report import count
-from . import activity, ecs, rulesets, sigma, wazuh
-from .spec import WAZUH_AGENT, WAZUH_RULES, Defense, RuleSet, SpecError
+from . import activity, ecs, packets, rulesets, sigma, suricata, wazuh
+from .spec import PACKET_CAPTURE, WAZUH_AGENT, WAZUH_RULES, Defense, RuleSet, SpecError
 
 ENGINE = "engine"
 CLEANUP = "cleanup"
@@ -111,6 +115,7 @@ STEPS_FILE = "steps.ecs.ndjson"
 # A path a step is given as an argument, or a cleanup's command names.
 PLAIN_PATH = re.compile(r"/[A-Za-z0-9._/-]*[A-Za-z0-9._-]\Z")
 WORD = re.compile(r"[^\s;|&<>()'\"`]+")
+HOST_TOKEN = re.compile(r"[a-z][a-z0-9-]*\Z")
 # Wazuh's levels in bands: informational, low, medium, high and critical.
 BANDS = ((0, 3, "0 to 3"), (4, 6, "4 to 6"), (7, 11, "7 to 11"), (12, 14, "12 to 14"), (15, 15, "15"))
 REVIEW_FROM = 7
@@ -118,6 +123,7 @@ REVIEW_FROM = 7
 SHOWN_LINES = 3
 LINE_CHARACTERS = 240
 EVENTS_FILE = "events.ecs.ndjson"
+NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
 ALERTS_FILE = "alerts.ecs.ndjson"
 # The matches of a rule set that was evaluated after the run, by the set's name.
 MATCHES_FILE = "alerts.{}.ecs.ndjson"
@@ -141,6 +147,49 @@ def detector_id(rules: str) -> str:
     return PINNED if rules == WAZUH_RULES else rules
 
 
+def _eve_time(value: object, field: str) -> datetime:
+    """A zoned time written by Suricata's EVE output."""
+
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"a Suricata record has no {field} that can be read: {error}") from error
+    if moment.tzinfo is None:
+        raise ValueError(f"a Suricata record's {field} has no time zone")
+    return moment
+
+
+def _capture_interface(raw: dict) -> str:
+    name = Path(str(raw.get("pcap_filename") or "")).name
+    if not name.endswith(".pcap") or name in (".pcap", ""):
+        raise ValueError("a Suricata record does not name its input PCAP")
+    return name.removesuffix(".pcap")
+
+
+def _suricata_level(raw: dict) -> str:
+    return suricata.severity((raw.get("alert") or {}).get("severity"))
+
+
+def _observation_sensor(event: dict) -> str:
+    labelled = str((event.get("labels") or {}).get("sensor") or "")
+    if labelled:
+        return labelled
+    host = (event.get("agent") or {}).get("name")
+    return sensor_id(WAZUH_AGENT, str(host)) if host else ""
+
+
+def _observation_host(event: dict) -> str | None:
+    if "@timestamp" in event:
+        return (event.get("observer") or {}).get("name") or (event.get("host") or {}).get("name")
+    return (event.get("agent") or {}).get("name")
+
+
+def _observation_time(event: dict) -> datetime:
+    if "@timestamp" in event:
+        return _eve_time(event.get("@timestamp"), "@timestamp")
+    return _when(event)
+
+
 def _tag(event: dict) -> str:
     if event.get("location") != activity.SNOOPY_LOG:
         return ""
@@ -150,6 +199,10 @@ def _tag(event: dict) -> str:
 def _line(event: dict) -> str:
     """An archived line in a few words: its agent, its log and its text, cut short."""
 
+    if "@timestamp" in event:
+        text = str((event.get("event") or {}).get("original") or event.get("message") or "").strip()
+        text = text if len(text) <= LINE_CHARACTERS else text[: LINE_CHARACTERS - 3] + "..."
+        return f"{_observation_host(event)}, {_observation_sensor(event)}: {text}"
     text = str(event.get("full_log") or "").strip()
     text = text if len(text) <= LINE_CHARACTERS else text[: LINE_CHARACTERS - 3] + "..."
     return f"{(event.get('agent') or {}).get('name')}, {event.get('location')}: {text}"
@@ -176,6 +229,8 @@ class Stretch:
     started: float
     ended: float
     paths: tuple[str, ...] = ()
+    # Range host names explicitly present in the step's arguments, beyond its published `to`.
+    peers: tuple[str, ...] = ()
 
     def holds(self, when: float, whole: bool) -> bool:
         """True for a moment inside the window; `whole` for a time to the second."""
@@ -192,6 +247,28 @@ def argument_paths(args: object) -> tuple[str, ...]:
 
     values = args.values() if isinstance(args, dict) else []
     return tuple(dict.fromkeys(v for v in values if isinstance(v, str) and PLAIN_PATH.match(v)))
+
+
+def network_peers(record: dict) -> tuple[str, ...]:
+    """Range host names a step explicitly reaches, from `to` and its recorded arguments."""
+
+    found: list[str] = []
+    declared = record.get("to")
+    if isinstance(declared, str):
+        found.append(declared)
+    elif isinstance(declared, (list, tuple)):
+        found.extend(value for value in declared if isinstance(value, str))
+    args = record.get("args")
+    for value in args.values() if isinstance(args, dict) else ():
+        if not isinstance(value, str):
+            continue
+        parsed = urlsplit(value)
+        if parsed.scheme and parsed.hostname:
+            found.append(parsed.hostname)
+        found.extend(host for _, host in activity.AT_HOST.findall(value))
+        if HOST_TOKEN.fullmatch(value):
+            found.append(value)
+    return tuple(dict.fromkeys(host for host in found if host != record.get("host")))
 
 
 def cleanup_paths(text: str, workdir: str) -> tuple[str, ...]:
@@ -228,10 +305,13 @@ def stretches(path: dict | None, out: Path) -> tuple[list[Stretch], list[Stretch
                 Stretch(
                     record["id"],
                     record["host"],
-                    tuple(record.get("to") or ()),
+                    (record["to"],)
+                    if isinstance(record.get("to"), str)
+                    else tuple(record.get("to") or ()),
                     record["started_ns"] / 1e9,
                     record["ended_ns"] / 1e9,
                     argument_paths(record.get("args")),
+                    network_peers(record),
                 )
             )
         run = record.get("cleanup_run") or {}
@@ -419,6 +499,351 @@ def attributed(
             if tied_by in COUNTED:
                 origin = STEP
         found.append((origin, job, step, tied_by))
+    return found
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while block := source.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def capture_inputs(out: Path, capture: dict | None) -> tuple[dict[str, Path], list[dict]]:
+    """The exact manifest-recorded, validated PCAP closure, grouped by capture host.
+
+    The adapter scans the host folder, so the manifest's files must be exactly
+    that folder's top-level classic PCAPs before the folder is passed to it.
+    """
+
+    hosts = (capture or {}).get("hosts") or {}
+    if not isinstance(hosts, dict) or not hosts:
+        raise suricata.SuricataError("the run recorded no packet-capture host")
+    root = Path(out).resolve()
+    found: dict[str, Path] = {}
+    records: list[dict] = []
+    for host in sorted(hosts):
+        entry = hosts[host]
+        if not isinstance(entry, dict):
+            raise suricata.SuricataError(f"packet capture on {host} has no manifest record")
+        folder = out / "raw" / "hosts" / host / packets.CAPTURE_DIR
+        actual = suricata.capture_files(folder)
+        declared = entry.get("files") or {}
+        if not isinstance(declared, dict) or not declared:
+            raise suricata.SuricataError(f"packet capture on {host} records no PCAP file")
+        expected: dict[Path, dict] = {}
+        for name, record in declared.items():
+            if not isinstance(record, dict) or not isinstance(record.get("file"), str):
+                raise suricata.SuricataError(f"packet capture on {host}: {name} has no recorded file")
+            relative = Path(record["file"])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise suricata.SuricataError(
+                    f"packet capture on {host}: {record['file']} is not inside the run folder"
+                )
+            path = out / relative
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as error:
+                raise suricata.SuricataError(
+                    f"packet capture on {host}: {record['file']} is not a retained file"
+                ) from error
+            if (
+                path.is_symlink()
+                or not resolved.is_relative_to(root)
+                or resolved.parent != folder.resolve()
+                or resolved.suffix != ".pcap"
+                or not resolved.is_file()
+            ):
+                raise suricata.SuricataError(
+                    f"packet capture on {host}: {record['file']} is not a regular top-level PCAP"
+                )
+            if resolved in expected:
+                raise suricata.SuricataError(
+                    f"packet capture on {host} records {record['file']} more than once"
+                )
+            if isinstance(record.get("bytes"), int) and record["bytes"] != resolved.stat().st_size:
+                raise suricata.SuricataError(
+                    f"packet capture on {host}: {record['file']} has changed size"
+                )
+            digest = record.get("sha256")
+            if digest is not None and (not isinstance(digest, str) or _sha256(resolved) != digest):
+                raise suricata.SuricataError(
+                    f"packet capture on {host}: {record['file']} does not have its recorded SHA-256"
+                )
+            expected[resolved] = record
+            records.append(
+                {
+                    "host": host,
+                    "interface": resolved.stem,
+                    "file": resolved.relative_to(root).as_posix(),
+                    "integrity": "sha256" if digest is not None else "retained closure",
+                    **({"sha256": digest} if digest is not None else {}),
+                }
+            )
+        actual_set = {path.resolve() for path in actual}
+        if actual_set != set(expected):
+            missing = sorted(path.name for path in set(expected) - actual_set)
+            extra = sorted(path.name for path in actual_set - set(expected))
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if extra:
+                details.append("unrecorded " + ", ".join(extra))
+            raise suricata.SuricataError(
+                f"packet capture on {host} is not the manifest's exact PCAP set: {'; '.join(details)}"
+            )
+        found[host] = folder
+    return found, records
+
+
+def protected_addresses(
+    addresses: dict[str, list[str]] | None, agents: list[str] | None, capture_hosts: list[str]
+) -> list[str]:
+    """Exact recorded addresses of agent and capture hosts, for Suricata HOME_NET."""
+
+    values = {
+        str(ipaddress.ip_address(address))
+        for host in {*list(agents or []), *capture_hosts}
+        for address in (addresses or {}).get(host, [])
+    }
+    if not values:
+        raise suricata.SuricataError("the run records no protected address for Suricata HOME_NET")
+    return sorted(values, key=lambda value: (ipaddress.ip_address(value).version, ipaddress.ip_address(value)))
+
+
+def packet_home_net(
+    capture: dict,
+    addresses: dict[str, list[str]] | None,
+    agents: list[str] | None,
+    capture_hosts: list[str],
+) -> tuple[list[str], str]:
+    """The immutable protected IP list retained with the capture, with old-run compatibility."""
+
+    expected_hosts = sorted({*list(agents or ()), *capture_hosts})
+    recorded_hosts = capture.get("home_hosts")
+    if recorded_hosts is not None:
+        if (
+            not isinstance(recorded_hosts, list)
+            or not all(isinstance(host, str) and host for host in recorded_hosts)
+            or recorded_hosts != sorted(set(recorded_hosts))
+        ):
+            raise suricata.SuricataError("packet_capture.home_hosts is not a sorted unique host list")
+        if agents is not None and recorded_hosts != expected_hosts:
+            raise suricata.SuricataError(
+                "packet_capture.home_hosts is not the recorded agent and capture host set"
+            )
+        expected_hosts = recorded_hosts
+    expected = (
+        protected_addresses(addresses, expected_hosts, [])
+        if addresses and any(addresses.get(host) for host in expected_hosts)
+        else []
+    )
+    retained = capture.get("home_net")
+    if retained is None:
+        if not expected:
+            raise suricata.SuricataError(
+                "the run records neither packet_capture.home_net nor protected host addresses"
+            )
+        return expected, "recorded addresses compatibility fallback"
+    if not isinstance(retained, list) or not retained:
+        raise suricata.SuricataError("packet_capture.home_net is not a non-empty IP list")
+    try:
+        home_net = [str(ipaddress.ip_address(value)) for value in retained if isinstance(value, str)]
+    except ValueError as error:
+        raise suricata.SuricataError("packet_capture.home_net contains an invalid IP address") from error
+    if len(home_net) != len(retained):
+        raise suricata.SuricataError("packet_capture.home_net contains a value that is not an IP string")
+    ordered = sorted(
+        set(home_net), key=lambda value: (ipaddress.ip_address(value).version, ipaddress.ip_address(value))
+    )
+    if home_net != ordered:
+        raise suricata.SuricataError("packet_capture.home_net is not the exact sorted unique IP list")
+    if expected and home_net != expected:
+        raise suricata.SuricataError(
+            "packet_capture.home_net is not the exact address set of its protected recorded hosts"
+        )
+    return home_net, "manifest packet_capture.home_net"
+
+
+def _network_interval(document: dict) -> tuple[float, float]:
+    event = document.get("event") or {}
+    start = _eve_time(event.get("start") or document.get("@timestamp"), "event.start").timestamp()
+    end = _eve_time(event.get("end") or document.get("@timestamp"), "event.end").timestamp()
+    if end < start:
+        raise ValueError("a network event ends before it starts")
+    return start, end
+
+
+def _connects(document: dict, first: list[str], second: list[str]) -> bool:
+    source = str((document.get("source") or {}).get("ip") or "")
+    destination = str((document.get("destination") or {}).get("ip") or "")
+    return (source in first and destination in second) or (source in second and destination in first)
+
+
+def _step_addresses(document: dict, stretch: Stretch, addresses: dict[str, list[str]]) -> bool:
+    mine = addresses.get(stretch.host, [])
+    peers = tuple(dict.fromkeys((*stretch.to, *stretch.peers)))
+    if not mine or not peers:
+        return False
+    peer_addresses = [address for host in peers for address in addresses.get(host, [])]
+    return bool(peer_addresses) and _connects(document, mine, peer_addresses)
+
+
+def _target_port(document: dict, addresses: list[str]) -> int | None:
+    if (document.get("destination") or {}).get("ip") in addresses:
+        return (document.get("destination") or {}).get("port")
+    if (document.get("source") or {}).get("ip") in addresses:
+        return (document.get("source") or {}).get("port")
+    return None
+
+
+def _ordinary_network_candidates(
+    document: dict,
+    jobs: activity.Activity | None,
+    addresses: dict[str, list[str]],
+    go: dict[str, float],
+    stop: dict[str, float],
+    started: float,
+    ended: float,
+    protected: set[str],
+) -> set[str]:
+    """Ordinary jobs supported by endpoint, service and activity-window evidence."""
+
+    found: set[str] = set()
+    protocol = str((document.get("network") or {}).get("protocol") or "").lower()
+    transport = str((document.get("network") or {}).get("transport") or "").lower()
+    path = str((document.get("url") or {}).get("path") or "")
+    source = document.get("source") or {}
+    destination = document.get("destination") or {}
+    for job in jobs.jobs if jobs else ():
+        if job.target is None:
+            continue
+        low, high = go.get(job.host), stop.get(job.host, math.inf)
+        if low is None or not low <= started <= ended <= high + activity.GRACE:
+            continue
+        own = addresses.get(job.host, [])
+        target = addresses.get(job.target, [])
+        if _connects(document, own, target):
+            wanted = 80 if job.do == "http" else 22 if job.do == "ssh" else None
+            if wanted is None or _target_port(document, target) != wanted:
+                continue
+            if job.do == "http" and protocol not in ("", "http"):
+                continue
+            if job.do == "ssh" and protocol not in ("", "ssh"):
+                continue
+            if job.do == "http" and path and job.paths and path not in job.paths:
+                continue
+            found.add(job.name)
+        # A customer's HTTP request can make the web target query a protected MariaDB host.
+        # It is still ordinary work, unless the same endpoint/time evidence also supports a path step.
+        if (
+            job.do == "http"
+            and source.get("ip") in target
+            and destination.get("ip") in protected
+            and destination.get("ip") not in target
+            and destination.get("port") == 3306
+            and transport in ("", "tcp")
+            and protocol in ("", "mysql", "mariadb")
+        ):
+            found.add(job.name)
+    return found
+
+
+def name_network_endpoints(document: dict, addresses: dict[str, list[str]]) -> None:
+    """Add an unambiguous recorded range-host name beside each exact endpoint IP."""
+
+    owners: dict[str, set[str]] = {}
+    for host, values in addresses.items():
+        for address in values:
+            owners.setdefault(address, set()).add(host)
+    for side in ("source", "destination"):
+        endpoint = document.get(side)
+        if not isinstance(endpoint, dict):
+            continue
+        names = owners.get(str(endpoint.get("ip") or ""), set())
+        if len(names) == 1:
+            endpoint.setdefault("domain", next(iter(names)))
+
+
+def _engine_network(document: dict, marks: list[dict]) -> bool:
+    source = str((document.get("source") or {}).get("ip") or "")
+    destination = str((document.get("destination") or {}).get("ip") or "")
+    destination_port = (document.get("destination") or {}).get("port")
+    return any(
+        mark.get("seen") is True
+        and source == mark.get("source")
+        and destination == mark.get("destination")
+        and destination_port == mark.get("port")
+        for mark in marks
+    )
+
+
+def network_attributed(
+    documents: list[dict],
+    jobs: activity.Activity | None,
+    addresses: dict[str, list[str]],
+    go: dict[str, float],
+    stop: dict[str, float],
+    steps: list[Stretch],
+    capture: dict | None = None,
+    home_net: list[str] | None = None,
+) -> list[tuple[str, str | None, str | None, str | None]]:
+    """Attribute canonical network events from exact endpoint and event-time evidence."""
+
+    marks = [
+        mark
+        for entry in ((capture or {}).get("hosts") or {}).values()
+        if isinstance(entry, dict)
+        for mark in entry.get("ready") or []
+        if isinstance(mark, dict)
+    ]
+    protected = set(home_net or (capture or {}).get("home_net") or ())
+    found = []
+    for document in documents:
+        started, ended = _network_interval(document)
+        origin, job_name, step_id, tied_by = UNATTRIBUTED, None, None, None
+        if _engine_network(document, marks):
+            origin = ENGINE
+        else:
+            ordinary = _ordinary_network_candidates(
+                document, jobs, addresses, go, stop, started, ended, protected
+            )
+            counted = [
+                stretch
+                for stretch in steps
+                if _step_addresses(document, stretch, addresses)
+                and stretch.holds(started, False)
+                and stretch.holds(ended, False)
+            ]
+            overlap = [
+                stretch
+                for stretch in steps
+                if _step_addresses(document, stretch, addresses)
+                and started <= stretch.ended + GRACE
+                and ended >= stretch.started
+            ]
+            if ordinary and not counted and not overlap:
+                origin = ORDINARY
+                job_name = next(iter(ordinary)) if len(ordinary) == 1 else None
+            elif len(counted) == 1 and not ordinary:
+                origin, step_id, tied_by = STEP, counted[0].step, "address"
+            else:
+                # Ordinary/step overlap, multiple counted steps, and interval-only overlap are all
+                # coincidences, never a precedence choice. Name a window only when it is unambiguous.
+                if len(overlap) == 1:
+                    step_id, tied_by = overlap[0].step, "window"
+        labels = document.setdefault("labels", {})
+        for name in ("job", "step_id", "tied_by"):
+            labels.pop(name, None)
+        labels["origin"] = origin
+        if job_name:
+            labels["job"] = job_name
+        if step_id:
+            labels["step_id"] = step_id
+        if tied_by:
+            labels["tied_by"] = tied_by
+        found.append((origin, job_name, step_id, tied_by))
     return found
 
 
@@ -836,8 +1261,8 @@ def path_score(
             "address or container name of the host it ran on and the paths it was given, inside its time span, "
             f"from its start to {GRACE} s after its end; an event that only falls inside that time span is "
             "coincident and never counts.",
-            "There is no network sensor, so the scans and both exfiltrations are seen only through what they "
-            "leave in the logs and files the agents watch.",
+            "This top-level Wazuh detail uses no network sensor, so scans and exfiltrations are seen here "
+            "only through what they leave in the logs and files the agents watch.",
             "Snoopy misses the first program of each docker exec, the published sh -c itself, which is the "
             "step's command.",
             "The defense is the stock Wazuh rules with the lab's agent configuration (its diff is in the "
@@ -863,7 +1288,9 @@ def live_matches(alerts: list[dict], picked: list[tuple], places: list, alert_le
                 "counts": isinstance(level, int) and not isinstance(level, bool) and level >= alert_level,
                 "moment": ecs.iso(raised_at(alert)),
                 "host": (alert.get("agent") or {}).get("name"),
+                "sensor": sensor_id(WAZUH_AGENT, str((alert.get("agent") or {}).get("name"))),
                 "event": place,
+                "event_id": f"archive-{place + 1}" if isinstance(place, int) else None,
                 "origin": origin,
                 "job": job,
                 "step": step,
@@ -943,7 +1370,11 @@ def after_the_run(
                 # The rules ran after the run: a match counts from the time of its event.
                 "moment": ecs.iso(_when(events[index])),
                 "host": (events[index].get("agent") or {}).get("name"),
+                "sensor": sensor_id(
+                    WAZUH_AGENT, str((events[index].get("agent") or {}).get("name"))
+                ),
                 "event": index,
+                "event_id": ids[index],
                 "origin": origin,
                 "job": job,
                 "step": step,
@@ -959,6 +1390,270 @@ def after_the_run(
     )
     found["rules that matched"] = matched_rules(matches)
     return found, matches
+
+
+def _frozen(value: object) -> object:
+    if isinstance(value, list | tuple):
+        return tuple(_frozen(item) for item in value)
+    if isinstance(value, dict):
+        return tuple((key, _frozen(value[key])) for key in sorted(value))
+    return value
+
+
+def _network_event_document(
+    raw: dict,
+    host: str,
+    event_id: str,
+    engine: dict,
+    addresses: dict[str, list[str]],
+) -> dict:
+    interface = _capture_interface(raw)
+    document = ecs.network_event(
+        raw,
+        host,
+        interface,
+        event_id,
+        UNATTRIBUTED,
+        engine=engine,
+    )
+    name_network_endpoints(document, addresses)
+    return document
+
+
+def _network_alert_document(raw: dict, parent: dict, rule_set: RuleSet, engine: dict) -> dict:
+    return ecs.network_alert(raw, parent, rule_set.name, engine=engine)
+
+
+def network_telemetry(
+    out: Path,
+    image: str,
+    capture: dict,
+    addresses: dict[str, list[str]],
+    agents: list[str] | None,
+    jobs: activity.Activity | None,
+    go: dict[str, float],
+    stop: dict[str, float],
+    steps: list[Stretch],
+) -> tuple[dict, list[dict], list[tuple], dict[tuple, int], dict[str, Path], list[str]]:
+    """Run the rule-independent packet decoder and write one canonical network event stream."""
+
+    folders, retained = capture_inputs(out, capture)
+    home_net, home_net_source = packet_home_net(capture, addresses, agents, list(folders))
+    raw: list[tuple[str, dict, dict]] = []
+    runs = []
+    expected_engine = None
+    for host, folder in folders.items():
+        made = suricata.telemetry(
+            image,
+            folder,
+            home_net,
+            out / "engine" / "suricata" / "network" / host,
+        )
+        records = made.get("records")
+        alerts = made.get("alerts")
+        if not isinstance(records, list) or not isinstance(alerts, list):
+            raise suricata.SuricataError(f"Suricata telemetry on {host} returned no record lists")
+        if alerts:
+            raise suricata.SuricataError(
+                f"the detection-disabled Suricata telemetry pass on {host} returned an alert"
+            )
+        engine = made.get("engine")
+        if not isinstance(engine, dict):
+            raise suricata.SuricataError(f"Suricata telemetry on {host} returned no engine identity")
+        if expected_engine is not None and engine != expected_engine:
+            raise suricata.SuricataError("the canonical packet captures were decoded by different engines")
+        expected_engine = engine
+        suricata.record_index(records)
+        raw += [(host, record, engine) for record in records]
+        runs.append(
+            {
+                "host": host,
+                **{
+                    key: value
+                    for key, value in made.items()
+                    if key not in ("records", "alerts", "alert event keys")
+                },
+            }
+        )
+    raw.sort(
+        key=lambda item: (
+            item[0],
+            _capture_interface(item[1]),
+            json.dumps(_frozen(suricata.event_key(item[1])), default=str),
+        )
+    )
+    documents = []
+    places: dict[tuple, int] = {}
+    ordinals: Counter = Counter()
+    for host, record, engine in raw:
+        interface = _capture_interface(record)
+        ordinals[(host, interface)] += 1
+        event_id = f"network-{host}-{interface}-{ordinals[(host, interface)]:06d}"
+        key = (host, _frozen(suricata.event_key(record)))
+        if key in places:
+            raise suricata.SuricataError(
+                f"canonical Suricata telemetry on {host} has the same stable event key twice"
+            )
+        places[key] = len(documents)
+        documents.append(_network_event_document(record, host, event_id, engine, addresses))
+    if not documents:
+        raise suricata.SuricataError("Suricata produced no canonical network event")
+    ties = network_attributed(documents, jobs, addresses, go, stop, steps, capture, home_net)
+    count = ecs.write(out / NETWORK_EVENTS_FILE, documents)
+    if count != len(documents):
+        raise suricata.SuricataError(
+            f"{NETWORK_EVENTS_FILE} has {count} lines for {len(documents)} canonical network events"
+        )
+    section = {
+        "evaluated": True,
+        "engine": expected_engine,
+        "home_net": home_net,
+        "home_net source": home_net_source,
+        "file": NETWORK_EVENTS_FILE,
+        "lines": count,
+        "captures": retained,
+        "runs": runs,
+    }
+    return section, documents, ties, places, folders, home_net
+
+
+def after_suricata(
+    out: Path,
+    rule_set: RuleSet,
+    image: str | None,
+    lock: dict[str, str] | None,
+    folders: dict[str, Path],
+    home_net: list[str],
+    documents: list[dict],
+    ties: list[tuple],
+    places: dict[tuple, int],
+    unavailable: str | None = None,
+) -> tuple[dict, list[dict] | None]:
+    """Evaluate one Suricata rule set and link each alert to its canonical flow."""
+
+    name = MATCHES_FILE.format(rule_set.name)
+    found: dict = {
+        "kind": rule_set.kind,
+        "source": rulesets.source(rule_set),
+        "when": AFTER,
+        "evaluated": False,
+    }
+    try:
+        if unavailable:
+            raise suricata.SuricataError(unavailable)
+        if image is None:
+            raise suricata.SuricataError("no Suricata image was given (--suricata-image IMAGE)")
+        if lock is None:
+            raise SpecError(
+                f"the run did not fetch the rule set: its folder has no {rulesets.FOLDER}/{rule_set.name} "
+                "checked against a lock"
+            )
+        folder = rulesets.held(out, rule_set.name, lock)
+        alerts_and_parents: list[tuple[dict, dict, int, dict]] = []
+        runs = []
+        expected = None
+        for host, captures in folders.items():
+            made = suricata.evaluate(
+                image,
+                folder,
+                captures,
+                home_net,
+                out / "engine" / "suricata" / rule_set.name / host,
+            )
+            engine = made.get("engine")
+            if not isinstance(engine, dict):
+                raise suricata.SuricataError(f"Suricata evaluation on {host} returned no engine identity")
+            facts = tuple(
+                made.get(key)
+                for key in (
+                    "rules",
+                    "rule file count",
+                    "rule files",
+                    "loaded",
+                    "failed",
+                    "load errors",
+                )
+            )
+            if expected is not None and (engine, facts) != expected:
+                raise suricata.SuricataError(
+                    f"the rule set {rule_set.name} was not loaded alike for every capture host"
+                )
+            expected = (engine, facts)
+            alerts = made.get("alerts")
+            keys = made.get("alert event keys")
+            if not isinstance(alerts, list) or not isinstance(keys, list) or len(alerts) != len(keys):
+                raise suricata.SuricataError(
+                    f"Suricata evaluation of {rule_set.name} on {host} returned alerts without event keys"
+                )
+            for alert, event_key in zip(alerts, keys, strict=True):
+                place = places.get((host, _frozen(event_key)))
+                if place is None:
+                    raise suricata.SuricataError(
+                        f"an alert of {rule_set.name} on {host} has no canonical network event"
+                    )
+                alerts_and_parents.append((alert, documents[place], place, engine))
+            runs.append(
+                {
+                    "host": host,
+                    **{
+                        key: value
+                        for key, value in made.items()
+                        if key not in ("records", "alerts", "alert event keys")
+                    },
+                }
+            )
+        made_documents, matches = [], []
+        for alert, parent, place, engine in alerts_and_parents:
+            document = _network_alert_document(alert, parent, rule_set, engine)
+            made_documents.append(document)
+            labels = document.get("labels") or {}
+            rule = document.get("rule") or {}
+            level = str(labels.get("level") or _suricata_level(alert))
+            origin, job, step, tied_by = ties[place]
+            matches.append(
+                {
+                    "detector": detector_id(rule_set.name),
+                    "rule": str(rule.get("id")),
+                    "title": rule.get("name") or rule.get("description") or str(rule.get("id")),
+                    "level": level,
+                    "counts": level in sigma.ALERT_LEVELS,
+                    "moment": document["@timestamp"],
+                    "host": _observation_host(parent),
+                    "sensor": _observation_sensor(parent),
+                    "event": place,
+                    "event_id": labels.get("event_id"),
+                    "origin": origin,
+                    "job": job,
+                    "step": step,
+                    "tied_by": tied_by,
+                }
+            )
+        count = ecs.write(out / name, made_documents)
+        if count != len(made_documents):
+            raise suricata.SuricataError(
+                f"{name} has {count} lines for {len(made_documents)} Suricata alerts"
+            )
+        first = runs[0] if runs else {}
+        found.update(
+            evaluated=True,
+            engine=first.get("engine"),
+            rules=first.get("rules"),
+            loaded=first.get("loaded"),
+            failed=first.get("failed"),
+            digest=rulesets.digest(rule_set, lock),
+            file=name,
+            lines=count,
+            runs=runs,
+        )
+        found["rule file count"] = first.get("rule file count")
+        found["rule files"] = first.get("rule files")
+        found["load errors"] = first.get("load errors")
+        found["rules that matched"] = matched_rules(matches)
+        return found, matches
+    except (SpecError, suricata.SuricataError, OSError, ValueError, TypeError, KeyError) as error:
+        (out / name).unlink(missing_ok=True)
+        found["not evaluated"] = str(error)
+        return found, None
 
 
 def matched_rules(matches: list[dict]) -> list[dict]:
@@ -1008,16 +1703,23 @@ def judge(
     """What one defense made of the run: of each step of the path, the race, and the ordinary day.
 
     `hosts` gives the hosts with a sensor of each kind and `matches` the rule
-    matches of each detector. The defense counts the events on the hosts of
-    its own sensors and the matches of its own rules on them, by the ties
+    matches of each detector. The defense counts the events from the exact
+    sensor instances of its own kinds and the matches of its own rules on them, by the ties
     every defense shares. `day` is the ordinary day's score, whose
     denominators are the run's own.
     """
 
-    watched = {host for kind in defense.sensors for host in hosts.get(kind, [])}
+    watched = {
+        sensor_id(kind, host) for kind in defense.sensors for host in hosts.get(kind, [])
+    }
     detectors = [detector_id(rules) for rules in defense.rules]
-    mine = [m for detector in detectors for m in matches.get(detector, []) if m["host"] in watched]
-    here = [(event.get("agent") or {}).get("name") in watched for event in events]
+    mine = [
+        match
+        for detector in detectors
+        for match in matches.get(detector, [])
+        if match.get("sensor") in watched
+    ]
+    here = [_observation_sensor(event) in watched for event in events]
     found: dict = {
         "id": defense.id,
         "name": defense.name,
@@ -1058,7 +1760,9 @@ def judge(
                     if set(by_tie) == {"address"}
                     else [],
                     "coincident events": sum(1 for _, tied_by in of_step if tied_by == "window"),
-                    "first_event": ecs.iso(min(_when(event) for event in tied)) if tied else None,
+                    "first_event": ecs.iso(min(_observation_time(event) for event in tied))
+                    if tied
+                    else None,
                     "matches": len(on_step),
                     "rules": matched_rules(on_step),
                     "first_alert": {
@@ -1091,9 +1795,20 @@ def judge(
         }
         found["race"] = raced
     ordinary = matched_rules([m for m in mine if m["origin"] == ORDINARY])
+    packet_only = PACKET_CAPTURE in defense.sensors and WAZUH_AGENT not in defense.sensors
+    packet_reason = None
+    if packet_only:
+        runs = day["denominators"]["runs of each job"]
+        missing = [name for name, counted in runs.items() if not (counted.get("runs") or 0) >= 1]
+        if not runs:
+            packet_reason = "the range has no ordinary jobs, so no number of false alerts is a result"
+        elif day["denominators"]["minutes of activity"] is None:
+            packet_reason = "the minutes of activity were not counted, so no number of false alerts is a result"
+        elif missing:
+            packet_reason = "an ordinary job did not run: " + ", ".join(missing)
     found["ordinary"] = {
-        "scored": day["scored"],
-        "not scored": day["not scored"],
+        "scored": packet_reason is None if packet_only else day["scored"],
+        "not scored": packet_reason if packet_only else day["not scored"],
         "minutes": day["denominators"]["minutes of activity"],
         "events": sum(
             1 for (origin, *_), mine_too in zip(ties, here, strict=True) if mine_too and origin == ORDINARY
@@ -1107,13 +1822,23 @@ def judge(
     return found
 
 
-def not_judged(defense: Defense, hosts: dict[str, list[str]], sets: dict[str, dict]) -> dict:
-    """A defense that did not judge the run, with why: a rule set of its own was not evaluated."""
+def not_judged(
+    defense: Defense,
+    hosts: dict[str, list[str]],
+    sets: dict[str, dict],
+    sensor_errors: dict[str, str] | None = None,
+) -> dict:
+    """A defense that did not judge the run, with unavailable sensors and rule sets named."""
 
     why = [
         f"its rule set {rules} was not evaluated: {sets[rules].get('not evaluated')}"
         for rules in defense.rules
         if rules in sets and not sets[rules]["evaluated"]
+    ]
+    why += [
+        f"its sensor {kind} was unavailable: {(sensor_errors or {})[kind]}"
+        for kind in defense.sensors
+        if kind in (sensor_errors or {})
     ]
     return {
         "id": defense.id,
@@ -1143,6 +1868,8 @@ def record(
     agents: list[str] | None = None,
     engine: Path | None = None,
     locks: dict[str, dict[str, str]] | None = None,
+    packet_capture: dict | None = None,
+    suricata_image: str | None = None,
 ) -> tuple[dict, dict | None]:
     """Write events.ecs.ndjson and alerts.ecs.ndjson from the manager's copied logs, and score the run.
 
@@ -1160,6 +1887,8 @@ def record(
     `agents` the hosts with an agent, `engine` the rule engine's program and
     `locks` the SHA-256 of each rule set's files, by the set's name: a rule
     set is evaluated only from files of the run's folder that have them.
+    `packet_capture` is the retained manifest section and `suricata_image` the
+    already-present pinned image used for its rule-independent and per-set passes.
     """
 
     section: dict = {
@@ -1174,7 +1903,7 @@ def record(
     try:
         # A rescore is one current judgment of the run. Remove matches and private engine work from
         # an earlier judgment before naming the files written by this one.
-        for stale in out.glob("alerts.*.ecs.ndjson"):
+        for stale in (*out.glob("alerts.*.ecs.ndjson"), out / NETWORK_EVENTS_FILE):
             if stale.is_symlink() or stale.is_file():
                 stale.unlink()
             elif stale.exists():
@@ -1252,27 +1981,142 @@ def record(
                 "raw lines": len(path["steps"]),
                 "ECS lines": ecs.write(out / STEPS_FILE, written),
             }
-        # Every defense judges the same run: the manager's live alerts, and the matches of each rule
-        # set that is evaluated now, after the run, from the files in the run's folder.
+        # Decode retained PCAPs once, independently of every packet rule set. Failure leaves the
+        # Wazuh score intact and makes only defenses that need the packet sensor unavailable.
+        active_defenses = defenses or (BASELINE,)
+        capture_hosts = (packet_capture or {}).get("hosts") if isinstance(packet_capture, dict) else {}
+        packet_hosts = sorted(capture_hosts) if isinstance(capture_hosts, dict) else []
+        need_network = any(PACKET_CAPTURE in defense.sensors for defense in active_defenses) or any(
+            rule_set.kind == "suricata" for rule_set in rule_sets
+        )
+        network_documents: list[dict] = []
+        network_ties: list[tuple] = []
+        network_places: dict[tuple, int] = {}
+        capture_folders: dict[str, Path] = {}
+        home_net: list[str] = []
+        network_error = None
+        if need_network:
+            try:
+                if suricata_image is None:
+                    raise suricata.SuricataError(
+                        "no Suricata image was given (--suricata-image IMAGE)"
+                    )
+                if not isinstance(packet_capture, dict):
+                    raise suricata.SuricataError("the run recorded no packet capture")
+                (
+                    network_section,
+                    network_documents,
+                    network_ties,
+                    network_places,
+                    capture_folders,
+                    home_net,
+                ) = network_telemetry(
+                    out,
+                    suricata_image,
+                    packet_capture,
+                    addresses or {},
+                    agents,
+                    jobs,
+                    go,
+                    stop,
+                    steps,
+                )
+                section["network"] = network_section
+                section["files"][NETWORK_EVENTS_FILE] = {
+                    "from": [capture["file"] for capture in network_section["captures"]],
+                    "raw lines": len(network_documents),
+                    "ECS lines": network_section["lines"],
+                    "time sources": dict(
+                        Counter(
+                            (document.get("labels") or {}).get("time_source")
+                            for document in network_documents
+                        )
+                    ),
+                    "origins": dict(Counter(origin for origin, *_ in network_ties)),
+                }
+            except (
+                ecs.ConversionError,
+                SpecError,
+                suricata.SuricataError,
+                OSError,
+                ValueError,
+                TypeError,
+                KeyError,
+            ) as error:
+                network_error = str(error)
+                stale_network = out / NETWORK_EVENTS_FILE
+                if stale_network.is_symlink() or stale_network.is_file():
+                    stale_network.unlink()
+                elif stale_network.exists():
+                    shutil.rmtree(stale_network)
+                section["network"] = {"evaluated": False, "not evaluated": network_error}
+
+        # Every defense judges the same run: live manager alerts plus matches from the evaluator
+        # appropriate to each retained rule-set kind.
         matches = {PINNED: live_matches(alerts, picked, places, alert_level)}
         sets: dict[str, dict] = {}
         for rule_set in rule_sets:
-            sets[rule_set.name], evaluated = after_the_run(
-                out, rule_set, engine, (locks or {}).get(rule_set.name), events, found, ids
-            )
+            if rule_set.kind == "sigma":
+                sets[rule_set.name], evaluated = after_the_run(
+                    out, rule_set, engine, (locks or {}).get(rule_set.name), events, found, ids
+                )
+            elif rule_set.kind == "suricata":
+                sets[rule_set.name], evaluated = after_suricata(
+                    out,
+                    rule_set,
+                    suricata_image,
+                    (locks or {}).get(rule_set.name),
+                    capture_folders,
+                    home_net,
+                    network_documents,
+                    network_ties,
+                    network_places,
+                    network_error,
+                )
+            else:
+                raise SpecError(f"the rule set {rule_set.name} has unknown kind {rule_set.kind}")
             if evaluated is not None:
                 matches[detector_id(rule_set.name)] = evaluated
         if sets:
             result["rule sets"] = sets
         seen = {(event.get("agent") or {}).get("name") for event in events}
-        hosts = {WAZUH_AGENT: list(agents) if agents is not None else sorted(host for host in seen if host)}
+        hosts = {
+            WAZUH_AGENT: list(agents) if agents is not None else sorted(host for host in seen if host),
+            PACKET_CAPTURE: packet_hosts,
+        }
+        sensor_errors = {PACKET_CAPTURE: network_error} if network_error else {}
         agree = result["path"]["clock"]["agree"] if "path" in result else True
-        result["defenses"] = [
-            judge(defense, hosts, matches, events, found, path, {s.step for s in steps}, agree, result)
-            if all(detector_id(rules) in matches for rules in defense.rules)
-            else not_judged(defense, hosts, sets)
-            for defense in defenses or (BASELINE,)
-        ]
+        all_events = [*events, *network_documents]
+        all_ties = [*found, *network_ties]
+        judged = []
+        for defense in active_defenses:
+            unavailable = dict(sensor_errors)
+            unavailable.update(
+                {
+                    kind: "the run records no host for this sensor"
+                    for kind in defense.sensors
+                    if not hosts.get(kind)
+                }
+            )
+            ready = all(detector_id(rules) in matches for rules in defense.rules) and not any(
+                kind in unavailable for kind in defense.sensors
+            )
+            judged.append(
+                judge(
+                    defense,
+                    hosts,
+                    matches,
+                    all_events,
+                    all_ties,
+                    path,
+                    {s.step for s in steps},
+                    agree,
+                    result,
+                )
+                if ready
+                else not_judged(defense, hosts, sets, unavailable)
+            )
+        result["defenses"] = judged
         # A spec that names no defense has the one above, and its recording is written as before.
         result["defenses named"] = bool(defenses)
         return section, result
@@ -1418,7 +2262,7 @@ def markdown(manifest: dict) -> str:
 
 
 # A kind of sensor in words, for a table.
-SENSOR_WORDS = {WAZUH_AGENT: "Wazuh agent"}
+SENSOR_WORDS = {WAZUH_AGENT: "Wazuh agent", PACKET_CAPTURE: "packet capture"}
 
 
 def _sensors(ids: list[str]) -> str:
@@ -1538,6 +2382,53 @@ def rule_sets_summary(manifest: dict) -> list[str]:
             lines += [f"Not evaluated: {_cell(entry.get('not evaluated'))}.", ""]
             continue
         engine = entry.get("engine") or {}
+        if entry.get("kind") == "suricata":
+            rule_files = entry.get("rule files") or []
+            failed = entry.get("failed") or 0
+            lines += [
+                f"{engine.get('name')} {engine.get('version')} read the run's retained packet captures "
+                f"after the run with no network: {entry.get('rules', 0)} rules from "
+                f"{count(len(rule_files), 'file')}, {entry.get('loaded', 0)} loaded and {failed} failed. "
+                "A rule the engine did not load was not evaluated. "
+                f"The matches are in {entry['file']} ({count(entry['lines'], 'line')}), each at the time "
+                "of its linked packet event.",
+                "",
+                "| Capture host | Capture files | Packets read | Network records | Alerts |",
+                "|---|---|---|---|---|",
+            ]
+            for run in entry.get("runs") or []:
+                read = run.get("read counts") or {}
+                lines.append(
+                    f"| {_cell(run.get('host'))} | {read.get('capture files', 0)} | "
+                    f"{read.get('packets', 0)} | {read.get('network records', 0)} | "
+                    f"{read.get('alerts', 0)} |"
+                )
+            lines.append("")
+            if failed:
+                reasons = entry.get("load errors") or []
+                lines += [
+                    "Rule load failures: "
+                    + ("; ".join(_cell(reason) for reason in reasons) or "the engine gave no reason")
+                    + ".",
+                    "",
+                ]
+            matched = entry.get("rules that matched") or []
+            lines += [f"Rules that matched: {len(matched)}.", ""]
+            if matched:
+                lines += [
+                    "| Rule | Level | Counts as an alert | Author | Matches | On |",
+                    "|---|---|---|---|---|---|",
+                ]
+                lines += [
+                    f"| {_cell(rule['title'])} (`{rule['rule']}`) | {rule['level']} | "
+                    f"{'yes' if rule['counts'] else 'no'} | {_cell(rule.get('author') or '')} | "
+                    f"{rule['matches']} | "
+                    + _cell(", ".join(f"{where} {number}" for where, number in rule["on"].items()))
+                    + " |"
+                    for rule in matched
+                ]
+                lines.append("")
+            continue
         lines += [
             f"{engine.get('name')} {engine.get('version')} was given the run's archived events after the run, "
             f"each rule folder over the events of its log source and no others: {entry['rules']} rules, "

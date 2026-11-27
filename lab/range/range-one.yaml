@@ -36,7 +36,7 @@ defense:
       - {path: /var/log/snoopy.log, format: syslog}
       - {path: /var/log/dpkg.log, format: syslog}
     fim_realtime: [/etc, /home, /root, /tmp, /var/tmp]
-rule_sets:                         # public rule sets, fetched file by file at their commit
+rule_sets:                         # public rule sets, each file pinned before use
   sigma:
     kind: sigma                    # Sigma rules, each given the events of its log source after the run
     repo: SigmaHQ/sigma
@@ -47,8 +47,8 @@ rule_sets:                         # public rule sets, fetched file by file at t
     lock: range-one.rules.lock     # sha256 of every fetched rule file and of the licence file
   et-open:
     kind: suricata
-    source: lab/rules/et-open/emerging.rules.tar.gz
-    sha256: 993ba9ec3a0a185e30f418a157e1858e2276f27dc8fb7059402d96ead16c0a88
+    source: lab/rules/et-open/SHA256SUMS
+    sha256: 3bea34d2fd30638768191a820e12d5e7c590ec96338bde2f1b01a81abc03842a
     version: "11342"
 defenses:                          # each judges the same run; the first is the baseline
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
