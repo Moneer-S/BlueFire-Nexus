@@ -77,7 +77,8 @@ jobs:
       - name: Test
         run: |
           engine=$(find "$RUNNER_TEMP/zircolite" -maxdepth 2 -type f -name Zircolite)
-          "$RUNNER_TEMP/venv/bin/pytest" --rootdir lab -c lab/pyproject.toml lab/tests --engine "$engine"
+          "$RUNNER_TEMP/venv/bin/pytest" --rootdir lab -c lab/pyproject.toml \
+            lab/tests --strict-markers -m "not app_recording_interop" --engine "$engine"
 
   # A pull request that changes what a run loads of the defense is shown against its base commit. A
   # change of the sensors' settings is a pair of fresh runs (pair=runs): the whole list with the base

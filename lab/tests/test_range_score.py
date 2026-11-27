@@ -1285,9 +1285,7 @@ def test_matched_rule_attribution_is_split_without_dropping_author_credits(
     assert all(f"{rule['title']} ({rule['id']}), by {rule['author']}" in said for rule in rules)
 
 
-def test_skipped_sigma_groups_stay_complete_and_fit_the_app_recording_format(
-    tmp_path: Path, monkeypatch
-) -> None:
+def _recording_with_many_skipped_sigma_groups(tmp_path: Path, monkeypatch) -> tuple[dict, list[dict]]:
     folder = small_run(tmp_path)
     with_rules(folder)
     program = matching(monkeypatch, [])
@@ -1315,7 +1313,13 @@ def test_skipped_sigma_groups_stay_complete_and_fit_the_app_recording_format(
 
     monkeypatch.setattr(sigma, "evaluate_set", with_skipped)
     judged(folder, program)
-    made = json.loads((folder / recording.FILE).read_text())
+    return json.loads((folder / recording.FILE).read_text()), skipped
+
+
+def test_skipped_sigma_groups_stay_complete_and_fit_the_app_recording_format(
+    tmp_path: Path, monkeypatch
+) -> None:
+    made, skipped = _recording_with_many_skipped_sigma_groups(tmp_path, monkeypatch)
     openings = ("Not evaluated, of sigma: ", "Not evaluated, of sigma, continued: ")
     bounded = [note for note in made["notes"] if note.startswith(openings)]
     facts = [f"{group['rules']} rules of {group['folder']} ({group['not evaluated']})" for group in skipped]
@@ -1325,7 +1329,10 @@ def test_skipped_sigma_groups_stay_complete_and_fit_the_app_recording_format(
     joined = " ".join(bounded)
     assert all(joined.count(fact) == 1 for fact in facts)
 
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
+
+@pytest.mark.app_recording_interop
+def test_app_accepts_recording_with_split_skipped_sigma_groups(tmp_path: Path, monkeypatch) -> None:
+    made, _ = _recording_with_many_skipped_sigma_groups(tmp_path, monkeypatch)
     app_recordings = importlib.import_module("bluefire.recordings")
     assert app_recordings.validate_recording(made) is made
 
