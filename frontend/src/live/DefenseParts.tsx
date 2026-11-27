@@ -9,12 +9,13 @@ import { capital, elapsed, plainMarks, plural, stepLabel, unitWord } from "./for
 
 export function runOutcome(recording: Recording, real: number, goalTold: boolean, whole: boolean): { reached: boolean; lead: string; detail: string } {
   const goal = recording.score.goal_seconds;
+  const final = whole && recording.source.finished !== undefined;
   const reached = goal !== undefined && (goalTold || whole);
   const stopped = recording.steps.filter((step) => step.outcome === "stopped" && (whole || (step.ended !== undefined && timeOf(step.ended) <= real)));
-  const stops = stopped.length === 0 ? (reached || whole ? "no step stopped" : "no step stopped so far") : `${plural(stopped.length, "step")} stopped: ${stopped.map((step) => stepLabel(recording, step)).join(", ")}`;
+  const stops = stopped.length === 0 ? (reached || final ? "no step stopped" : "no step stopped so far") : `${plural(stopped.length, "step")} stopped: ${stopped.map((step) => stepLabel(recording, step)).join(", ")}`;
   return {
     reached,
-    lead: reached ? "The attacker reached its goal" : whole ? "The attacker did not reach its goal" : "The attacker has not reached its goal",
+    lead: reached ? "The attacker reached its goal" : final ? "The attacker did not reach its goal" : "The attacker has not reached its goal",
     detail: reached && goal !== undefined ? `${elapsed(goal)} into the run, with ${stops}` : capital(stops),
   };
 }

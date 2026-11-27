@@ -207,6 +207,21 @@ describe("one run judged by several defenses", () => {
     unmount();
   });
 
+  it("keeps an unfinished Analyse outcome provisional", () => {
+    const value = judgedTwice();
+    delete value.source.finished;
+    delete value.score.goal_seconds;
+    for (const defense of value.defenses ?? []) delete defense.score.goal_seconds;
+
+    const { container, unmount } = open(value, { mode: "analyse", defense: "stock" });
+    const outcome = within(container).getByLabelText("The outcome");
+
+    expect(outcome.textContent).toContain("The attacker has not reached its goal");
+    expect(outcome.textContent).toContain("No step stopped so far");
+    expect(outcome.textContent).not.toContain("The attacker did not reach its goal");
+    unmount();
+  });
+
   it("names the chosen defense in Analyse when it did not see a step", () => {
     const value = judgedTwice();
     const defense = value.defenses?.[1];
