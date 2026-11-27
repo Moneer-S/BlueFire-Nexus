@@ -749,8 +749,8 @@ def test_a_steps_first_alert_counts_a_live_alert_from_when_it_was_raised(
     ]
     # The alert whose event came first is not the step's first alert: the one raised first is.
     assert from_the_latest == [
-        "steps[0].first_alert is 2026-11-17T17:07:36.000Z, but the step's first counting alert of "
-        "a published rule is at 2026-11-17T17:07:22.000Z.",
+        "steps[0].first_alert is 2026-11-17T17:07:36.000Z, but the step's first counting alert of a "
+        "pinned rule in the defense is at 2026-11-17T17:07:22.000Z.",
         "steps[0].first_alert_with_lab_rules is 2026-11-17T17:07:36.000Z, but the step's first "
         "counting alert is at 2026-11-17T17:07:22.000Z.",
     ]
