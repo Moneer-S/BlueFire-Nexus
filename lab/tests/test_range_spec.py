@@ -93,7 +93,7 @@ def test_a_target_that_listens_on_nothing_is_probed_on_port_22_where_it_must_fai
 def test_a_spec_with_the_sections_that_later_parts_read_is_not_refused() -> None:
     document = a_spec(
         sentence="a sentence",
-        executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": "8af478bb"},
+        executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": "8af478bb" * 5},
         path={"steps": [], "goal": {"plain": "a goal"}},
     )
 
@@ -101,6 +101,38 @@ def test_a_spec_with_the_sections_that_later_parts_read_is_not_refused() -> None
 
     assert sorted(spec.hosts) == ["left", "middle", "right"]
     assert spec.steps == ()
+
+
+def test_executor_commit_chunks_reassemble_to_the_exact_scalar() -> None:
+    commit = "01234567" * 5
+    document = a_spec(
+        executor={
+            "reference": "redcanaryco/invoke-atomicredteam",
+            "commit": [commit[place : place + 8] for place in range(0, 40, 8)],
+        }
+    )
+
+    range_spec.parse(document)
+
+    assert range_spec.executor_commit(document["executor"]) == commit
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        ["01234567"] * 4,
+        ["01234567"] * 4 + ["ABCDEFGH"],
+        ["01234567"] * 4 + ["0123456"],
+        ["01234567"] * 4 + [12345678],
+    ],
+)
+def test_executor_commit_chunks_are_strict(commit: list[object]) -> None:
+    document = a_spec(
+        executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": commit}
+    )
+
+    with pytest.raises(range_spec.SpecError, match="executor.commit must be a full commit id"):
+        range_spec.parse(document)
 
 
 SMALL = Path(__file__).parent / "fixtures" / "range" / "small" / "small.yaml"

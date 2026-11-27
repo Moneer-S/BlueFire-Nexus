@@ -42,7 +42,7 @@ from pathlib import Path
 from .. import recording as lab
 from . import ecs, score, sigma
 from . import path as range_path
-from .spec import PACKET_CAPTURE, WAZUH_AGENT, read
+from .spec import PACKET_CAPTURE, WAZUH_AGENT, executor_commit, read
 
 FILE = "recording.json"
 NETWORK_EVENTS_FILE = score.NETWORK_EVENTS_FILE
@@ -983,7 +983,7 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     hand_off = (spec.get("path") or {}).get("hand_off")
     if hand_off:
         said.append(f"Hand-off: {hand_off}.")
-    reference = (spec.get("executor") or {}).get("commit")
+    reference = executor_commit(spec.get("executor"))
     if reference:
         # The engine runs the steps itself; Invoke-AtomicRedTeam is only what its reading is checked against.
         said.append(

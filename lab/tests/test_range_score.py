@@ -1106,7 +1106,7 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         ],
     )
 
-    stock, public, packets = judged(folder, program)["score"]["defenses"]
+    stock, public, packets, ai_tools, ordered = judged(folder, program)["score"]["defenses"]
 
     assert (stock["id"], stock["detectors"], public["id"], public["detectors"]) == (
         "wazuh-stock",
@@ -1118,6 +1118,15 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
     assert packets["id"] == "packets-et-open" and packets["judged"] is False
     assert "no Suricata image was given" in packets["not judged"]
     assert "its sensor packet-capture was unavailable" in packets["not judged"]
+    assert ai_tools["id"] == "ai-tool-packs" and ai_tools["judged"] is False
+    assert ai_tools["rules"] == [
+        "aipt-sigma",
+        "aipt-suricata",
+        "agentic-sigma",
+        "agentic-suricata",
+    ]
+    assert ordered["id"] == "ordered-credential" and ordered["judged"] is False
+    assert ordered["rules"] == ["ordered-credential"]
     # Both have the same sensors, so they saw the same events; each alerted on what its own rules matched.
     steps = {entry["id"]: {step["id"]: step for step in entry["steps"]} for entry in (stock, public)}
     assert [(s["visibility"], s["outcome"], s["events"]) for s in steps["wazuh-stock"].values()] == [
@@ -1160,8 +1169,12 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         "20.05 s after the first step started, 0.15 s before the goal: Made Up - A Rule That Counts"
         in summary
     )
-    assert "| `wazuh-stock` | `sigma-public` | `packets-et-open` |" in summary
-    assert "| alerted | seen | not judged | 5715 |" in summary
+    assert (
+        "| `wazuh-stock` | `sigma-public` | `packets-et-open` | "
+        "`ai-tool-packs` | `ordered-credential` |"
+        in summary
+    )
+    assert "| alerted | seen | not judged | not judged | not judged | 5715 |" in summary
 
 
 def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_path: Path, monkeypatch) -> None:
@@ -1330,7 +1343,7 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
 
     manifest = judged(folder)
 
-    stock, public, packets = manifest["score"]["defenses"]
+    stock, public, packets, ai_tools, ordered = manifest["score"]["defenses"]
     assert stock["judged"] is True and stock["outcomes"]["alerted"] == 1
     assert public == {
         "id": "sigma-public",
@@ -1344,6 +1357,15 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
     assert packets["id"] == "packets-et-open" and packets["judged"] is False
     assert "no Suricata image was given" in packets["not judged"]
     assert "its sensor packet-capture was unavailable" in packets["not judged"]
+    assert ai_tools["id"] == "ai-tool-packs" and ai_tools["judged"] is False
+    assert ai_tools["rules"] == [
+        "aipt-sigma",
+        "aipt-suricata",
+        "agentic-sigma",
+        "agentic-suricata",
+    ]
+    assert ordered["id"] == "ordered-credential" and ordered["judged"] is False
+    assert ordered["rules"] == ["ordered-credential"]
     assert not (folder / "alerts.sigma.ecs.ndjson").exists()
     summary = (folder / "score.md").read_text()
     assert (
@@ -1383,6 +1405,11 @@ def test_every_section_of_the_score_of_a_run_that_did_not_end_sealed_is_headed_n
         "### Ordinary day of range-one",
         "### Rule set sigma of range-one",
         "### Rule set et-open of range-one",
+        "### Rule set aipt-sigma of range-one",
+        "### Rule set aipt-suricata of range-one",
+        "### Rule set agentic-sigma of range-one",
+        "### Rule set agentic-suricata of range-one",
+        "### Rule set ordered-credential of range-one",
     ]
     assert all(": not a result, the run ended invalid (exit code 4)" in heading for heading in headings)
 
@@ -1477,6 +1504,8 @@ def test_a_run_judged_by_another_spec_keeps_the_rule_sets_it_fetched_itself(
         ("wazuh-stock", True),
         ("sigma-public", True),
         ("packets-et-open", False),
+        ("ai-tool-packs", False),
+        ("ordered-credential", False),
     ]
 
 
@@ -1511,6 +1540,8 @@ def test_range_rules_refuses_a_rule_set_of_the_name_of_one_the_run_fetched_itsel
         ("wazuh-stock", True),
         ("sigma-public", True),
         ("packets-et-open", False),
+        ("ai-tool-packs", False),
+        ("ordered-credential", False),
     ]
 
 

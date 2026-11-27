@@ -534,6 +534,7 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
     base = _base(data["base"]) if "base" in data else None
     wazuh, watch = _defense(data["defense"]) if "defense" in data else (None, Watch())
     atomics = _atomics(data["atomic_red_team"]) if "atomic_red_team" in data else None
+    executor_commit(data.get("executor"))
 
     hosts_data = data["hosts"]
     if not isinstance(hosts_data, dict) or not hosts_data:
@@ -620,6 +621,22 @@ def _hex_pin(value: object, pattern: re.Pattern[str], chunks: int, message: str)
     if not pattern.match(pin):
         raise SpecError(message)
     return pin
+
+
+def executor_commit(value: object) -> str | None:
+    """The executor commit as one strict scalar, including its chunked YAML form."""
+
+    if value is None:
+        return None
+    if not isinstance(value, dict) or "commit" not in value:
+        raise SpecError("executor must be a mapping that names commit")
+    return _hex_pin(
+        value["commit"],
+        COMMIT,
+        5,
+        "executor.commit must be a full commit id, 40 lower-case hex digits, as one string "
+        "or five 8-digit chunks",
+    )
 
 
 def _base(value: object) -> Base:
