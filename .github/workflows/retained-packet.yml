@@ -1,0 +1,444 @@
+name: retained packet run
+
+# The first mode makes one real result: a pinned published test runs inside a
+# sealed three-host range. Only the exact retained candidate that passes the
+# repository's unchanged privacy and secret checks is uploaded.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Work to perform
+        required: true
+        default: rejudge-fixture
+        type: choice
+        options:
+          - rejudge-fixture
+          - make-fixture
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.mode }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FIXTURE: lab/retained/packet-download
+  SPEC: lab/range/retained-packet.yaml
+  SURICATA_IMAGE: jasonish/suricata:8.0.8@sha256:d5a3a1785299ab40918d465e54fedf8e3afeeedba76bb64b0cc74dbc20bda2c3
+  ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
+  ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_DIGEST: sha256:551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  make-fixture:
+    if: inputs.mode == 'make-fixture'
+    name: make the retained packet run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ARTIFACT_NAME: retained-packet-run-${{ github.run_attempt }}
+    steps:
+      - name: Require the repository's default branch
+        env:
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "$DEFAULT_REF" ]; then
+            echo "make-fixture runs only from the repository's default branch"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+          echo "LAB=$RUNNER_TEMP/venv/bin/bluefire-lab" >> "$GITHUB_ENV"
+          echo "ARTIFACT_ROOT=$RUNNER_TEMP/retained-artifact" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/retained-packet-run" >> "$GITHUB_ENV"
+          docker version
+
+      - name: Render the three images
+        id: render
+        run: |
+          "$LAB" range render "$SPEC" --out range-build
+          {
+            echo "cache<<EOF"
+            jq -r '.target | keys[] | "\(.).cache-from=type=gha,scope=retained-packet-\(.)", "\(.).cache-to=type=gha,mode=max,scope=retained-packet-\(.)"' range-build/bake.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+
+      - name: Build the images
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          source: ./range-build
+          files: ./bake.json
+          load: true
+          set: ${{ steps.render.outputs.cache }}
+
+      - name: Preload the offline packet evaluator
+        run: docker pull "$SURICATA_IMAGE"
+
+      - name: Run the sealed range
+        run: |
+          "$LAB" range run "$SPEC" --out "$OUT" --suricata-image "$SURICATA_IMAGE"
+
+      - name: Check the source result
+        run: |
+          if ! jq -e '
+            .result == "sealed"
+            and .exit_code == 0
+            and .teardown_complete == true
+            and .path.planned == ["s01"]
+            and .path.stopped == null
+            and (.path.steps | length == 1)
+            and .path.steps[0].id == "s01"
+            and .path.steps[0].happened == "took effect"
+            and .defense.delivery_gap == false
+            and (.defense | has("collect_error") | not)
+            and .score.scored == false
+            and (.score."not scored" | contains("no ordinary activity"))
+            and (.score.path.steps | length == 1)
+            and .score.path.clock.agree == true
+            and .recording.error == null
+            and [.score.defenses[].id] == ["wazuh-stock"]
+            and (.score.defenses | all(.judged == true))
+          ' "$OUT/manifest.json" > /dev/null; then
+            jq '{result, exit_code, teardown_complete, path, defense, score: (.score | {scored, "not scored", path}), recording}' "$OUT/manifest.json"
+            exit 1
+          fi
+
+      - name: Check the packet closure and network events
+        run: |
+          if ! jq -e --arg image "$SURICATA_IMAGE" '
+            .packet_capture as $capture
+            | $capture != null
+              and $capture.analysed == true
+              and $capture.delivery_gap == false
+              and ($capture | has("collect_error") | not)
+              and $capture.home_hosts == ["web"]
+              and ($capture.home_net | type == "array" and length > 0)
+              and $capture.home_net == ($capture.home_net | unique)
+              and ($capture.hosts | type == "object" and length == 1)
+              and ($capture.hosts | all(
+                .started == true
+                and .stopped.cleanly == true
+                and .collected.copied == true
+                and (.ready | type == "array" and length == 1
+                  and ([.[].interface] | unique | length) == 1
+                  and all(.seen == true and (.interface | type == "string" and length > 0)))
+                and (([.ready[].interface + ".pcap"] | unique | sort) == (.files | keys | sort))
+                and (.files | type == "object" and length == 1 and all(
+                  (.file | type == "string"
+                    and test("^raw/hosts/web/var/log/bluefire/packets/[A-Za-z0-9_.-]+[.]pcap$"))
+                  and (.packets | type == "number" and . > 0)
+                  and (.bytes | type == "number" and . > 0)
+                  and (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+                  and .tcpdump."dropped by kernel" == 0
+                  and ((.tcpdump."dropped by interface" // 0) == 0)
+                ))
+              ))
+              and .ecs.error == null
+              and (.ecs.files | keys) == [
+                "alerts.ecs.ndjson",
+                "events.ecs.ndjson",
+                "events.network.ecs.ndjson.gz",
+                "steps.ecs.ndjson"
+              ]
+              and (.ecs.files | all(."raw lines" == ."ECS lines" and ."raw lines" > 0))
+              and .ecs.network.evaluated == true
+              and .ecs.network.file == "events.network.ecs.ndjson.gz"
+              and .ecs.network.engine.image == $image
+              and .ecs.network.home_net == $capture.home_net
+              and (.ecs.network.lines | type == "number" and . > 0)
+              and (.ecs.network.bytes | type == "number" and . > 0)
+              and (.ecs.network.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+              and (.ecs.network.origins.step | type == "number" and . > 0)
+          ' "$OUT/manifest.json" > /dev/null; then
+            jq '{packet_capture, network: .ecs.network}' "$OUT/manifest.json"
+            exit 1
+          fi
+
+          packet_bytes=0
+          while IFS=$'\t' read -r relative declared declared_sha; do
+            file="$OUT/$relative"
+            test -s "$file"
+            actual=$(stat -c %s "$file")
+            actual_sha=$(sha256sum -- "$file")
+            actual_sha=${actual_sha%% *}
+            test "$actual" -eq "$declared"
+            test "$actual_sha" = "$declared_sha"
+            counter="${file%.pcap}.log"
+            test -s "$counter"
+            packet_bytes=$((packet_bytes + actual))
+          done < <(jq -r '.packet_capture.hosts[].files[] | [.file, .bytes, .sha256] | @tsv' "$OUT/manifest.json")
+          echo "Packet captures: $packet_bytes bytes."
+          test "$packet_bytes" -le $((8 * 1024 * 1024))
+          network_file="$OUT/events.network.ecs.ndjson.gz"
+          test -s "$network_file"
+          gzip -t -- "$network_file"
+          actual_network_bytes=$(stat -c %s -- "$network_file")
+          declared_network_bytes=$(jq -r '.ecs.network.bytes' "$OUT/manifest.json")
+          test "$actual_network_bytes" -eq "$declared_network_bytes"
+          actual_network_sha=$(sha256sum -- "$network_file")
+          actual_network_sha=${actual_network_sha%% *}
+          declared_network_sha=$(jq -r '.ecs.network.sha256' "$OUT/manifest.json")
+          test "$actual_network_sha" = "$declared_network_sha"
+          actual_network_lines=$(gzip -cd -- "$network_file" | wc -l)
+          declared_network_lines=$(jq -r '.ecs.network.lines' "$OUT/manifest.json")
+          test "$actual_network_lines" -eq "$declared_network_lines"
+
+      - name: Export the exact retained candidate
+        run: |
+          mkdir -p "$ARTIFACT_ROOT"
+          "$LAB" range retain "$OUT" --spec "$SPEC" --out "$ARTIFACT_ROOT/$FIXTURE"
+          candidate_bytes=$(du -sb "$ARTIFACT_ROOT/$FIXTURE" | cut -f1)
+          echo "Retained candidate: $candidate_bytes bytes."
+          test "$candidate_bytes" -le $((16 * 1024 * 1024))
+
+      - name: Scan the exact candidate
+        run: |
+          scan="$RUNNER_TEMP/candidate-repository"
+          git init -q "$scan"
+          mkdir -p "$scan/lab/retained"
+          cp -a "$ARTIFACT_ROOT/$FIXTURE" "$scan/lab/retained/"
+          git -C "$scan" add lab/retained
+          git -C "$scan" -c user.name=range -c user.email=range@example.invalid commit -q -m "Retained packet run"
+
+          python3 .github/scripts/privacy_scan.py "$scan"
+          (
+            cd "$scan"
+            python3 "$GITHUB_WORKSPACE/.github/scripts/privacy_scan.py" --commits HEAD
+          )
+
+          scanner=detect-
+          scanner+=secrets
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "$scanner==1.5.0"
+          (
+            cd "$scan"
+            git ls-files -z |
+              xargs -0 "$RUNNER_TEMP/venv/bin/$scanner-hook" --baseline "$GITHUB_WORKSPACE/.$scanner.baseline"
+          )
+
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_DIGEST#sha256:}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git "$scan" --config .gitleaks.toml --redact --no-banner
+
+          "$RUNNER_TEMP/venv/bin/python" -c 'import sys; from pathlib import Path; from bluefire_lab.range.retained import verify_retained; verify_retained(Path(sys.argv[1]))' "$ARTIFACT_ROOT/$FIXTURE"
+          diff -qr "$ARTIFACT_ROOT/$FIXTURE" "$scan/lab/retained/packet-download"
+
+      - name: Take down what is left
+        if: always()
+        run: |
+          if [ -n "${LAB:-}" ]; then
+            "$LAB" range down "$SPEC"
+          fi
+          test -z "$(docker ps -aq --filter label=bluefire.lab.range=retained-packet)"
+          test -z "$(docker network ls -q --filter label=bluefire.lab.range=retained-packet)"
+
+      - name: Upload the screened candidate
+        if: success()
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_ROOT }}
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: false
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Retained packet run"
+            echo
+            echo "One pinned published test ran in a sealed three-host range."
+            echo
+            echo "Artifact: ${{ steps.upload.outputs.artifact-url }}"
+            echo
+            echo "Artifact digest: ${{ steps.upload.outputs.artifact-digest }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rejudge-fixture:
+    if: inputs.mode == 'rejudge-fixture'
+    name: rejudge the retained packet run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the lab and pinned evaluators
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ./lab
+          echo "LAB=$RUNNER_TEMP/venv/bin/bluefire-lab" >> "$GITHUB_ENV"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zircolite.zip" "$ZIRCOLITE_URL"
+          echo "${ZIRCOLITE_DIGEST#sha256:}  $RUNNER_TEMP/zircolite.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/zircolite.zip" -d "$RUNNER_TEMP/zircolite"
+          engine=$(find "$RUNNER_TEMP/zircolite" -maxdepth 2 -type f -name Zircolite)
+          test -x "$engine"
+          echo "ENGINE=$engine" >> "$GITHUB_ENV"
+          docker pull "$SURICATA_IMAGE"
+
+      - name: Judge a fresh copy
+        env:
+          DEFENSES: lab/range/range-one.yaml
+          GH_TOKEN: ${{ github.token }}
+          REJUDGED: ${{ runner.temp }}/rejudged
+        run: |
+          "$LAB" range rejudge "$FIXTURE" --defenses "$DEFENSES" --engine "$ENGINE" --suricata-image "$SURICATA_IMAGE" --template bluefire/ui/replay.html --out "$REJUDGED"
+
+          source_url=$(jq -r '.source.run_url' "$FIXTURE/provenance.json")
+          spec_sha=$(sha256sum "$DEFENSES")
+          spec_sha=${spec_sha%% *}
+          if ! jq -e --arg source "$source_url" --arg spec_sha "$spec_sha" --arg image "$SURICATA_IMAGE" '
+            .score."rule sets" as $sets
+            | .run_url == $source
+              and .judged_by.file == "range-one.yaml"
+              and .judged_by.sha256 == $spec_sha
+              and .ecs.network.evaluated == true
+              and .ecs.network.file == "events.network.ecs.ndjson.gz"
+              and .ecs.network.engine.image == $image
+              and .ecs.network.home_net == .packet_capture.home_net
+              and (.ecs.network.lines | type == "number" and . > 0)
+              and (.ecs.network.bytes | type == "number" and . > 0)
+              and (.ecs.network.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+              and (.ecs.network.origins.step | type == "number" and . > 0)
+              and [.score.defenses[].id] == [
+                "wazuh-stock",
+                "sigma-public",
+                "packets-et-open",
+                "ai-tool-packs",
+                "ordered-credential"
+              ]
+              and (.score.defenses | all(.judged == true))
+              and .score.scored == false
+              and (.score."not scored" | contains("no ordinary activity"))
+              and ($sets | keys) == [
+                "agentic-sigma",
+                "agentic-suricata",
+                "aipt-sigma",
+                "aipt-suricata",
+                "et-open",
+                "ordered-credential",
+                "sigma"
+              ]
+              and ([$sets | to_entries[] | select(.value.kind == "suricata") | .key] | sort) == [
+                "agentic-suricata",
+                "aipt-suricata",
+                "et-open"
+              ]
+              and ($sets | to_entries | all(
+                .key as $id
+                | .value as $set
+                | $set.evaluated == true
+                  and ($set | has("not evaluated") | not)
+                  and ($set.source | type == "string" and length > 0)
+                  and ($set.digest | type == "string" and test("^[0-9a-f]{64}$"))
+                  and ($set.engine.name | type == "string" and length > 0)
+                  and ($set.engine.version | type == "string" and length > 0)
+                  and ($set.rules | type == "number" and . > 0)
+                  and ($set.loaded | type == "number" and . > 0)
+                  and ($set.file == ("alerts." + $id + ".ecs.ndjson"))
+                  and ($set.lines | type == "number" and . >= 0)
+                  and ($set["rules that matched"] | type == "array")
+                  and (
+                    if $set.kind == "suricata" then
+                      $set.engine.image == $image
+                      and ($set["rule file count"] | type == "number" and . > 0)
+                      and ($set["rule files"] | type == "array"
+                        and length == $set["rule file count"])
+                      and $set.failed == 0
+                      and ($set["load errors"] | type == "array" and length == 0)
+                      and ($set.runs | type == "array" and length == 1 and all(
+                        .host == "web"
+                        and .engine.image == $image
+                        and .failed == 0
+                        and (."load errors" | type == "array" and length == 0)
+                      ))
+                    else
+                      $set.kind == "sigma"
+                      and ($set["conversion errors"] | type == "array" and length == 0)
+                      and ($set.groups | type == "array" and length > 0)
+                    end
+                  )
+              ))
+              and .recording.error == null
+          ' "$REJUDGED/manifest.json" > /dev/null; then
+            jq '{run_url, judged_by, network: .ecs.network, defenses: [.score.defenses[]? | {id, judged, "not judged"}], rule_sets: .score."rule sets", recording}' "$REJUDGED/manifest.json"
+            exit 1
+          fi
+          rejudged_network="$REJUDGED/events.network.ecs.ndjson.gz"
+          test -s "$rejudged_network"
+          gzip -t -- "$rejudged_network"
+          rejudged_network_bytes=$(stat -c %s -- "$rejudged_network")
+          declared_network_bytes=$(jq -r '.ecs.network.bytes' "$REJUDGED/manifest.json")
+          test "$rejudged_network_bytes" -eq "$declared_network_bytes"
+          rejudged_network_sha=$(sha256sum -- "$rejudged_network")
+          rejudged_network_sha=${rejudged_network_sha%% *}
+          declared_network_sha=$(jq -r '.ecs.network.sha256' "$REJUDGED/manifest.json")
+          test "$rejudged_network_sha" = "$declared_network_sha"
+          rejudged_network_lines=$(gzip -cd -- "$rejudged_network" | wc -l)
+          declared_network_lines=$(jq -r '.ecs.network.lines' "$REJUDGED/manifest.json")
+          test "$rejudged_network_lines" -eq "$declared_network_lines"
+          jq -e --arg source "$source_url" '
+            .source.run_url == $source
+            and [.defenses[].id] == [
+              "wazuh-stock", "sigma-public", "packets-et-open", "ai-tool-packs", "ordered-credential"
+            ]
+          ' "$REJUDGED/recording.json" > /dev/null
+          test -s "$REJUDGED/recording.json"
+          test -s "$REJUDGED/replay.html"
+          git diff --exit-code -- "$FIXTURE"
+          test -z "$(git status --short -- "$FIXTURE")"
+          test -z "$(docker ps -aq --filter name=bluefire-suricata-)"
+
+      - name: Upload the fresh rejudgment
+        id: rejudged-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: retained-packet-rejudged-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rejudged
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: false
+
+      - name: Summary
+        env:
+          REJUDGED: ${{ runner.temp }}/rejudged
+        run: |
+          source_url=$(jq -r '.source.run_url' "$FIXTURE/provenance.json")
+          {
+            echo "### Retained run judged again"
+            echo
+            echo "Original packet-bearing run: $source_url"
+            echo
+            echo "This rejudgment: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "Rejudgment artifact: ${{ steps.rejudged-upload.outputs.artifact-url }}"
+            echo
+            echo "Artifact digest: ${{ steps.rejudged-upload.outputs.artifact-digest }}"
+            echo
+            jq -r '.score.defenses[] | "- \(.id): \(.outcomes.alerted) alerted, \(.outcomes.seen) seen, \(.outcomes.unseen) unseen"' "$REJUDGED/manifest.json"
+          } >> "$GITHUB_STEP_SUMMARY"
