@@ -113,7 +113,7 @@ function judgedTwice(value: Value): void {
 }
 
 /** Each edge is one way a recording can be at the limits of the format, with the answer both readers must give. */
-const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap?: string; nowhere?: string }[] = [
+const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap?: string; defenses?: boolean; inactive?: string }[] = [
   { name: "the smallest test list, with every optional key left out", answer: "kept and plays", make: () => undefined },
   {
     name: "times with six digits after the second",
@@ -532,8 +532,8 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
       (part(value, "network").detectors as Value[]).push(...["a", "b", "c", "d"].map((id) => ({ id, name: `${id} rules`, rules: 1, when: "after the run" })));
     },
   },
-  // The page plays the first defense's view: the second defense's sensor is on no screen of it.
-  { name: "one run judged by two defenses", answer: "kept and plays", make: judgedTwice, nowhere: "Packet capture" },
+  // Both readers play either defense's view of the same moment.
+  { name: "one run judged by two defenses", answer: "kept and plays", make: judgedTwice, defenses: true, inactive: "Packet capture" },
   {
     name: "defenses with more rule engines between them than the map draws at once",
     answer: "kept and plays",
@@ -541,7 +541,8 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
       judgedTwice(value);
       (part(value, "network").detectors as Value[]).push(...["a", "b", "c", "d"].map((id) => ({ id, name: `${id} rules`, rules: 1, when: "after the run" })));
     },
-    nowhere: "Packet capture",
+    defenses: true,
+    inactive: "Packet capture",
   },
   {
     name: "a top level that does not hold the first defense's verdicts",
@@ -608,9 +609,9 @@ function pageByHand(recording: Value, file: string): void {
 
 /**
  * What the page makes of its recording: plays, in watch mode at its start and end and in analyse mode, or refuses.
- * `onMap` is a sensor's name that the watch view's map must show, and `nowhere` one that neither mode may show.
+ * `onMap` is a sensor's visible name. With `defenses`, both judges and an inactive sensor must remain available.
  */
-async function pageAnswer(page: Page, file: string, recording: Value, onMap?: string, nowhere?: string): Promise<"plays" | string> {
+async function pageAnswer(page: Page, file: string, recording: Value, onMap?: string, defenses = false, inactive?: string): Promise<"plays" | string> {
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(String(error)));
   const address = pathToFileURL(file).href;
@@ -627,7 +628,29 @@ async function pageAnswer(page: Page, file: string, recording: Value, onMap?: st
     await page.waitForTimeout(400);
     await expect(title).toBeVisible();
     if (onMap && !query.startsWith("?mode=analyse")) await expect(page.getByText(onMap, { exact: true })).toBeVisible();
-    if (nowhere) await expect(page.getByText(nowhere, { exact: true })).toHaveCount(0);
+    if (defenses && query === "?mode=analyse") {
+      const comparison = page.getByRole("group", { name: "The defenses side by side" });
+      await expect(comparison).toBeVisible();
+      await expect(comparison.getByRole("button")).toHaveCount(2);
+    }
+    if (defenses && query.includes("paused=1")) {
+      const choices = page.getByRole("group", { name: "The defenses that judge this run" });
+      const buttons = choices.getByRole("button");
+      await expect(buttons).toHaveCount(2);
+      await expect(buttons.first()).toHaveAttribute("aria-pressed", "true");
+      if (inactive) await expect(page.locator(".lv-sensor.is-off title", { hasText: inactive })).toHaveCount(1);
+      const slider = page.getByRole("slider", { name: /^Timeline/ });
+      const at = await slider.getAttribute("aria-valuenow");
+      const clock = await page.locator(".lv-clock b").textContent();
+      await expect(page.locator(".lv-word")).toHaveText("seen");
+      await page.keyboard.press("2");
+      await expect(buttons.nth(1)).toHaveAttribute("aria-pressed", "true");
+      await expect(page).toHaveURL(/defense=with-capture/);
+      await expect(slider).toHaveAttribute("aria-valuenow", at ?? "");
+      await expect(page.locator(".lv-clock b")).toHaveText(clock ?? "");
+      await expect(page.locator(".lv-word")).toHaveText("alerted");
+      if (inactive) await expect(page.locator(".lv-sensor.is-off title", { hasText: inactive })).toHaveCount(0);
+    }
   }
   expect(problems).toEqual([]);
   return "plays";
@@ -659,7 +682,7 @@ EDGES.forEach((edge, index) => {
       const made = bluefire("recordings", "page", String(recording.id), "--out", pageFile);
       if (made.status === 0) {
         answer = "kept and plays";
-        expect(await pageAnswer(page, pageFile, recording, edge.onMap, edge.nowhere)).toBe("plays");
+        expect(await pageAnswer(page, pageFile, recording, edge.onMap, edge.defenses, edge.inactive)).toBe("plays");
       } else {
         // A page is made of a finished run only; the page says the same of a running one.
         answer = "kept while running";

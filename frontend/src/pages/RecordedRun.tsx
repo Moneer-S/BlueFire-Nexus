@@ -12,7 +12,7 @@ import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originW
 import { pairPath, sidesOf, sideWords, turnName, type PairSide } from "../lib/recording-pairs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
-import { RecordingError, firstView, readRecording, type Recording } from "../live/recording";
+import { RecordingError, readRecording, type Recording } from "../live/recording";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "./RecordedRun.css";
 
@@ -23,12 +23,12 @@ const ADDRESS_SETTLE_MS = 300;
  * Reads the recording to play. An imported file's CI run address is only what
  * the file says, so the live view is not given it: it would link that run as
  * the one that made the recording. The bar above says the file names it. A
- * recording with defenses is played as its first defense judged the run.
+ * recording with defenses stays whole so the live view can choose its judge.
  */
 function read(value: unknown, summary: RecordingSummary): { recording: Recording } | { problem: string } {
   try {
     // The app follows a recording that is still running, which the replay page refuses.
-    const recording = firstView(readRecording(value, { running: true }));
+    const recording = readRecording(value, { running: true });
     if (summary.origin.kind !== "imported" || recording.source.run_url === undefined) return { recording };
     const source = { ...recording.source };
     delete source.run_url;

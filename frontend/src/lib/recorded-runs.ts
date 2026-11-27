@@ -166,6 +166,8 @@ export function momentFromSearch(query: URLSearchParams): NonNullable<LiveViewPr
   if (mode === "watch" || mode === "analyse") initial.mode = mode;
   const select = query.get("select");
   if (select) initial.select = select;
+  const defense = query.get("defense");
+  if (defense) initial.defense = defense;
   return initial;
 }
 
@@ -193,5 +195,6 @@ export function momentSearch(moment: Partial<LiveMoment>): URLSearchParams {
   if (moment.paused) query.set("paused", "1");
   if (moment.mode === "analyse") query.set("mode", "analyse");
   if (moment.select !== undefined) query.set("select", moment.select);
+  if (moment.defense !== undefined) query.set("defense", moment.defense);
   return query;
 }

@@ -20,6 +20,8 @@ interface RaceLineProps {
   revealed: boolean;
   /** True once the current step's clock has reached its recorded end. */
   ended: boolean;
+  /** The full name of the defense that judges, when several judge the run. */
+  judge?: string;
 }
 
 /**
@@ -46,7 +48,7 @@ export function goalWords(goal: string): string {
  * race between the first alert and the goal, both on the recording's real
  * clock: the goal falls `score.goal_seconds` after the first step's recorded start.
  */
-export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoFar, facts: RunFacts, firstAlert: FirstAlert | null = frame.race.firstAlert): string {
+export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoFar, facts: RunFacts, firstAlert: FirstAlert | null = frame.race.firstAlert, judge?: string): string {
   const { race } = frame;
   if (frame.segment === null) return "Nothing has run yet.";
   if (recording.kind === "attack path") {
@@ -67,8 +69,10 @@ export function whoIsWinning(recording: Recording, frame: Frame, score: ScoreSoF
     if (first) {
       const clock = firstAlertClock(recording, facts, first);
       const where = stepLabel(recording, first.step);
+      if (judge !== undefined) return clock ? `${judge} first alerted on ${where}, ${elapsed(clock.seconds)} ${clock.words}.` : `${judge} first alerted on ${where}.`;
       return clock ? `The defense raised its first alert on ${where}, ${elapsed(clock.seconds)} ${clock.words}.` : `The defense raised its first alert on ${where}.`;
     }
+    if (judge !== undefined) return frame.ended ? `${judge} alerted on no step.` : `${judge} has not alerted yet.`;
     return frame.ended ? "No alert on any step." : "No alert yet.";
   }
   const decided = score.alerted + score.seen + score.unseen;
@@ -209,7 +213,7 @@ function useWidths(): [RefObject<HTMLDivElement | null>, RefObject<HTMLDivElemen
   return [track, ruler, widths];
 }
 
-export function RaceLine({ recording, timeline, frame, facts, score, revealed, ended }: RaceLineProps) {
+export function RaceLine({ recording, timeline, frame, facts, score, revealed, ended, judge }: RaceLineProps) {
   const length = Math.max(1, facts.end - facts.start);
   const fraction = (real: number) => Math.min(1, Math.max(0, (real - facts.start) / length));
   const at = (real: number) => `${(fraction(real) * 100).toFixed(3)}%`;
@@ -233,7 +237,7 @@ export function RaceLine({ recording, timeline, frame, facts, score, revealed, e
   const firstRule = first?.alert.rule.title;
   const firstFalse = firstRule ? ordinaryAlertEvents(recording, firstRule) : 0;
   const firstClock = first ? firstAlertClock(recording, facts, first) : null;
-  const winning = whoIsWinning(recording, frame, score, facts, reached);
+  const winning = whoIsWinning(recording, frame, score, facts, reached, judge);
   // Rules that ran after the run have no time of their own: said once, here, where the first alert's time is shown.
   const eventTime = rulesRanAfterTheRun(recording);
   const eventTimeWords = "The rules ran after the run, so an alert's time is the time of the event it matched.";
