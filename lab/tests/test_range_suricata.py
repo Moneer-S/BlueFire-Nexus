@@ -60,6 +60,8 @@ def network(
                 "pkts_toclient": 1,
                 "bytes_toserver": 90,
                 "bytes_toclient": 50,
+                "start": "2026-11-26T20:00:00.000000+00:00",
+                "end": "2026-11-26T20:00:01.000000+00:00",
             }
             if kind == "flow"
             else {"hostname": "web", "url": "/"}
@@ -346,7 +348,7 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(
     assert found["read counts"]["independently counted packets"] == 1
     assert found["home_net"] == ["10.9.0.3", "10.9.0.4"]
     assert found["records"][1] == network() and found["alerts"] == [alert()]
-    assert found["alert event keys"] == [list(suricata.event_key(network()))]
+    assert found["alert event keys"] == [list(suricata.event_key(found["records"][1], found["records"]))]
 
 
 def test_telemetry_is_a_rule_independent_canonical_pass(tmp_path: Path) -> None:
@@ -378,10 +380,7 @@ def test_telemetry_is_a_rule_independent_canonical_pass(tmp_path: Path) -> None:
     assert not any(value.startswith("outputs.") for value in command)
     assert not any("target=/rules" in value for value in command)
     assert (found["rules"], found["loaded"], found["alerts"]) == (0, 0, [])
-    assert list(suricata.record_index(found["records"])) == [
-        suricata.event_key(found["records"][0]),
-        suricata.event_key(found["records"][1]),
-    ]
+    assert list(suricata.record_index(found["records"])) == list(suricata.record_keys(found["records"]))
     assert not (tmp_path / "telemetry" / "pcap-0001" / "eve.json").exists()
     assert (tmp_path / "telemetry" / "pcap-0001" / "suricata.log").is_file()
     assert (tmp_path / "telemetry" / "pcap-0001" / "stats.log").is_file()
@@ -734,12 +733,14 @@ def test_unknown_is_a_valid_raw_capture_name_only_for_alerts(tmp_path: Path) -> 
 
 
 def test_flow_ids_can_change_between_passes_without_changing_alert_identity() -> None:
+    canonical_flow = network("flow", flow_id=7, tx_id=None)
     canonical = network(flow_id=7, tx_id=4)
+    judged_flow = network("flow", flow_id=99, tx_id=None)
     judged = network(flow_id=99, tx_id=4)
     first_alert = alert(flow_id=7, tx_id=4)
     second_alert = alert(flow_id=99, tx_id=4)
 
-    assert suricata.alert_event_key(first_alert, [canonical]) == (
+    assert suricata.alert_event_key(first_alert, [canonical_flow, canonical]) == (
         "network",
         "eth0.pcap",
         "1:stable-community",
@@ -751,14 +752,18 @@ def test_flow_ids_can_change_between_passes_without_changing_alert_identity() ->
         44_444,
         "10.9.0.3",
         80,
-        "2026-11-26T20:00:00.200000Z",
+        "2026-11-26T20:00:00.000000Z",
+        "2026-11-26T20:00:01.000000Z",
     )
-    assert suricata.alert_event_key(first_alert, [canonical]) == suricata.alert_event_key(
-        second_alert, [judged]
+    assert suricata.alert_event_key(first_alert, [canonical_flow, canonical]) == suricata.alert_event_key(
+        second_alert, [judged_flow, judged]
     )
+    assert suricata.alert_event_key(
+        alert(flow_id=7, tx_id=None), [canonical_flow]
+    ) == suricata.alert_event_key(alert(flow_id=99, tx_id=None), [judged_flow])
 
 
-def test_flow_fallback_key_normalizes_direction_time_and_addresses() -> None:
+def test_flow_key_normalizes_direction_and_ignores_emission_time() -> None:
     first = network(
         "flow",
         flow_id=7,
@@ -771,14 +776,103 @@ def test_flow_fallback_key_normalizes_direction_time_and_addresses() -> None:
         flow_id=999,
         community_id="1:stable-community",
         tx_id=None,
-        timestamp="2026-11-26T14:00:00-06:00",
+        timestamp="2026-11-26T14:05:00-06:00",
         reverse=True,
     )
 
     assert suricata.event_key(first) == suricata.event_key(second)
 
 
+def test_distinct_flows_at_one_emission_time_keep_distinct_occurrences() -> None:
+    timestamp = "2026-11-27T04:44:21.377391+00:00"
+    first = network("flow", flow_id=7, tx_id=None, timestamp=timestamp)
+    second = network("flow", flow_id=99, tx_id=None, timestamp=timestamp)
+    first["flow"].update(
+        start="2026-11-27T04:37:00.720240+00:00",
+        end="2026-11-27T04:37:00.720240+00:00",
+    )
+    second["flow"].update(
+        start="2026-11-27T04:42:20.207246+00:00",
+        end="2026-11-27T04:42:20.207246+00:00",
+    )
+
+    keys = suricata.record_keys([first, second])
+
+    assert keys[0] != keys[1]
+    assert list(suricata.record_index([first, second])) == list(keys)
+
+
+def test_flow_boundaries_are_required_valid_and_ordered() -> None:
+    missing = network("flow", tx_id=None)
+    missing["flow"].pop("start")
+    invalid = network("flow", tx_id=None)
+    invalid["flow"]["start"] = "not-a-time"
+    reversed_flow = network("flow", tx_id=None)
+    reversed_flow["flow"].update(
+        start="2026-11-26T20:00:02+00:00",
+        end="2026-11-26T20:00:01+00:00",
+    )
+
+    for raw, message in (
+        (missing, "flow start"),
+        (invalid, "invalid timestamp"),
+        (reversed_flow, "flow ends before it starts"),
+    ):
+        with pytest.raises(suricata.SuricataError, match=message):
+            suricata.record_keys([raw])
+
+
+def test_application_records_require_one_exact_same_pass_flow() -> None:
+    application = network("ssh", tx_id=None)
+    application["app_proto"] = "ssh"
+    with pytest.raises(suricata.SuricataError, match="has no exact flow record"):
+        suricata.record_keys([application])
+
+    first = network("flow", tx_id=None)
+    duplicate = network("flow", tx_id=None)
+    duplicate["flow"].update(
+        start="2026-11-26T20:00:00.100000+00:00",
+        end="2026-11-26T20:00:01.100000+00:00",
+    )
+    with pytest.raises(suricata.SuricataError, match="more than one flow record"):
+        suricata.record_keys([first, duplicate, application])
+
+
+def test_ssh_key_uses_its_flow_when_pass_timestamps_and_ids_change() -> None:
+    canonical_flow = network("flow", flow_id=7, tx_id=None)
+    canonical_ssh = network(
+        "ssh",
+        flow_id=7,
+        tx_id=None,
+        timestamp="2026-11-27T04:35:10.358738+00:00",
+    )
+    canonical_ssh["app_proto"] = "ssh"
+    judged_flow = network(
+        "flow",
+        flow_id=99,
+        tx_id=None,
+        timestamp="2026-11-27T04:35:09.892128+00:00",
+    )
+    judged_ssh = network(
+        "ssh",
+        flow_id=99,
+        tx_id=None,
+        timestamp="2026-11-27T04:35:09.892128+00:00",
+    )
+    judged_ssh["app_proto"] = "ssh"
+    for flow in (canonical_flow, judged_flow):
+        flow["flow"].update(
+            start="2026-11-27T04:32:42.262200+00:00",
+            end="2026-11-27T04:32:42.276321+00:00",
+        )
+
+    assert suricata.event_key(canonical_ssh, [canonical_flow, canonical_ssh]) == suricata.event_key(
+        judged_ssh, [judged_flow, judged_ssh]
+    )
+
+
 def test_dns_query_and_response_of_one_transaction_have_distinct_occurrences() -> None:
+    flow = network("flow", tx_id=None)
     query = {
         **network("dns", tx_id=8, timestamp="2026-11-26T20:00:00.100000+00:00"),
         "dns": {"type": "query", "id": 42, "rrname": "web"},
@@ -807,24 +901,34 @@ def test_dns_query_and_response_of_one_transaction_have_distinct_occurrences() -
         "dest_port": response["dest_port"],
     }
 
-    assert suricata.event_key(query) != suricata.event_key(response)
-    assert suricata.link_alert(query_alert, [query, response]) is query
-    assert suricata.link_alert(response_alert, [query, response]) is response
+    records = [flow, query, response]
+    assert suricata.event_key(query, records) != suricata.event_key(response, records)
+    assert suricata.link_alert(query_alert, records) is query
+    assert suricata.link_alert(response_alert, records) is response
 
 
 def test_stable_keys_keep_identical_transactions_on_two_interfaces_distinct() -> None:
+    first_flow = network("flow", flow_id=7, tx_id=None)
     first = network(flow_id=7, tx_id=4)
+    second_flow = {
+        **network("flow", flow_id=99, tx_id=None),
+        "pcap_filename": "/captures/eth1.pcap",
+    }
     second = {**network(flow_id=99, tx_id=4), "pcap_filename": "/captures/eth1.pcap"}
     first_alert = alert(flow_id=7, tx_id=4)
     second_alert = {**alert(flow_id=99, tx_id=4), "pcap_filename": "/captures/eth1.pcap"}
 
-    assert suricata.event_key(first) != suricata.event_key(second)
-    assert suricata.alert_event_key(first_alert, [first]) != suricata.alert_event_key(second_alert, [second])
+    first_records = [first_flow, first]
+    second_records = [second_flow, second]
+    assert suricata.event_key(first, first_records) != suricata.event_key(second, second_records)
+    assert suricata.alert_event_key(first_alert, first_records) != suricata.alert_event_key(
+        second_alert, second_records
+    )
 
 
 def test_duplicate_stable_events_and_unmatched_engine_alerts_are_refused(tmp_path: Path) -> None:
-    first = network(flow_id=7)
-    duplicate = network(flow_id=99)
+    first = network("flow", flow_id=7, tx_id=None)
+    duplicate = network("flow", flow_id=99, tx_id=None)
     with pytest.raises(suricata.SuricataError, match="more than one network record"):
         suricata.record_index([first, duplicate])
 

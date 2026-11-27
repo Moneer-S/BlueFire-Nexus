@@ -442,8 +442,16 @@ def test_network_telemetry_records_exact_compressed_file_identity(tmp_path, monk
             "read": 1,
         },
     )
-    monkeypatch.setattr(score.suricata, "record_index", lambda records: {})
-    monkeypatch.setattr(score.suricata, "event_key", lambda record: ("eth0.pcap", 1))
+    monkeypatch.setattr(
+        score.suricata,
+        "record_index",
+        lambda records: {("eth0.pcap", 1): records[0]},
+    )
+    monkeypatch.setattr(
+        score.suricata,
+        "event_key",
+        lambda record: pytest.fail("score recomputed a context-free event key"),
+    )
     monkeypatch.setattr(score, "_capture_interface", lambda record: "eth0")
     monkeypatch.setattr(score, "_network_event_document", lambda *args: document)
     monkeypatch.setattr(
@@ -473,6 +481,7 @@ def test_network_telemetry_records_exact_compressed_file_identity(tmp_path, monk
         assert [json.loads(line) for line in source] == [document]
     assert documents == [document]
     assert ties == [(score.UNATTRIBUTED, None, None, None)]
+    assert list(places) == [("web", ("eth0.pcap", 1))]
     assert list(places.values()) == [0]
     assert folders == {"web": captures}
     assert home_net == ["10.0.0.3"]

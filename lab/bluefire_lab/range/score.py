@@ -1442,7 +1442,7 @@ def network_telemetry(
 
     folders, retained = capture_inputs(out, capture)
     home_net, home_net_source = packet_home_net(capture, addresses, agents, list(folders))
-    raw: list[tuple[str, dict, dict]] = []
+    raw: list[tuple[str, dict, dict, suricata.EventKey]] = []
     runs = []
     expected_engine = None
     for host, folder in folders.items():
@@ -1466,8 +1466,8 @@ def network_telemetry(
         if expected_engine is not None and engine != expected_engine:
             raise suricata.SuricataError("the canonical packet captures were decoded by different engines")
         expected_engine = engine
-        suricata.record_index(records)
-        raw += [(host, record, engine) for record in records]
+        keys = tuple(suricata.record_index(records))
+        raw += [(host, record, engine, key) for record, key in zip(records, keys, strict=True)]
         runs.append(
             {
                 "host": host,
@@ -1482,17 +1482,17 @@ def network_telemetry(
         key=lambda item: (
             item[0],
             _capture_interface(item[1]),
-            json.dumps(_frozen(suricata.event_key(item[1])), default=str),
+            json.dumps(_frozen(item[3]), default=str),
         )
     )
     documents = []
     places: dict[tuple, int] = {}
     ordinals: Counter = Counter()
-    for host, record, engine in raw:
+    for host, record, engine, event_key in raw:
         interface = _capture_interface(record)
         ordinals[(host, interface)] += 1
         event_id = f"network-{host}-{interface}-{ordinals[(host, interface)]:06d}"
-        key = (host, _frozen(suricata.event_key(record)))
+        key = (host, _frozen(event_key))
         if key in places:
             raise suricata.SuricataError(
                 f"canonical Suricata telemetry on {host} has the same stable event key twice"
