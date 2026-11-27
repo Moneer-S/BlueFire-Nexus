@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import atomic, compare, evaluate, pair, recording, replay, report, run
 from .range import engine as range_engine
+from .range import retained as range_retained
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -178,6 +179,23 @@ def main(arguments: list[str] | None = None) -> int:
         help="a spec file whose defenses and rule sets judge the run in place of those of the spec it ran, "
         "as for a run made before its spec named any",
     )
+    rejudging = actions.add_parser(
+        "rejudge",
+        help="verify a retained CI run, copy its raw files, judge the copy by another spec, and write replay.html",
+    )
+    rejudging.add_argument("retained", type=Path, help="folder with provenance.json and the retained files")
+    rejudging.add_argument(
+        "--defenses", type=Path, required=True, help="spec whose defenses and rule sets judge the copied run"
+    )
+    rejudging.add_argument(
+        "--engine", type=Path, help="the Zircolite program; required when the judging spec has rule sets"
+    )
+    rejudging.add_argument(
+        "--template", type=Path, required=True, help="the app's page template, bluefire/ui/replay.html"
+    )
+    rejudging.add_argument(
+        "--out", type=Path, required=True, help="new folder for the rejudged run and replay"
+    )
 
     options = parser.parse_args(arguments)
     if options.command == "range":
@@ -185,6 +203,10 @@ def main(arguments: list[str] | None = None) -> int:
             return range_engine.down(options.spec)
         if options.action == "score":
             return range_engine.rescore(options.folder, options.engine, options.defenses)
+        if options.action == "rejudge":
+            return range_retained.rejudge(
+                options.retained, options.defenses, options.out, options.template, options.engine
+            )
         if options.action == "render":
             return range_engine.render(options.spec, options.out)
         if options.action == "lock":

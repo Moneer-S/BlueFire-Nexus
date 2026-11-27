@@ -6,8 +6,9 @@ texts, to name a step's outcome and to list the rules of ordinary activity.
 Every value comes from the run folder: `manifest.json` (the spec the run
 used, the hosts, the path and the score), the ECS lines of the events and
 alerts with their ties (`score`), what each step printed (`raw/steps/`), the
-Docker events the engine watched (the run's start and end) and the manager's
-log (how many rules it loaded).
+Docker events the engine watched, or the start and end selected from those
+events by a hosted retained-run export, and the manager's log (how many rules
+it loaded).
 
 The network is the spec's hosts and the links between those that share a
 network; the sensors are the Wazuh agents; the detector `pinned` is the
@@ -34,6 +35,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from .. import recording as lab
@@ -69,17 +71,40 @@ def nanoseconds(value: int) -> str:
     return range_path.iso(value) or ""
 
 
-def run_times(folder: Path) -> tuple[str, str]:
-    """The run's start and end: the Docker daemon's times of the first and the last event the engine watched."""
+def run_times(folder: Path, manifest: dict | None = None) -> tuple[str, str]:
+    """The run's start and end on the Docker daemon's clock.
+
+    A full run folder holds every watched Docker event. A small retained export
+    instead holds the exact first and last times selected by its hosted
+    workflow in `manifest.recording_clock`, without retaining the events'
+    unrelated container identifiers.
+    """
 
     times = [
         int(event["timeNano"])
         for event in lines(folder / "docker-events.ndjson")
         if isinstance(event.get("timeNano"), int)
     ]
-    if not times:
-        raise ValueError("docker-events.ndjson holds no event, so the run's start and end are not known")
-    return nanoseconds(min(times)), nanoseconds(max(times))
+    if times:
+        return nanoseconds(min(times)), nanoseconds(max(times))
+    clock = (manifest or {}).get("recording_clock")
+    if not isinstance(clock, dict):
+        raise ValueError(
+            "docker-events.ndjson holds no event and manifest.recording_clock is absent, "
+            "so the run's start and end are not known"
+        )
+    started, ended = clock.get("started"), clock.get("ended")
+    try:
+        moments = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in (started, ended)]
+    except (AttributeError, ValueError) as error:
+        raise ValueError("manifest.recording_clock does not hold two ISO times") from error
+    if (
+        any(moment.tzinfo is None for moment in moments)
+        or any(ecs.iso(moment) != value for moment, value in zip(moments, (started, ended), strict=True))
+        or moments[1] < moments[0]
+    ):
+        raise ValueError("manifest.recording_clock does not hold two ordered, timezone-aware times")
+    return started, ended
 
 
 def rules_loaded(folder: Path, manager: str) -> int:
@@ -382,7 +407,7 @@ def build(folder: Path) -> dict:
             f"back to {FORMAT_LEVEL}, or read the score without a recording"
         )
     defense = manifest.get("defense") or {}
-    started, finished = run_times(folder)
+    started, finished = run_times(folder, manifest)
     sensors = set(defense.get("agents") or [])
     # The defenses that judged the run, the first of which the top level shows, and their detectors:
     # the manager's live rules, and each rule set whose matches were written beside its alerts.

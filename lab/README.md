@@ -1541,6 +1541,23 @@ stock rules, and its recording has no `defenses`.
 writes all of these again from a run folder's own files, with the spec the
 run's manifest holds and the rule files in its folder, and starts nothing.
 
+A hosted run whose raw sensor data is retained in the repository can be
+verified, copied and judged by a later defense without changing the retained
+source:
+
+```bash
+bluefire-lab range rejudge lab/retained/<run> \
+  --defenses lab/range/<defense-spec>.yaml \
+  --engine <path to Zircolite 4.7.1> \
+  --template bluefire/ui/replay.html \
+  --out .bluefire-runs/rejudged/<run>
+```
+
+The output is a new run folder with the new `recording.json` and a standalone
+`replay.html`. The retained-run layout, hosted provenance, minimum raw inputs,
+verification limits and refusal rules are in
+[`retained/README.md`](retained/README.md).
+
 **`score.md`** opens with the path's outcome in one sentence (whether it
 reached its goal, and after how long), then a table with a row for each
 defense: its sensors, its rules and whether they ran live or after the run,
