@@ -6,6 +6,7 @@ that folder as GitHub would serve a repository at a commit (`served`, in
 conftest.py). Nothing is fetched from a network.
 """
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -177,16 +178,61 @@ def test_a_run_folders_rules_are_refused_when_a_file_is_missing_differs_or_was_a
         rulesets.held(tmp_path, "made-up", lock)
 
 
+def test_a_repository_archive_is_copied_byte_for_byte_after_its_hash_is_checked(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".git").write_text("gitdir: elsewhere\n")
+    source = repository / "lab" / "rules" / "published.tar.gz"
+    source.parent.mkdir(parents=True)
+    data = b"a made-up archive for this unit test"
+    source.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    document = range_spec.read(SMALL.read_text())
+    document["rule_sets"] = {
+        "published": {
+            "kind": "suricata",
+            "source": "lab/rules/published.tar.gz",
+            "sha256": digest,
+            "version": "7",
+        }
+    }
+    document["defenses"] = [{
+        "id": "packets",
+        "name": "Packets with published rules",
+        "sensors": ["packet-capture"],
+        "rules": ["published"],
+    }]
+    document["hosts"]["web"]["packages"].append("tcpdump")
+    document["hosts"]["web"]["capture"] = "packets"
+    spec = range_spec.parse(document, folder=repository / "lab" / "range")
+
+    made = rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    copied = tmp_path / "run" / "rules" / "published" / "published.tar.gz"
+    assert copied.read_bytes() == data
+    assert made["version"] == "7" and made["digest"] == digest
+    assert rulesets.held(tmp_path / "run", "published", made["lock"]) == copied.parent
+
+    source.write_bytes(data + b"changed")
+    with pytest.raises(range_spec.SpecError, match="has SHA-256 .* and the spec says"):
+        rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "other")
+
+
 def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> None:
     spec = range_spec.load(Path(__file__).parents[1] / "range" / "range-one.yaml")
 
-    (sigma,) = spec.rule_sets
+    sigma, et_open = spec.rule_sets
     locked = rulesets.locked(spec, sigma)
 
     assert (sigma.repo, sigma.licence, sigma.lock) == ("SigmaHQ/sigma", "LICENSE", "range-one.rules.lock")
     assert rulesets.wanted(sigma, locked) == sorted(locked)
     assert {path.split("/")[1] for path in locked if path != "LICENSE"} == {"linux", "web"}
+    assert (et_open.kind, et_open.source_file, et_open.version) == (
+        "suricata", "lab/rules/et-open/emerging.rules.tar.gz", "11342"
+    )
+    assert rulesets.locked(spec, et_open) == {"emerging.rules.tar.gz": et_open.sha256}
     assert [(defense.id, defense.sensors, defense.rules) for defense in spec.defenses] == [
         ("wazuh-stock", ("wazuh-agent",), ("wazuh",)),
         ("sigma-public", ("wazuh-agent",), ("sigma",)),
+        ("packets-et-open", ("packet-capture",), ("et-open",)),
     ]

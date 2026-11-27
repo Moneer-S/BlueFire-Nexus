@@ -19,6 +19,7 @@ the same way, so scoring a run folder again fetches nothing.
 
 from __future__ import annotations
 
+import shutil
 import urllib.parse
 from pathlib import Path, PurePosixPath
 
@@ -29,11 +30,23 @@ FOLDER = "rules"
 SOURCE = "SOURCE"
 
 
+def archived(rule_set: RuleSet) -> bool:
+    """Whether this set is one immutable archive already carried by the repository."""
+
+    return bool(rule_set.source_file)
+
+
+def archive_name(rule_set: RuleSet) -> str:
+    return PurePosixPath(rule_set.source_file).name
+
+
 def header(rule_set: RuleSet) -> str:
     return f"# {rule_set.name}: {rule_set.repo} {rule_set.commit}"
 
 
 def lock_path(spec: Spec, rule_set: RuleSet) -> Path:
+    if archived(rule_set):
+        raise SpecError(f"the rule set {rule_set.name} is pinned by the SHA-256 of its archive, not a lock")
     if spec.folder is None:
         raise SpecError(
             f"the rule set {rule_set.name} names the lock {rule_set.lock}, and the spec has no folder"
@@ -102,6 +115,8 @@ def wanted(rule_set: RuleSet, locked: dict[str, str]) -> list[str]:
 
 def locked(spec: Spec, rule_set: RuleSet) -> dict[str, str]:
     """A rule set's lock, read from the file beside the spec and checked against the spec's folders."""
+    if archived(rule_set):
+        return {archive_name(rule_set): rule_set.sha256}
 
     path = lock_path(spec, rule_set)
     try:
@@ -119,6 +134,8 @@ def raw_url(rule_set: RuleSet, path: str) -> str:
 
 
 def source(rule_set: RuleSet) -> str:
+    if archived(rule_set):
+        return f"{rule_set.source_file}@{rule_set.version}"
     return f"{rule_set.repo}@{rule_set.commit}"
 
 
@@ -127,6 +144,36 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
 
     Returns what the run's manifest records of the set: where it came from and the lock it was checked against.
     """
+
+    if archived(rule_set):
+        if spec.folder is None:
+            raise SpecError(f"the rule set {rule_set.name} names a source file, and the spec has no folder")
+        roots = (spec.folder, *spec.folder.parents)
+        repository = next((folder for folder in roots if (folder / ".git").exists()), spec.folder)
+        root = repository.resolve()
+        source_path = repository.joinpath(*PurePosixPath(rule_set.source_file).parts)
+        try:
+            resolved = source_path.resolve(strict=True)
+        except OSError as error:
+            raise SpecError(
+                f"the archive {rule_set.source_file} of {rule_set.name} is not beside the spec"
+            ) from error
+        if source_path.is_symlink() or not resolved.is_relative_to(root) or not resolved.is_file():
+            raise SpecError(
+                f"the archive {rule_set.source_file} of {rule_set.name} must be a regular file inside the spec folder"
+            )
+        digest_ = atomics.sha256(resolved.read_bytes())
+        if digest_ != rule_set.sha256:
+            raise SpecError(
+                f"{rule_set.source_file} of {rule_set.name} has SHA-256 {digest_}, and the spec says "
+                f"{rule_set.sha256}: the run stops"
+            )
+        folder = Path(out) / FOLDER / rule_set.name
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / archive_name(rule_set)
+        shutil.copyfile(resolved, target)
+        (folder / SOURCE).write_text(source(rule_set) + "\n", encoding="utf-8")
+        return record(rule_set, {target.name: digest_})
 
     hashes = locked(spec, rule_set)
     folder = Path(out) / FOLDER / rule_set.name
@@ -152,6 +199,21 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
 def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
     """What a run's manifest holds of a rule set."""
 
+    if archived(rule_set):
+        return {
+            "kind": rule_set.kind,
+            "source": rule_set.source_file,
+            "version": rule_set.version,
+            "sha256": rule_set.sha256,
+            "folder": f"{FOLDER}/{rule_set.name}",
+            "files": 1,
+            "digest": rule_set.sha256,
+            "lock": dict(sorted(hashes.items())),
+            "note": (
+                "the published archive was copied byte for byte from the repository after its SHA-256 "
+                "matched the spec; its own licence files remain inside it and SOURCE names its version"
+            ),
+        }
     return {
         "kind": rule_set.kind,
         "repo": rule_set.repo,
@@ -171,6 +233,8 @@ def digest(rule_set: RuleSet, hashes: dict[str, str]) -> str:
     """The SHA-256 of what `sha256sum` prints for the set's rule files, sorted by their path in the set's
     folder: the files of the rule folders, without the licence file and SOURCE."""
 
+    if archived(rule_set):
+        return hashes.get(archive_name(rule_set), rule_set.sha256)
     listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(hashes) if in_folder(rule_set, path))
     return atomics.sha256(listing.encode("utf-8"))
 
@@ -210,6 +274,8 @@ def lock(spec: Spec, get: atomics.Fetch = atomics.http_get) -> list[Path]:
 
     sections: dict[str, list[str]] = {}
     for rule_set in spec.rule_sets:
+        if archived(rule_set):
+            continue
         lock_path(spec, rule_set)
         paths = [rule_set.licence]
         for folder in rule_set.folders:

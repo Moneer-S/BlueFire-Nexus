@@ -67,6 +67,7 @@ IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?@(sha256:[0-9a-f]{6
 SNAPSHOT = re.compile(r"[0-9]{8}T[0-9]{6}Z\Z")
 PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]+\Z")
 AGENT_VERSION = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+)-[0-9]+\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA512 = re.compile(r"[0-9a-f]{128}\Z")
 # A path Wazuh can watch: absolute, no spaces, no commas (its folder lists are comma separated)
 # and nothing that would need escaping in its XML configuration.
@@ -194,11 +195,14 @@ class RuleSet:
 
     name: str
     kind: str
-    repo: str
-    commit: str
-    folders: tuple[str, ...]
-    licence: str
-    lock: str
+    repo: str = ""
+    commit: str = ""
+    folders: tuple[str, ...] = ()
+    licence: str = ""
+    lock: str = ""
+    source_file: str = ""
+    sha256: str = ""
+    version: str = ""
 
 
 @dataclass(frozen=True)
@@ -1126,7 +1130,8 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
 
     if not isinstance(value, dict) or not value:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
-    keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    repository_keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    archive_keys = {"kind", "source", "sha256", "version"}
     found = []
     for name, settings in value.items():
         if not isinstance(name, str) or not NAME.match(name):
@@ -1143,12 +1148,44 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 f"rule_sets: a recording names a detector of its own {name}, so a rule set needs another name"
             )
         where = f"rule_sets: {name}"
+        if not isinstance(settings, dict):
+            raise SpecError(f"{where} must be a mapping")
+        local = "source" in settings or "sha256" in settings or "version" in settings
+        keys = archive_keys if local else repository_keys
         entry = _mapping(settings, where, keys, keys)
         if entry["kind"] not in RULE_KINDS:
             raise SpecError(
                 f"{where}: kind must be one of {', '.join(RULE_KINDS)}: the kinds of rule set the lab can "
                 "give a recorded run to"
             )
+        if local:
+            if entry["kind"] != "suricata":
+                raise SpecError(f"{where}: a rule archive of the repository must have kind suricata")
+            source = entry["source"]
+            if (
+                not isinstance(source, str)
+                or not RELATIVE.match(source)
+                or not source.endswith(".tar.gz")
+            ):
+                raise SpecError(
+                    f"{where}: source must be a .tar.gz file inside the repository, relative to its root"
+                )
+            digest = entry["sha256"]
+            if not isinstance(digest, str) or not SHA256.match(digest):
+                raise SpecError(f"{where}: sha256 must be 64 lower-case hex digits")
+            version = entry["version"]
+            if (
+                not isinstance(version, str)
+                or not version.strip()
+                or version != version.strip()
+                or "\n" in version
+                or len(version) > 100
+            ):
+                raise SpecError(f"{where}: version must be one short line")
+            found.append(
+                RuleSet(name, entry["kind"], source_file=source, sha256=digest, version=version)
+            )
+            continue
         if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
             raise SpecError(f"{where}: repo must be a GitHub repository, as in SigmaHQ/sigma")
         if not isinstance(entry["commit"], str) or not COMMIT.match(entry["commit"]):

@@ -45,10 +45,17 @@ rule_sets:                         # public rule sets, fetched file by file at t
               rules/web/webserver_generic]
     licence: LICENSE
     lock: range-one.rules.lock     # sha256 of every fetched rule file and of the licence file
+  et-open:
+    kind: suricata
+    source: lab/rules/et-open/emerging.rules.tar.gz
+    sha256: 993ba9ec3a0a185e30f418a157e1858e2276f27dc8fb7059402d96ead16c0a88
+    version: "11342"
 defenses:                          # each judges the same run; the first is the baseline
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
   - {id: sigma-public, name: Public Sigma rules on host logs,
      sensors: [wazuh-agent], rules: [sigma]}
+  - {id: packets-et-open, name: "Packets on web, judged by Suricata with the ET Open rules",
+     sensors: [packet-capture], rules: [et-open]}
 networks:                          # all: --internal, gateway_mode_ipv4=isolated, no IPv6
   edge: {}                         # the stand-in internet
   inside: {}                       # web, build, db
