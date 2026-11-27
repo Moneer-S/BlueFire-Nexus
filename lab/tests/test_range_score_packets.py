@@ -540,6 +540,8 @@ def test_record_dispatches_each_rule_kind_and_removes_stale_network_output(tmp_p
 
     assert section["error"] is None
     assert result is not None
+    assert section["files"][score.NETWORK_EVENTS_FILE]["origins"] == {score.UNATTRIBUTED: 1}
+    assert "origins" not in section["network"]
     assert calls == ["telemetry", "sigma", "suricata"]
     assert not stale_network.exists()
     assert not stale_plain_network.exists()
