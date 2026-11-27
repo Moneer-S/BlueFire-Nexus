@@ -1,0 +1,12 @@
+title: Made Up - Ordered Third Stage
+name: made_up_ordered_third_stage
+id: 10000000-0000-4000-8000-000000000003
+status: test
+author: The lab's tests
+logsource:
+    category: process_creation
+detection:
+    selection:
+        CommandLine: made-up-stage-three
+    condition: selection
+level: low

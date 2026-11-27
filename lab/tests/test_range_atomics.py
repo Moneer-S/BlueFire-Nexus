@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,35 @@ def copied(tmp_path: Path) -> Path:
     folder = tmp_path / "small"
     shutil.copytree(SMALL.parent, folder)
     return folder / "small.yaml"
+
+
+def test_the_fetcher_authenticates_only_github_api_requests(monkeypatch) -> None:
+    asked: list[urllib.request.Request] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *unused):
+            return None
+
+        def read(self) -> bytes:
+            return b"response"
+
+    def open_(request, timeout):
+        assert timeout == atomics.FETCH_SECONDS
+        asked.append(request)
+        return Response()
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "a-test-token")
+    monkeypatch.setattr(urllib.request, "urlopen", open_)
+
+    assert atomics.http_get("https://api.github.com/repos/example/rules") == b"response"
+    assert atomics.http_get("https://raw.githubusercontent.com/example/rules/a/file") == b"response"
+
+    assert asked[0].get_header("Authorization") == "Bearer a-test-token"
+    assert asked[1].get_header("Authorization") is None
 
 
 def test_every_file_is_fetched_at_the_commit_and_checked_against_the_lock() -> None:

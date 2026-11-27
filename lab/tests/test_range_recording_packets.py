@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from bluefire_lab.range import ecs, recording, score
+from bluefire_lab.range import spec as range_spec
 
 RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
 T0 = 1_795_000_000.0
@@ -342,6 +343,13 @@ def manifest() -> dict:
 
 def test_packet_cut_keeps_each_sensor_share_and_every_rule_match(tmp_path: Path) -> None:
     made_up = manifest()
+    spec_document = range_spec.read(made_up["spec"]["text"])
+    executor = spec_document["executor"]["commit"]
+    chunks = [executor[place : place + 8] for place in range(0, 40, 8)]
+    scalar = f"  commit: {executor}  # pragma: allowlist secret"
+    chunked = "  commit: [" + ", ".join(f"{chr(34)}{part}{chr(34)}" for part in chunks) + "]"
+    assert made_up["spec"]["text"].count(scalar) == 1
+    made_up["spec"]["text"] = made_up["spec"]["text"].replace(scalar, chunked)
     (tmp_path / "manifest.json").write_text(json.dumps(made_up), encoding="utf-8")
     write_lines(
         tmp_path / "docker-events.ndjson",
@@ -405,6 +413,8 @@ def test_packet_cut_keeps_each_sensor_share_and_every_rule_match(tmp_path: Path)
     assert all(alert["host"] == "web" and alert["events"] and "raised" not in alert for alert in matches)
     assert {alert["rule"]["level"] for alert in matches} == {"high", "informational"}
     assert "Packet capture has a delivery gap" in " ".join(made["notes"])
+    assert any(f"Invoke-AtomicRedTeam {executor} does;" in note for note in made["notes"])
+    assert all(str(chunks) not in note for note in made["notes"])
     tools = {(tool["name"], tool["version"], tool["role"]) for tool in made["source"]["tools"]}
     assert {
         ("tcpdump", "4.99.4-3ubuntu4", "sensor"),

@@ -1,0 +1,2 @@
+# This valid-looking made-up rule is explicitly excluded.
+alert tcp any any -> any any (msg:"Made-up retired rule"; sid:9000002; rev:1;)

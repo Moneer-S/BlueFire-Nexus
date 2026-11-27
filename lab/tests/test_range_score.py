@@ -7,6 +7,7 @@ made-up times and addresses. Nothing in it was recorded on a machine.
 
 import gzip
 import hashlib
+import importlib
 import json
 import shutil
 from datetime import datetime, timezone
@@ -842,6 +843,18 @@ defenses:
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
   - {id: made-up-rules, name: Rules made up for the tests, sensors: [wazuh-agent], rules: [made-up]}
 """
+TRACKED_SIGMA_SET = """\
+rule_sets:
+  ordered-credential:
+    kind: sigma
+    source: lab/rules/ordered-credential/SHA256SUMS
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    version: "1"
+defenses:
+  - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
+  - {id: ordered-credential, name: Ordered credential activity, sensors: [wazuh-agent],
+     rules: [ordered-credential]}
+"""
 HIGH = {
     "id": "00000000-0000-4000-8000-00000000000a",
     "title": "Made Up - A Rule That Counts",
@@ -876,16 +889,21 @@ def with_rules(folder: Path) -> None:
     rewrite(folder, lambda m: m.update(rule_sets={"sigma": {"lock": lock}}))
 
 
-def matching(monkeypatch, matches: list[tuple[str, dict]]) -> Path:
+def matching(
+    monkeypatch,
+    matches: list[tuple[str, dict]],
+    evidence: dict[str, list[str]] | None = None,
+) -> Path:
     """Stand in for the rule engine: it "matches" the given rules on the named lines of the small run.
 
     Returns a file to pass as the engine's program, which is never started.
     """
 
-    def evaluate_set(program, rules, folders, events, work) -> dict:
+    def evaluate_set(program, rules, folders, events, work, pipelines=()) -> dict:
         assert (rules / "LICENSE").is_file() and events[0]["full_log"]
         return {
             "engine": {"name": "Zircolite", "version": "4.7.1"},
+            "pipelines": list(pipelines),
             "groups": [
                 {
                     "folder": folders[0],
@@ -906,7 +924,18 @@ def matching(monkeypatch, matches: list[tuple[str, dict]]) -> Path:
             "loaded": 2,
             # In the order of the archive, as the lab's reading of the engine's matches gives them.
             "matches": sorted(
-                ({"rule": rule, "event": PLACE[name]} for name, rule in matches),
+                (
+                    {
+                        "rule": rule,
+                        "event": PLACE[name],
+                        **(
+                            {"evidence": [PLACE[item] for item in evidence[name]]}
+                            if evidence and name in evidence
+                            else {}
+                        ),
+                    }
+                    for name, rule in matches
+                ),
                 key=lambda match: (match["event"], match["rule"]["id"]),
             ),
         }
@@ -983,6 +1012,86 @@ def test_a_match_of_a_rule_set_is_tied_as_its_event_is(tmp_path: Path, monkeypat
     assert manifest["ecs"]["files"]["alerts.ecs.ndjson"]["ECS lines"] == 4
 
 
+def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_public_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    rule = {**HIGH, "file": "atomic.yml"}
+    files = {
+        "atomic.yml": b"title: a stand-in tracked rule\n",
+    }
+    manifest_data = "".join(
+        f"{hashlib.sha256(data).hexdigest()}  {path}\n" for path, data in files.items()
+    ).encode()
+    files["SHA256SUMS"] = manifest_data
+    lock = {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
+    for relative, data in files.items():
+        path = folder / "rules" / "ordered-credential" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def configure(run: dict) -> None:
+        run["spec"].update(text=spec_text(TRACKED_SIGMA_SET))
+        run["rule_sets"] = {"ordered-credential": {"lock": lock}}
+
+    rewrite(folder, configure)
+
+    def evaluate_set(program, rules, folders, events, work, pipelines=()) -> dict:
+        assert folders == ["."] and (rules / "atomic.yml").is_file()
+        return {
+            "engine": {"name": "Zircolite", "version": "4.7.1"},
+            "pipelines": list(pipelines),
+            "groups": [],
+            "files that are not a rule": [],
+            "rules": 1,
+            "loaded": 1,
+            "matches": [{"rule": rule, "event": PLACE["a program the test started"]}],
+        }
+
+    monkeypatch.setattr(sigma, "evaluate_set", evaluate_set)
+
+    manifest = judged(folder, RANGE_ONE)
+
+    alert = ecs_lines(folder, "alerts.ordered-credential.ecs.ndjson")[0]
+    assert alert["rule"]["reference"] == (
+        "https://github.com/Moneer-S/BlueFire-Nexus/blob/main/lab/rules/ordered-credential/atomic.yml"
+    )
+    found = manifest["score"]["rule sets"]["ordered-credential"]
+    assert found["evaluated"] is True
+    assert found["source"] == ("lab/rules/ordered-credential/SHA256SUMS@1")
+
+
+def test_a_correlation_alerts_on_its_terminal_event_and_keeps_every_evidence_event(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(
+        monkeypatch,
+        [("a program the test started", HIGH)],
+        {
+            "a program the test started": [
+                "webadmin's login",
+                "a program the test started",
+            ]
+        },
+    )
+
+    manifest = judged(folder, program)
+
+    [match] = ecs_lines(folder, "alerts.sigma.ecs.ndjson")
+    assert match["labels"]["event_id"] == "archive-3"
+    assert json.loads(match["labels"]["evidence_event_ids"]) == ["archive-2", "archive-3"]
+    assert match["@timestamp"] == ecs_lines(folder, score.EVENTS_FILE)[2]["@timestamp"]
+    public = manifest["score"]["defenses"][1]
+    assert public["steps"][0]["outcome"] == "seen"
+    assert public["steps"][1]["outcome"] == "alerted"
+    made = json.loads((folder / recording.FILE).read_text())
+    alert = next(item for item in made["alerts"] if item["detector"] == "sigma")
+    assert alert["step"] == "s03" and alert["time"] == match["@timestamp"]
+    assert alert["events"] == ["s01-2", "s03-1"]
+
+
 def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monkeypatch) -> None:
     folder = small_run(tmp_path)
     with_rules(folder)
@@ -997,7 +1106,7 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         ],
     )
 
-    stock, public, packets = judged(folder, program)["score"]["defenses"]
+    stock, public, packets, ai_tools, ordered = judged(folder, program)["score"]["defenses"]
 
     assert (stock["id"], stock["detectors"], public["id"], public["detectors"]) == (
         "wazuh-stock",
@@ -1009,6 +1118,15 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
     assert packets["id"] == "packets-et-open" and packets["judged"] is False
     assert "no Suricata image was given" in packets["not judged"]
     assert "its sensor packet-capture was unavailable" in packets["not judged"]
+    assert ai_tools["id"] == "ai-tool-packs" and ai_tools["judged"] is False
+    assert ai_tools["rules"] == [
+        "aipt-sigma",
+        "aipt-suricata",
+        "agentic-sigma",
+        "agentic-suricata",
+    ]
+    assert ordered["id"] == "ordered-credential" and ordered["judged"] is False
+    assert ordered["rules"] == ["ordered-credential"]
     # Both have the same sensors, so they saw the same events; each alerted on what its own rules matched.
     steps = {entry["id"]: {step["id"]: step for step in entry["steps"]} for entry in (stock, public)}
     assert [(s["visibility"], s["outcome"], s["events"]) for s in steps["wazuh-stock"].values()] == [
@@ -1051,8 +1169,11 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
         "20.05 s after the first step started, 0.15 s before the goal: Made Up - A Rule That Counts"
         in summary
     )
-    assert "| `wazuh-stock` | `sigma-public` | `packets-et-open` |" in summary
-    assert "| alerted | seen | not judged | 5715 |" in summary
+    assert (
+        "| `wazuh-stock` | `sigma-public` | `packets-et-open` | "
+        "`ai-tool-packs` | `ordered-credential` |" in summary
+    )
+    assert "| alerted | seen | not judged | not judged | not judged | 5715 |" in summary
 
 
 def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_path: Path, monkeypatch) -> None:
@@ -1164,6 +1285,58 @@ def test_matched_rule_attribution_is_split_without_dropping_author_credits(
     assert all(f"{rule['title']} ({rule['id']}), by {rule['author']}" in said for rule in rules)
 
 
+def _recording_with_many_skipped_sigma_groups(tmp_path: Path, monkeypatch) -> tuple[dict, list[dict]]:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(monkeypatch, [])
+    evaluate_set = sigma.evaluate_set
+    skipped = [
+        {
+            "folder": (f"frameworks/example-{number:02d}/sigma/credential-access-and-remote-archive"),
+            "log source": "none the lab gives",
+            "rules": number + 5,
+            "loaded": 0,
+            "given": 0,
+            "read": 0,
+            "rules that matched": 0,
+            "matches": 0,
+            "not evaluated": (f"the lab gives no source for this complete made-up group {number:02d}"),
+        }
+        for number in range(20)
+    ]
+
+    def with_skipped(*args, **kwargs) -> dict:
+        result = evaluate_set(*args, **kwargs)
+        result["groups"] = [*result["groups"], *skipped]
+        result["rules"] += sum(group["rules"] for group in skipped)
+        return result
+
+    monkeypatch.setattr(sigma, "evaluate_set", with_skipped)
+    judged(folder, program)
+    return json.loads((folder / recording.FILE).read_text()), skipped
+
+
+def test_skipped_sigma_groups_stay_complete_and_fit_the_app_recording_format(
+    tmp_path: Path, monkeypatch
+) -> None:
+    made, skipped = _recording_with_many_skipped_sigma_groups(tmp_path, monkeypatch)
+    openings = ("Not evaluated, of sigma: ", "Not evaluated, of sigma, continued: ")
+    bounded = [note for note in made["notes"] if note.startswith(openings)]
+    facts = [f"{group['rules']} rules of {group['folder']} ({group['not evaluated']})" for group in skipped]
+
+    assert len(bounded) > 1
+    assert all(len(note) <= 2_000 for note in bounded)
+    joined = " ".join(bounded)
+    assert all(joined.count(fact) == 1 for fact in facts)
+
+
+@pytest.mark.app_recording_interop
+def test_app_accepts_recording_with_split_skipped_sigma_groups(tmp_path: Path, monkeypatch) -> None:
+    made, _ = _recording_with_many_skipped_sigma_groups(tmp_path, monkeypatch)
+    app_recordings = importlib.import_module("bluefire.recordings")
+    assert app_recordings.validate_recording(made) is made
+
+
 def test_a_defense_with_live_rules_and_a_rule_set_tells_each_alert_and_match_as_its_rules_ran(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1221,7 +1394,7 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
 
     manifest = judged(folder)
 
-    stock, public, packets = manifest["score"]["defenses"]
+    stock, public, packets, ai_tools, ordered = manifest["score"]["defenses"]
     assert stock["judged"] is True and stock["outcomes"]["alerted"] == 1
     assert public == {
         "id": "sigma-public",
@@ -1235,6 +1408,15 @@ def test_without_the_rule_engine_a_defense_that_needs_it_is_not_judged_and_the_r
     assert packets["id"] == "packets-et-open" and packets["judged"] is False
     assert "no Suricata image was given" in packets["not judged"]
     assert "its sensor packet-capture was unavailable" in packets["not judged"]
+    assert ai_tools["id"] == "ai-tool-packs" and ai_tools["judged"] is False
+    assert ai_tools["rules"] == [
+        "aipt-sigma",
+        "aipt-suricata",
+        "agentic-sigma",
+        "agentic-suricata",
+    ]
+    assert ordered["id"] == "ordered-credential" and ordered["judged"] is False
+    assert ordered["rules"] == ["ordered-credential"]
     assert not (folder / "alerts.sigma.ecs.ndjson").exists()
     summary = (folder / "score.md").read_text()
     assert (
@@ -1274,6 +1456,11 @@ def test_every_section_of_the_score_of_a_run_that_did_not_end_sealed_is_headed_n
         "### Ordinary day of range-one",
         "### Rule set sigma of range-one",
         "### Rule set et-open of range-one",
+        "### Rule set aipt-sigma of range-one",
+        "### Rule set aipt-suricata of range-one",
+        "### Rule set agentic-sigma of range-one",
+        "### Rule set agentic-suricata of range-one",
+        "### Rule set ordered-credential of range-one",
     ]
     assert all(": not a result, the run ended invalid (exit code 4)" in heading for heading in headings)
 
@@ -1368,6 +1555,8 @@ def test_a_run_judged_by_another_spec_keeps_the_rule_sets_it_fetched_itself(
         ("wazuh-stock", True),
         ("sigma-public", True),
         ("packets-et-open", False),
+        ("ai-tool-packs", False),
+        ("ordered-credential", False),
     ]
 
 
@@ -1402,6 +1591,8 @@ def test_range_rules_refuses_a_rule_set_of_the_name_of_one_the_run_fetched_itsel
         ("wazuh-stock", True),
         ("sigma-public", True),
         ("packets-et-open", False),
+        ("ai-tool-packs", False),
+        ("ordered-credential", False),
     ]
 
 

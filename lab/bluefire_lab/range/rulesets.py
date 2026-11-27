@@ -1,18 +1,26 @@
 """The pinned public rule sets a range's defenses run.
 
 Repository sets are fetched file by file at a commit and checked against the
-lock beside the spec. A tracked set names a ``SHA256SUMS`` manifest inside this
-repository, pinned by the manifest's own SHA-256; its listed inert files are
-checked and copied byte for byte. Both forms are written below
-``rules/<set>/`` with a generated ``SOURCE`` file. ``held`` verifies that exact
-file closure before a recorded run is judged again.
+lock beside the spec. They may select only executable rule formats below
+named source paths; the lock records every omission and exact SHA-256. The
+locker lists the pinned GitHub tree and fetches each candidate from raw
+content individually. Nothing is cloned.
+
+A tracked set names a ``SHA256SUMS`` manifest inside this repository, pinned
+by the manifest's own SHA-256; its listed inert files are checked and copied
+byte for byte. Both forms are written below ``rules/<set>/`` with a generated
+``SOURCE`` file. ``held`` verifies that exact file closure before a recorded
+run is judged again, so rescoring fetches nothing.
 """
 
 from __future__ import annotations
 
 import re
 import urllib.parse
+from collections import Counter
 from pathlib import Path, PurePosixPath
+
+import yaml
 
 from . import atomics
 from .spec import RuleSet, Spec, SpecError
@@ -20,6 +28,7 @@ from .spec import RuleSet, Spec, SpecError
 FOLDER = "rules"
 SOURCE = "SOURCE"
 MANIFEST_ENTRY = re.compile(r"([0-9a-f]{64})  ([^\r\n]+)\Z")
+RULE_SUFFIXES = {"sigma": (".yml", ".yaml"), "suricata": (".rules",)}
 
 
 def local(rule_set: RuleSet) -> bool:
@@ -30,6 +39,12 @@ def local(rule_set: RuleSet) -> bool:
 
 def manifest_name(rule_set: RuleSet) -> str:
     return PurePosixPath(rule_set.source_file).name
+
+
+def is_rule_file(rule_set: RuleSet, path: str) -> bool:
+    """Whether a tracked file has the executable suffix for this set's rule kind."""
+
+    return PurePosixPath(path).suffix.lower() in RULE_SUFFIXES[rule_set.kind]
 
 
 def repository(spec: Spec, rule_set: RuleSet) -> Path:
@@ -97,8 +112,11 @@ def read_manifest(data: bytes, rule_set: RuleSet) -> dict[str, str]:
         found[path] = digest_
     if not found:
         raise SpecError(f"the manifest {rule_set.source_file} lists no file")
-    if not any(PurePosixPath(path).suffix == ".rules" for path in found):
-        raise SpecError(f"the manifest {rule_set.source_file} lists no .rules file")
+    if not any(is_rule_file(rule_set, path) for path in found):
+        suffixes = " or ".join(RULE_SUFFIXES[rule_set.kind])
+        raise SpecError(
+            f"the manifest {rule_set.source_file} lists no {rule_set.kind} rule file ({suffixes})"
+        )
     return found
 
 
@@ -123,6 +141,23 @@ def manifest_lock(rule_set: RuleSet, listed: dict[str, str]) -> dict[str, str]:
     return {manifest_name(rule_set): rule_set.sha256, **listed}
 
 
+class Locked(dict[str, str]):
+    """The file hashes of one locked set, with the files discovery left out by reason."""
+
+    def __init__(self, hashes: dict[str, str], left_out: dict[str, int] | None = None):
+        super().__init__(hashes)
+        self.left_out = dict(sorted((left_out or {}).items()))
+
+
+INCLUDE = "# include: "
+RULE_PATH = "# rule path: "
+EXCLUDE = "# exclude: "
+PIPELINE = "# pipeline: "
+HASH_FILE = "# hash file: "
+LEFT_OUT = "# left out: "
+SURICATA_RULE = re.compile(r"^(alert|drop|pass|reject(?:src|dst|both)?)\s+", re.IGNORECASE)
+
+
 def header(rule_set: RuleSet) -> str:
     return f"# {rule_set.name}: {rule_set.repo} {rule_set.commit}"
 
@@ -135,7 +170,7 @@ def lock_path(spec: Spec, rule_set: RuleSet) -> Path:
     return spec.folder / rule_set.lock
 
 
-def read_lock(text: str, rule_set: RuleSet) -> dict[str, str]:
+def read_lock(text: str, rule_set: RuleSet) -> Locked:
     """The hashes of a rule set's files by path, from its section of a lock file."""
 
     lines = text.splitlines()
@@ -145,15 +180,67 @@ def read_lock(text: str, rule_set: RuleSet) -> dict[str, str]:
             f"{rule_set.repo} at {rule_set.commit}: write it again with bluefire-lab range lock"
         )
     found: dict[str, str] = {}
+    include = "all"
+    rule_paths: list[str] = []
+    excluded: list[str] = []
+    pipelines: list[str] = []
+    hash_files: list[str] = []
+    left_out: dict[str, int] = {}
     start = lines.index(header(rule_set)) + 1
     for number, line in enumerate(lines[start:], start=start + 1):
+        if line.startswith(INCLUDE):
+            include = line.removeprefix(INCLUDE)
+            continue
+        if line.startswith(RULE_PATH):
+            path = line.removeprefix(RULE_PATH)
+            if not path or path in rule_paths:
+                raise SpecError(f"line {number} of {rule_set.lock} does not name a new rule path")
+            rule_paths.append(path)
+            continue
+        if line.startswith(EXCLUDE):
+            path = line.removeprefix(EXCLUDE)
+            if not plain(path) or path in excluded:
+                raise SpecError(f"line {number} of {rule_set.lock} does not name a new excluded file")
+            excluded.append(path)
+            continue
+        if line.startswith(PIPELINE):
+            path = line.removeprefix(PIPELINE)
+            if not plain(path) or path in pipelines:
+                raise SpecError(f"line {number} of {rule_set.lock} does not name a new pipeline file")
+            pipelines.append(path)
+            continue
+        if line.startswith(HASH_FILE):
+            path = line.removeprefix(HASH_FILE)
+            if not plain(path) or path in hash_files:
+                raise SpecError(f"line {number} of {rule_set.lock} does not name a new hash file")
+            hash_files.append(path)
+            continue
+        if line.startswith(LEFT_OUT):
+            count, separator, reason = line.removeprefix(LEFT_OUT).partition(" ")
+            if not separator or not count.isdigit() or int(count) < 1 or not reason or reason in left_out:
+                raise SpecError(
+                    f"line {number} of {rule_set.lock} does not count files left out for one reason"
+                )
+            left_out[reason] = int(count)
+            continue
         if line.startswith("# "):
             break
         digest, _, path = line.partition("  ")
         if len(digest) != 64 or not plain(path) or path in found:
             raise SpecError(f"line {number} of {rule_set.lock} is not '<sha256>  <path>' of a new file")
         found[path] = digest
-    return found
+    if (
+        include != rule_set.include
+        or sorted(rule_paths) != sorted(rule_set.rule_paths)
+        or sorted(excluded) != sorted(rule_set.exclude)
+        or sorted(pipelines) != sorted(rule_set.pipelines)
+        or sorted(hash_files) != sorted(rule_set.hash_files)
+    ):
+        raise SpecError(
+            f"the section for {rule_set.name} in {rule_set.lock} selects different files than the spec: "
+            "write it again with bluefire-lab range lock"
+        )
+    return Locked(found, left_out)
 
 
 def plain(path: str) -> bool:
@@ -181,6 +268,17 @@ def wanted(rule_set: RuleSet, locked: dict[str, str]) -> list[str]:
     if rule_set.licence not in locked:
         raise SpecError(
             f"{rule_set.lock} does not list {rule_set.licence}, the licence of {rule_set.name}: {again}"
+        )
+    missing_pipelines = sorted(set(rule_set.pipelines) - set(locked))
+    if missing_pipelines:
+        raise SpecError(
+            f"{rule_set.lock} does not list {', '.join(missing_pipelines[:5])}, a pipeline of {rule_set.name}: {again}"
+        )
+    missing_hash_files = sorted(set(rule_set.hash_files) - set(locked))
+    if missing_hash_files:
+        raise SpecError(
+            f"{rule_set.lock} does not list {', '.join(missing_hash_files[:5])}, a hash file of "
+            f"{rule_set.name}: {again}"
         )
     for folder in rule_set.folders:
         if not any(path.startswith(folder + "/") for path in locked):
@@ -262,6 +360,17 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
                     f"{relative} of {rule_set.name} has SHA-256 {found_hash}, and {rule_set.source_file} "
                     f"says {wanted_hash}: the run stops"
                 )
+            if is_rule_file(rule_set, relative):
+                reason = (
+                    sigma_reason(relative, data)
+                    if rule_set.kind == "sigma"
+                    else suricata_reason(relative, data)
+                )
+                if reason is not None:
+                    raise SpecError(
+                        f"{relative} of {rule_set.name} is not an executable {rule_set.kind} rule: "
+                        f"{reason}: the run stops"
+                    )
             files[relative] = data
         hashes = manifest_lock(rule_set, listed)
         root = rule_root(out, create=True)
@@ -321,7 +430,7 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
             "version": rule_set.version,
             "sha256": rule_set.sha256,
             "folder": f"{FOLDER}/{rule_set.name}",
-            "files": sum(PurePosixPath(path).suffix == ".rules" for path in hashes),
+            "files": sum(is_rule_file(rule_set, path) for path in hashes),
             "digest": digest(rule_set, hashes),
             "lock": dict(sorted(hashes.items())),
             "note": (
@@ -329,6 +438,18 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
                 "the repository after their SHA-256 matched; SOURCE names the manifest and version"
             ),
         }
+    left_out = dict(getattr(hashes, "left_out", {}))
+    selection = {
+        "include": rule_set.include,
+        "rule paths": list(rule_set.rule_paths),
+        "exclude": list(rule_set.exclude),
+        "pipelines": list(rule_set.pipelines),
+        "selected files": len(hashes) - 1,
+        "left out files": sum(left_out.values()),
+        "left out by reason": left_out,
+    }
+    if rule_set.hash_files:
+        selection["hash files"] = list(rule_set.hash_files)
     return {
         "kind": rule_set.kind,
         "repo": rule_set.repo,
@@ -337,10 +458,12 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
         "licence": rule_set.licence,
         "folder": f"{FOLDER}/{rule_set.name}",
         "files": len(hashes) - 1,
+        "selection": selection,
         "digest": digest(rule_set, hashes),
         "lock": dict(sorted(hashes.items())),
-        "note": "every file was fetched from raw.githubusercontent.com at the commit and had the lock's "
-        "SHA-256; the licence file and SOURCE, which names the repository and commit, are beside the rules",
+        "note": "every selected file was fetched from raw.githubusercontent.com at the commit and had the "
+        "lock's SHA-256; the licence file and SOURCE, which names the repository and commit, are beside "
+        "the rules",
     }
 
 
@@ -349,7 +472,7 @@ def digest(rule_set: RuleSet, hashes: dict[str, str]) -> str:
     folder: the files of the rule folders, without the licence file and SOURCE."""
 
     if local(rule_set):
-        paths = [path for path in hashes if PurePosixPath(path).suffix == ".rules"]
+        paths = [path for path in hashes if is_rule_file(rule_set, path)]
     else:
         paths = [path for path in hashes if in_folder(rule_set, path)]
     listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(paths))
@@ -396,25 +519,215 @@ def held(run: Path, name: str, expected: dict[str, str]) -> Path:
     return folder
 
 
+def selection_reason(rule_set: RuleSet, path: str, data: bytes) -> str | None:
+    """Why fetched bytes are not one rule of the set's kind, or None when the lock takes them."""
+
+    if path in rule_set.pipelines:
+        return sigma_pipeline_reason(path, data)
+    if path in rule_set.hash_files:
+        return suricata_hash_reason(path, data)
+    if rule_set.include == "all":
+        return None
+    if rule_set.kind == "sigma":
+        return sigma_reason(path, data)
+    if rule_set.kind == "suricata":
+        return suricata_reason(path, data)
+    return f"not a rule for {rule_set.kind}"
+
+
+def path_selection_reason(rule_set: RuleSet, path: str) -> str | None:
+    """Why discovery can leave out a path without fetching its contents."""
+
+    if path in rule_set.exclude:
+        return "excluded by the spec"
+    if path in rule_set.pipelines:
+        return None
+    if path in rule_set.hash_files:
+        return None
+    if rule_set.rule_paths and not any(in_rule_path(path, pattern) for pattern in rule_set.rule_paths):
+        return "outside selected source paths"
+    return None
+
+
+def in_rule_path(path: str, pattern: str) -> bool:
+    """True when a repository file is below a source-folder pattern whose `*` matches one whole part."""
+
+    parts, wanted = PurePosixPath(path).parts, PurePosixPath(pattern).parts
+    return len(parts) > len(wanted) and all(
+        pattern == "*" or pattern == part for part, pattern in zip(parts, wanted, strict=False)
+    )
+
+
+def sigma_reason(path: str, data: bytes) -> str | None:
+    """Why bytes are not one Sigma atomic rule or correlation."""
+
+    if PurePosixPath(path).suffix.lower() not in (".yml", ".yaml"):
+        return "not YAML"
+    try:
+        documents = [found for found in yaml.safe_load_all(data.decode("utf-8")) if found is not None]
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return "not readable as YAML"
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        return "not one Sigma YAML document"
+    document = documents[0]
+    atomic = isinstance(document.get("logsource"), dict) and isinstance(document.get("detection"), dict)
+    correlation = isinstance(document.get("correlation"), dict)
+    if atomic or correlation:
+        return None
+    if "pipelines" in PurePosixPath(path).parts or "transformations" in document:
+        return "Sigma pipeline"
+    return "not a Sigma rule or correlation"
+
+
+def sigma_pipeline_reason(path: str, data: bytes) -> str | None:
+    """Why bytes are not one Sigma value-placeholder pipeline the evaluator can apply."""
+
+    if PurePosixPath(path).suffix.lower() not in (".yml", ".yaml"):
+        return "Sigma pipeline is not YAML"
+    try:
+        documents = [found for found in yaml.safe_load_all(data.decode("utf-8")) if found is not None]
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return "Sigma pipeline is not readable as YAML"
+    document = documents[0] if len(documents) == 1 and isinstance(documents[0], dict) else {}
+    transformations = document.get("transformations")
+    supported = (
+        isinstance(transformations, list)
+        and transformations
+        and all(
+            isinstance(item, dict) and item.get("type") == "value_placeholders" for item in transformations
+        )
+    )
+    variables = document.get("vars")
+    valid_variables = (
+        isinstance(variables, dict)
+        and bool(variables)
+        and all(
+            isinstance(name, str)
+            and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
+            and isinstance(values, list)
+            and bool(values)
+            and all(isinstance(value, str) and bool(value) for value in values)
+            and len(set(values)) == len(values)
+            for name, values in variables.items()
+        )
+    )
+    if not valid_variables or not supported:
+        return "not a Sigma value-placeholder pipeline"
+    return None
+
+
+def suricata_reason(path: str, data: bytes) -> str | None:
+    """Why bytes are not an active Suricata rule file."""
+
+    if PurePosixPath(path).suffix.lower() != ".rules":
+        return "not a Suricata .rules file"
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return "not readable as text"
+    active = (line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#"))
+    if not any(SURICATA_RULE.match(line) for line in active):
+        return "no active Suricata rule"
+    return None
+
+
+def suricata_hash_reason(path: str, data: bytes) -> str | None:
+    """Why bytes are not one strict hash list a Suricata file-hash rule can load."""
+
+    widths = {".md5": 32, ".sha1": 40, ".sha256": 64}
+    width = widths.get(PurePosixPath(path).suffix.lower())
+    if width is None:
+        return "not a Suricata hash file"
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        return "Suricata hash file is not ASCII"
+    if not lines or any(re.fullmatch(rf"[0-9A-Fa-f]{{{width}}}", line) is None for line in lines):
+        return f"not one {width * 4}-bit hexadecimal hash per line"
+    return None
+
+
+def selection_lines(rule_set: RuleSet, left_out: dict[str, int]) -> list[str]:
+    """Lock comments that bind a section to its selection and preserve the excluded counts."""
+
+    lines = []
+    if rule_set.include != "all":
+        lines.append(INCLUDE + rule_set.include)
+    lines += [RULE_PATH + path for path in sorted(rule_set.rule_paths)]
+    lines += [EXCLUDE + path for path in sorted(rule_set.exclude)]
+    lines += [PIPELINE + path for path in sorted(rule_set.pipelines)]
+    lines += [HASH_FILE + path for path in sorted(rule_set.hash_files)]
+    lines += [f"{LEFT_OUT}{count} {reason}" for reason, count in sorted(left_out.items())]
+    return lines
+
+
 def lock(spec: Spec, get: atomics.Fetch = atomics.http_get) -> list[Path]:
-    """Fetch every file of every rule set at its commit and write the lock files beside the spec."""
+    """Discover and fetch each selected file at a set's commit, then write its exact hashes."""
 
     sections: dict[str, list[str]] = {}
     for rule_set in spec.rule_sets:
         if local(rule_set):
             continue
         lock_path(spec, rule_set)
-        paths = [rule_set.licence]
+        candidates: list[str] = []
         for folder in rule_set.folders:
             found = atomics.listed(rule_set.repo, rule_set.commit, folder, get)
             if not found:
                 raise SpecError(f"{folder} of {rule_set.repo} at {rule_set.commit} holds no file")
-            paths += found
-        refused = [path for path in paths if not plain(path)]
+            candidates += found
+        candidates = sorted(set(candidates))
+        refused = [path for path in [rule_set.licence] + candidates if not plain(path)]
         if refused:
             raise SpecError(f"{rule_set.name}: the lab does not write a file named {refused[0]!r}")
-        hashes = {path: atomics.sha256(get(raw_url(rule_set, path))) for path in sorted(set(paths))}
-        lines = [header(rule_set)] + [f"{hashes[path]}  {path}" for path in sorted(hashes)]
+        missing = sorted(set(rule_set.exclude) - set(candidates))
+        if missing:
+            raise SpecError(
+                f"{rule_set.name}: exclude names {', '.join(missing[:5])}, which the configured folders do "
+                "not hold at the pinned commit"
+            )
+        missing_pipelines = sorted(set(rule_set.pipelines) - set(candidates))
+        if missing_pipelines:
+            raise SpecError(
+                f"{rule_set.name}: pipelines names {', '.join(missing_pipelines[:5])}, which the configured "
+                "folders do not hold at the pinned commit"
+            )
+        missing_hash_files = sorted(set(rule_set.hash_files) - set(candidates))
+        if missing_hash_files:
+            raise SpecError(
+                f"{rule_set.name}: hash_files names {', '.join(missing_hash_files[:5])}, which the configured "
+                "folders do not hold at the pinned commit"
+            )
+        unmatched = sorted(
+            pattern
+            for pattern in rule_set.rule_paths
+            if not any(in_rule_path(path, pattern) for path in candidates)
+        )
+        if unmatched:
+            raise SpecError(
+                f"{rule_set.name}: rule_paths names {', '.join(unmatched[:5])}, which match no file in the "
+                "configured folders at the pinned commit"
+            )
+        left_out: Counter[str] = Counter()
+        inspect = []
+        for path in candidates:
+            reason = path_selection_reason(rule_set, path)
+            if reason is None:
+                inspect.append(path)
+            else:
+                left_out[reason] += 1
+        paths = [rule_set.licence] + inspect
+        downloaded = {path: get(raw_url(rule_set, path)) for path in paths}
+        hashes = {rule_set.licence: atomics.sha256(downloaded[rule_set.licence])}
+        for path in inspect:
+            reason = selection_reason(rule_set, path, downloaded[path])
+            if reason is None:
+                hashes[path] = atomics.sha256(downloaded[path])
+            else:
+                left_out[reason] += 1
+        locked = Locked(hashes, left_out)
+        wanted(rule_set, locked)
+        lines = [header(rule_set)] + selection_lines(rule_set, left_out)
+        lines += [f"{locked[path]}  {path}" for path in sorted(locked)]
         sections.setdefault(rule_set.lock, []).extend(lines)
     written = []
     for name, lines in sections.items():

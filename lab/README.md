@@ -828,33 +828,49 @@ the rule. What it asks for:
   `writes` lists the files a job writes, by pattern. [Ordinary
   activity](#range-one-ordinary-activity) gives the rules that keep jobs
   apart from each other and from the path.
-- **Rule sets.** `rule_sets` maps a name to a public rule set, pinned: `kind`
-  (`sigma`, the one kind of rule set the lab can give a recorded run to),
-  `repo` (a GitHub repository), `commit` (in full), `folders` (the folders of
-  the repository to take, none inside another), `licence` (the repository's
-  licence file, which is fetched and kept with the rules) and `lock` (a file
-  beside the spec with the SHA-256 of every one of those files; rule sets can
-  share it, and it is not the lock of `atomic_red_team`). All six are
-  required. The name is the rule set's detector in a recording, so it is not
-  `pinned` or `lab`, which a recording uses already, nor `wazuh`.
-- **Defenses.** `defenses` is a list of 1 to 8 named defenses, each with `id`
-  (letters, digits, `-` and `_`), `name` (a few plain words), `sensors` (the
-  kinds of sensor it records with; the one kind today is `wazuh-agent`, the
-  agents of `defense.wazuh` on every host that has one) and `rules` (at most
-  four: `wazuh`, the rules the manager runs live, or a name of `rule_sets`;
-  an empty list is a defense that only records). The first is the baseline
-  that a recording shows first. A defense's rules must read what one of its
-  sensors records, and every rule set must be run by a defense. A spec
-  without `defenses` has the one its agents and its manager's live rules
-  make, and its recording has no `defenses`. A later kind of sensor or of
-  rule set is one more word in the loader's lists (`SENSORS`, `RULE_KINDS`)
-  and the code that reads it; the two keys keep their shape.
-  ([Range one: its defenses](#range-one-its-defenses) says what a defense
-  is and how one judges a run.)
-- **YAML.** The loader reads only `true` and `false` as booleans, so that the
-  key `off` of `defense.wazuh` stays a key. PyYAML's `safe_load` and
+- **Rule sets.** `rule_sets` maps a name to a pinned public or tracked rule
+  set. A public set has `kind` (`sigma` or `suricata`), `repo`, `commit`,
+  `folders`, `licence` and `lock`. A commit is either its full lower-case
+  40-hex string or exactly five quoted 8-hex chunks. No listed folder may
+  contain another. The licence is fetched and
+  kept with the selected files. The lock beside the spec records every file
+  SHA-256; sets may share it, but it is not the `atomic_red_team` lock. A
+  tracked set instead names a repository-local `SHA256SUMS` under `source`,
+  its `sha256` and a `version`.
+  A public set may select only executable rules with `include: rules`,
+  restrict discovery with `rule_paths` (where `*` is one whole path part),
+  and name exact files under `exclude`. A Sigma set may name exact
+  `pipelines` made only of `value_placeholders` transformations. A Suricata
+  set may name exact `hash_files` ending in `.md5`, `.sha1` or `.sha256`;
+  each must contain one hash of that width per line. Declared pipeline and
+  hash files are selected even when they are outside `rule_paths`. The lock
+  records every selection setting, every selected file hash and the count
+  left out for each reason. Pipeline values are applied only to engine copies
+  of Sigma rules; fetched bytes never change. The set name becomes its
+  detector, so it is not `pinned`, `lab` or `wazuh`.
+
+- **Defenses.** `defenses` is a list of 1 to 8 named defenses. Each has
+  `id` (letters, digits, `-` and `_`), `name` (a few plain words),
+  `sensors` and `rules`. The sensor kinds are `wazuh-agent`, the agents of
+  `defense.wazuh`, and `packet-capture`, the retained interfaces of a host
+  with `capture: packets`. Rules lists at most four names: `wazuh` for the
+  live manager rules or names from `rule_sets`; an empty list only records.
+  The first defense is the baseline a recording shows first. Each rule kind
+  must have one of the sensors it reads, and every rule set belongs to a
+  defense. A spec without `defenses` keeps the older single Wazuh view and
+  writes no `defenses` in its recording. A later sensor or rule kind is one
+  more word in the loader lists (`SENSORS`, `RULE_KINDS`) and the code that
+  reads it; these keys keep their shape.
+  ([Range one: its defenses](#range-one-its-defenses) says how each defense
+  judges the same recording.)
+
+- **YAML.** The loader reads only `true` and `false` as booleans, so the
+  key `off` of `defense.wazuh` stays a key. PyYAML `safe_load` and
   `safe_dump` read `off`, `on`, `yes` and `no` as booleans: a script that
-  reads or rewrites a spec should use `bluefire_lab.range.spec.read`.
+  reads or rewrites a spec should use `bluefire_lab.range.spec.read`. Atomic
+  and public-rule commit pins may be five quoted 8-hex chunks; the Wazuh
+  agent SHA-512 may be sixteen. Quotes are required even for chunks made only
+  of digits, and the loader reassembles and checks the original scalar.
 
 `bluefire-lab range render <spec> --out <folder>` checks a spec and writes
 its build files without building or starting anything.
@@ -1800,18 +1816,25 @@ ordinary day, with the denominators of the run.
 | `wazuh-stock`, Wazuh with its stock rules | the Wazuh agents on `web`, `db` and `build` | the manager's stock rules, the detector `pinned` | live |
 | `sigma-public`, the public Sigma rules over the same host logs | the same agents' records | SigmaHQ's rules at commit `552f3fee` (the commit `lab.yml` pins for the bench on one host), the folders `rules/linux/process_creation`, `rules/linux/file_event`, `rules/linux/builtin` and `rules/web/webserver_generic`, the detector `sigma` | after the run, by Zircolite 4.7.1 |
 | `packets-et-open`, packets on `web` | the packet capture on `web` | the retained ET Open version 11342 subset, the detector `et-open` | after the run, by Suricata 8.0.8 |
+| `ai-tool-packs`, the two public AI-tool packs | the Wazuh agents and the packet capture on `web` | `aipt-sigma`, `aipt-suricata`, `agentic-sigma` and `agentic-suricata` at their full pinned commits | after the run, by Zircolite 4.7.1 and Suricata 8.0.8 |
+| `ordered-credential`, the tuned ordered comparison | the Wazuh agents | three tracked informational atomics and their high `temporal_ordered` correlation, the detector `ordered-credential` | after the run, by Zircolite 4.7.1 |
 
-`wazuh-stock` is first, so a recording's top level is its view, with the
+`wazuh-stock` is first, so the top level of a recording is its view, with the
 verdicts, ordinary day and score a recording had before the spec named
 defenses ([the recording](#range-one-the-score-and-the-recording) says what
-else differs). A third or a fourth defense is one more entry of `defenses`,
-with its rule set under `rule_sets`.
+else differs). Range one names five defenses over seven fetched or tracked
+rule sets. `ai-tool-packs` deliberately keeps the four external sets in one
+view; `ordered-credential` is separate so the stock public rules and the tuned
+comparison remain inspectable.
 
 **The Sigma rule set, fetched and locked.** `bluefire-lab range lock <spec>` lists
 each folder of the rule set at its commit through GitHub's contents API,
 fetches every file from `raw.githubusercontent.com` at that commit, and writes
 their SHA-256 to [`range/range-one.rules.lock`](range/range-one.rules.lock),
-with the repository's `LICENSE`. A run fetches the files by that lock into
+with the repository's `LICENSE`. With `include: rules`, the locker fetches and
+checks each candidate individually, keeps only a rule of the set's kind, and
+records why every other candidate was omitted. It never clones or downloads
+an archive. A run fetches the selected files by that lock into
 `rules/sigma/` of its own folder, with the `LICENSE` and a file `SOURCE` that
 says `SigmaHQ/sigma@<commit>`, before anything is created; a file that is
 missing or has another SHA-256 stops the run with the file's name. Nothing is
@@ -1837,6 +1860,30 @@ every retained byte. A run copies only that declared closure into
 folder against the recorded closure before Suricata sees it. Neither scoring
 nor rescoring extracts an archive or fetches a rule.
 
+**The AI-tool rule sets, selected file by file.** At
+`theori-io/aipt-detections` at commit chunks
+`["9e4653db", "4d9c9aaa", "64383543", "48953dbe", "89322848"]`,
+the lock selects 62 Sigma documents (54 atomics and 8 correlations), one
+value-placeholder pipeline, and 4 Suricata rule files with 82 active
+signatures. The Suricata set also selects `suricata/artex-ui-assets.md5`,
+the exact data file one signature names; `suricata/retired.rules` stays out.
+At
+`ThreatDefence/agentic-attack-detections` at commit chunks
+`["12e37af3", "bcce482d", "0053e724", "1a31ba43", "a7ce0e64"]`,
+it selects 349 Sigma documents (344 atomics and 5 correlations) and 74
+Suricata files with 897 active signatures. Another 77 candidate `.rules`
+files hold no active signature and stay out. The lock also records files
+outside the selected source paths.
+
+Both repositories are discovered through the public GitHub API and every
+selected byte is fetched separately from `raw.githubusercontent.com` at the
+pin; no clone or archive is used. The existing `GH_TOKEN` or `GITHUB_TOKEN`,
+when present, is sent only to `api.github.com` directory requests and never
+to raw-file requests. Theori files retain the Detection Rule License 1.1;
+ThreatDefence files retain its MIT licence and copyright notice. These source
+counts say what is locked. A rule is reported as evaluated only when its real
+engine loaded it against a supported recorded source.
+
 **How the Sigma rules are given the run.** After the run, the engine is given the
 manager's archived events, each rule folder over the events of the Sigma log
 source its rules name and no others, in Sigma's field names:
@@ -1847,9 +1894,10 @@ source its rules name and no others, in Sigma's field names:
 - `file_event` for Linux: the files the agents' file integrity monitoring saw
   added or changed, as `TargetFilename`.
 - `webserver`: nginx's access lines, as `c-ip`, `cs-method`, `cs-uri-query`
-  (the request's path and query as the line holds them), `sc-status`,
-  `cs-user-agent` and `cs-referer`, with the line itself, all taken from the
-  line. The engine names a column by the letters and digits of a field's name,
+  (the request's path and query as the line holds them), `cs-uri-stem` (the
+  request's path without its query), `sc-status`, `cs-user-agent` and
+  `cs-referer`, with the line itself, all taken from the line. The engine names
+  a column by the letters and digits of a field's name,
   so it reads a copy of each such rule with the field's name written that way;
   the fetched files stay as the lock has them.
 - the keyword rules of `builtin`: a rule that names a `service` (`sshd`,
@@ -1862,6 +1910,23 @@ engine's own and unattributed ones. For each folder and log source the run
 records how many rules it holds, how many the engine says it loaded, and how
 many events it was given and read: the engine skips a rule it cannot convert,
 and a rule it did not load was not evaluated.
+
+Atomics and Sigma v2 `event_count`, `value_count`, `temporal` and
+`temporal_ordered` correlations run over one database. Every engine row
+carries its source, host, time and stable archive event id, and each atomic
+dependency is constrained to its own source. A correlation alert is attributed
+to the latest real event that completed it; its ordered evidence event ids are
+retained with the alert. Conversion failures and unsupported sources are
+recorded per rule and are not described as evaluated.
+
+**The ordered comparison.** `lab/rules/ordered-credential/`
+holds three informational atomics and one high `temporal_ordered` correlation,
+closed by its tracked `SHA256SUMS`. It requires the recursive credential-word
+search, SSH private-key search and remote archive over SSH in order, on the
+same observed host and login, within one minute. Every contributing event is
+at or before the terminal event; the alert time and `labels.event_id` name
+that last real event, and ordered evidence IDs remain attached. This is the
+separate `ordered-credential` defense, not another stock public pack.
 
 **A match.** Each match is an alert of the detector `sigma`, at the time of
 the event it matched and with no `raised` time, at the rule's own level; it

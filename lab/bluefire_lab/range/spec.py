@@ -209,6 +209,11 @@ class RuleSet:
     source_file: str = ""
     sha256: str = ""
     version: str = ""
+    rule_paths: tuple[str, ...] = ()
+    include: str = "all"
+    exclude: tuple[str, ...] = ()
+    pipelines: tuple[str, ...] = ()
+    hash_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -529,6 +534,7 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
     base = _base(data["base"]) if "base" in data else None
     wazuh, watch = _defense(data["defense"]) if "defense" in data else (None, Watch())
     atomics = _atomics(data["atomic_red_team"]) if "atomic_red_team" in data else None
+    executor_commit(data.get("executor"))
 
     hosts_data = data["hosts"]
     if not isinstance(hosts_data, dict) or not hosts_data:
@@ -599,6 +605,40 @@ def _mapping(value: object, where: str, allowed: set[str], required: set[str]) -
     return value
 
 
+def _hex_pin(value: object, pattern: re.Pattern[str], chunks: int, message: str) -> str:
+    """One lower-case hex pin, written whole or as exact eight-character chunks."""
+
+    if isinstance(value, str):
+        pin = value
+    elif (
+        isinstance(value, list)
+        and len(value) == chunks
+        and all(isinstance(part, str) and re.fullmatch(r"[0-9a-f]{8}", part) for part in value)
+    ):
+        pin = "".join(value)
+    else:
+        raise SpecError(message)
+    if not pattern.match(pin):
+        raise SpecError(message)
+    return pin
+
+
+def executor_commit(value: object) -> str | None:
+    """The executor commit as one strict scalar, including its chunked YAML form."""
+
+    if value is None:
+        return None
+    if not isinstance(value, dict) or "commit" not in value:
+        raise SpecError("executor must be a mapping that names commit")
+    return _hex_pin(
+        value["commit"],
+        COMMIT,
+        5,
+        "executor.commit must be a full commit id, 40 lower-case hex digits, as one string "
+        "or five 8-digit chunks",
+    )
+
+
 def _base(value: object) -> Base:
     base = _mapping(value, "base", {"image", "apt_snapshot"}, {"image", "apt_snapshot"})
     if not isinstance(base["image"], str) or not IMAGE.match(base["image"]):
@@ -660,10 +700,13 @@ def _defense(value: object) -> tuple[Wazuh, Watch]:
     version = deb["version"]
     if not isinstance(version, str) or not AGENT_VERSION.match(version):
         raise SpecError("defense.wazuh.agent_deb.version must be a package version, as in 4.14.10-1")
-    if not isinstance(deb["sha512"], str) or not SHA512.match(deb["sha512"]):
-        raise SpecError(
-            "defense.wazuh.agent_deb.sha512 must be the package's SHA-512 checksum, 128 lower-case hex digits"
-        )
+    sha512 = _hex_pin(
+        deb["sha512"],
+        SHA512,
+        16,
+        "defense.wazuh.agent_deb.sha512 must be the SHA-512 checksum of the package, 128 lower-case "
+        "hex digits, as one string or sixteen 8-digit chunks",
+    )
     tag = IMAGE.match(manager_image).group(1)
     if tag != ":" + AGENT_VERSION.match(version).group(1):
         raise SpecError(
@@ -680,7 +723,7 @@ def _defense(value: object) -> tuple[Wazuh, Watch]:
     if not isinstance(off, list) or any(item not in OFF for item in off) or len(set(off)) != len(off):
         raise SpecError(f"defense.wazuh.off may list only these agent features, once each: {', '.join(OFF)}")
     watch = _watch(defense.get("watch", {}), "defense.watch")
-    return Wazuh(manager_image, version, deb["sha512"], level, tuple(off)), watch
+    return Wazuh(manager_image, version, sha512, level, tuple(off)), watch
 
 
 def _defense_hosts(hosts: dict[str, Host], wazuh: Wazuh | None, watch: Watch) -> None:
@@ -1140,12 +1183,17 @@ def _atomics(value: object) -> Atomics:
     entry = _mapping(value, "atomic_red_team", {"repo", "commit", "lock"}, {"repo", "commit"})
     if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
         raise SpecError("atomic_red_team.repo must be a GitHub repository, as in redcanaryco/atomic-red-team")
-    if not isinstance(entry["commit"], str) or not COMMIT.match(entry["commit"]):
-        raise SpecError("atomic_red_team.commit must be a full commit id, 40 hex digits")
+    commit = _hex_pin(
+        entry["commit"],
+        COMMIT,
+        5,
+        "atomic_red_team.commit must be a full commit id, 40 lower-case hex digits, as one string "
+        "or five 8-digit chunks",
+    )
     lock = entry.get("lock", "")
     if lock and (not isinstance(lock, str) or not RELATIVE.match(lock)):
         raise SpecError("atomic_red_team.lock must be a file beside the spec, as in range-one.lock")
-    return Atomics(entry["repo"], entry["commit"], lock)
+    return Atomics(entry["repo"], commit, lock)
 
 
 def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
@@ -1154,6 +1202,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
     if not isinstance(value, dict) or not value:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
     repository_keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    selection_keys = {"rule_paths", "include", "exclude", "pipelines", "hash_files"}
     manifest_keys = {"kind", "source", "sha256", "version"}
     found = []
     for name, settings in value.items():
@@ -1175,16 +1224,15 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
         if not isinstance(settings, dict):
             raise SpecError(f"{where} must be a mapping")
         local = "source" in settings or "sha256" in settings or "version" in settings
-        keys = manifest_keys if local else repository_keys
-        entry = _mapping(settings, where, keys, keys)
+        allowed = manifest_keys if local else repository_keys | selection_keys
+        required = manifest_keys if local else repository_keys
+        entry = _mapping(settings, where, allowed, required)
         if entry["kind"] not in RULE_KINDS:
             raise SpecError(
                 f"{where}: kind must be one of {', '.join(RULE_KINDS)}: the kinds of rule set the lab can "
                 "give a recorded run to"
             )
         if local:
-            if entry["kind"] != "suricata":
-                raise SpecError(f"{where}: a tracked rule manifest must have kind suricata")
             source = entry["source"]
             if (
                 not isinstance(source, str)
@@ -1224,8 +1272,13 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
             continue
         if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
             raise SpecError(f"{where}: repo must be a GitHub repository, as in SigmaHQ/sigma")
-        if not isinstance(entry["commit"], str) or not COMMIT.match(entry["commit"]):
-            raise SpecError(f"{where}: commit must be a full commit id, 40 hex digits")
+        commit = _hex_pin(
+            entry["commit"],
+            COMMIT,
+            5,
+            f"{where}: commit must be a full commit id, 40 lower-case hex digits, as one string "
+            "or five 8-digit chunks",
+        )
         folders = entry["folders"]
         if (
             not isinstance(folders, list)
@@ -1241,6 +1294,99 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
             raise SpecError(
                 f"{where}: folders must list folders of the repository, as in rules/linux/process_creation, "
                 "once each and none inside another"
+            )
+        rule_paths = entry.get("rule_paths", [])
+        if (
+            not isinstance(rule_paths, list)
+            or not all(
+                isinstance(path, str)
+                and RELATIVE.match(path.replace("*", "x"))
+                and all("*" not in part or part == "*" for part in path.split("/"))
+                for path in rule_paths
+            )
+            or len(set(rule_paths)) != len(rule_paths)
+        ):
+            raise SpecError(
+                f"{where}: rule_paths must list relative source folders once each; a whole path part may be *"
+            )
+        outside_paths = sorted(
+            path
+            for path in rule_paths
+            if not any(path == folder or path.startswith(folder + "/") for folder in folders)
+        )
+        if outside_paths:
+            raise SpecError(
+                f"{where}: rule_paths names {', '.join(outside_paths[:5])}, outside the configured folders"
+            )
+        include = entry.get("include", "all")
+        if include not in ("all", "rules"):
+            raise SpecError(f"{where}: include must be all or rules")
+        exclude = entry.get("exclude", [])
+        if (
+            not isinstance(exclude, list)
+            or not all(isinstance(path, str) and RELATIVE.match(path) for path in exclude)
+            or len(set(exclude)) != len(exclude)
+        ):
+            raise SpecError(
+                f"{where}: exclude must list repository file paths once each, with no absolute or parent path"
+            )
+        outside = sorted(
+            path for path in exclude if not any(path.startswith(folder + "/") for folder in folders)
+        )
+        if outside:
+            raise SpecError(
+                f"{where}: exclude names {', '.join(outside[:5])}, outside the folders the rule set takes"
+            )
+        pipelines = entry.get("pipelines", [])
+        if (
+            not isinstance(pipelines, list)
+            or not all(isinstance(path, str) and RELATIVE.match(path) for path in pipelines)
+            or len(set(pipelines)) != len(pipelines)
+        ):
+            raise SpecError(
+                f"{where}: pipelines must list repository file paths once each, with no absolute or parent path"
+            )
+        if pipelines and entry["kind"] != "sigma":
+            raise SpecError(f"{where}: pipelines is only for sigma rule sets")
+        outside_pipelines = sorted(
+            path for path in pipelines if not any(path.startswith(folder + "/") for folder in folders)
+        )
+        if outside_pipelines:
+            raise SpecError(
+                f"{where}: pipelines names {', '.join(outside_pipelines[:5])}, outside the folders the rule set takes"
+            )
+        excluded_pipelines = sorted(set(pipelines) & set(exclude))
+        if excluded_pipelines:
+            raise SpecError(
+                f"{where}: pipelines names {', '.join(excluded_pipelines[:5])}, which exclude also names"
+            )
+        hash_files = entry.get("hash_files", [])
+        if (
+            not isinstance(hash_files, list)
+            or not all(
+                isinstance(path, str)
+                and RELATIVE.match(path)
+                and PurePosixPath(path).suffix.lower() in (".md5", ".sha1", ".sha256")
+                for path in hash_files
+            )
+            or len(set(hash_files)) != len(hash_files)
+        ):
+            raise SpecError(
+                f"{where}: hash_files must list repository .md5, .sha1 or .sha256 files once each"
+            )
+        if hash_files and entry["kind"] != "suricata":
+            raise SpecError(f"{where}: hash_files is only for suricata rule sets")
+        outside_hash_files = sorted(
+            path for path in hash_files if not any(path.startswith(folder + "/") for folder in folders)
+        )
+        if outside_hash_files:
+            raise SpecError(
+                f"{where}: hash_files names {', '.join(outside_hash_files[:5])}, outside the folders the rule set takes"
+            )
+        excluded_hash_files = sorted(set(hash_files) & set(exclude))
+        if excluded_hash_files:
+            raise SpecError(
+                f"{where}: hash_files names {', '.join(excluded_hash_files[:5])}, which exclude also names"
             )
         licence = entry["licence"]
         if not isinstance(licence, str) or not RELATIVE.match(licence):
@@ -1259,7 +1405,20 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 "lock file of their own"
             )
         found.append(
-            RuleSet(name, entry["kind"], entry["repo"], entry["commit"], tuple(folders), licence, lock)
+            RuleSet(
+                name,
+                entry["kind"],
+                entry["repo"],
+                commit,
+                tuple(folders),
+                licence,
+                lock,
+                rule_paths=tuple(rule_paths),
+                include=include,
+                exclude=tuple(exclude),
+                pipelines=tuple(pipelines),
+                hash_files=tuple(hash_files),
+            )
         )
     return tuple(found)
 

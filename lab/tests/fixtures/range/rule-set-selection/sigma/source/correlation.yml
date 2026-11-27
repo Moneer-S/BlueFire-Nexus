@@ -1,0 +1,14 @@
+title: Made-up count of process starts
+id: 00000000-0000-4000-8000-000000000002
+name: made_up_process_count
+status: test
+correlation:
+  type: event_count
+  rules:
+    - made_up_process_start
+  group-by:
+    - Computer
+  timespan: 1m
+  condition:
+    gte: 2
+level: high
