@@ -169,7 +169,8 @@ jobs:
               and (.ecs.network.lines | type == "number" and . > 0)
               and (.ecs.network.bytes | type == "number" and . > 0)
               and (.ecs.network.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-              and (.ecs.network.origins.step | type == "number" and . > 0)
+              and (.ecs.files["events.network.ecs.ndjson.gz"].origins.step
+                | type == "number" and . > 0)
           ' "$OUT/manifest.json" > /dev/null; then
             jq '{packet_capture, network: .ecs.network}' "$OUT/manifest.json"
             exit 1
