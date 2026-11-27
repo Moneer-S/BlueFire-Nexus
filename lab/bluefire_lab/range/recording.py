@@ -6,8 +6,9 @@ texts, to name a step's outcome and to list the rules of ordinary activity.
 Every value comes from the run folder: `manifest.json` (the spec the run
 used, the hosts, the path and the score), the ECS lines of the events and
 alerts with their ties (`score`), what each step printed (`raw/steps/`), the
-Docker events the engine watched (the run's start and end) and the manager's
-log (how many rules it loaded).
+Docker events the engine watched, or the start and end selected from those
+events by a hosted retained-run export, and the manager's log (how many rules
+it loaded).
 
 The network is the spec's hosts and the links between those that share a
 network; the sensors are the Wazuh agents; the detector `pinned` is the
@@ -34,6 +35,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from .. import recording as lab
@@ -70,17 +72,40 @@ def nanoseconds(value: int) -> str:
     return range_path.iso(value) or ""
 
 
-def run_times(folder: Path) -> tuple[str, str]:
-    """The run's start and end: the Docker daemon's times of the first and the last event the engine watched."""
+def run_times(folder: Path, manifest: dict | None = None) -> tuple[str, str]:
+    """The run's start and end on the Docker daemon's clock.
+
+    A full run folder holds every watched Docker event. A small retained export
+    instead holds the exact first and last times selected by its hosted
+    workflow in `manifest.recording_clock`, without retaining the events'
+    unrelated container identifiers.
+    """
 
     times = [
         int(event["timeNano"])
         for event in lines(folder / "docker-events.ndjson")
         if isinstance(event.get("timeNano"), int)
     ]
-    if not times:
-        raise ValueError("docker-events.ndjson holds no event, so the run's start and end are not known")
-    return nanoseconds(min(times)), nanoseconds(max(times))
+    if times:
+        return nanoseconds(min(times)), nanoseconds(max(times))
+    clock = (manifest or {}).get("recording_clock")
+    if not isinstance(clock, dict):
+        raise ValueError(
+            "docker-events.ndjson holds no event and manifest.recording_clock is absent, "
+            "so the run's start and end are not known"
+        )
+    started, ended = clock.get("started"), clock.get("ended")
+    try:
+        moments = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in (started, ended)]
+    except (AttributeError, ValueError) as error:
+        raise ValueError("manifest.recording_clock does not hold two ISO times") from error
+    if (
+        any(moment.tzinfo is None for moment in moments)
+        or any(ecs.iso(moment) != value for moment, value in zip(moments, (started, ended), strict=True))
+        or moments[1] < moments[0]
+    ):
+        raise ValueError("manifest.recording_clock does not hold two ordered, timezone-aware times")
+    return started, ended
 
 
 def rules_loaded(folder: Path, manager: str) -> int:
@@ -586,7 +611,7 @@ def build(folder: Path) -> dict:
             f"back to {FORMAT_LEVEL}, or read the score without a recording"
         )
     defense = manifest.get("defense") or {}
-    started, finished = run_times(folder)
+    started, finished = run_times(folder, manifest)
     # The defenses that judged the run, the first of which the top level shows, and their detectors:
     # the manager's live rules, and each rule set whose matches were written beside its alerts.
     judged = [entry for entry in (manifest.get("score") or {}).get("defenses") or [] if entry.get("judged")]
@@ -1001,6 +1026,36 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     return said
 
 
+def matched_rule_notes(name: str, matched: list[dict]) -> list[str]:
+    """Name every matched rule and its author in notes the recording format can import."""
+
+    opening = f"The rules of {name} that matched in this run, each with its author as the rule gives it: "
+    continuation = f"The matched rules of {name}, continued: "
+    notes, current = [], opening
+    for rule in matched:
+        attribution = f"{rule['title']} ({rule['rule']}), by {rule.get('author') or 'no author named'}"
+        separator = "" if current in (opening, continuation) else "; "
+        candidate = current + separator + attribution + "."
+        if len(candidate) <= lab.KEPT_TEXT:
+            current += separator + attribution
+            continue
+        if current not in (opening, continuation):
+            notes.append(current + ".")
+            current, separator = continuation, ""
+        # Public rules fit as one attribution. Still preserve an unusually long author instead of
+        # silently cutting its credit: carry the exact text into as many bounded notes as it needs.
+        while len(current + attribution + ".") > lab.KEPT_TEXT:
+            suffix = " [continued]"
+            room = lab.KEPT_TEXT - len(current) - len(suffix)
+            notes.append(current + attribution[:room] + suffix)
+            attribution = attribution[room:]
+            current = continuation
+        current += attribution
+    if current not in (opening, continuation):
+        notes.append(current + ".")
+    return notes
+
+
 def defense_notes(manifest: dict) -> list[str]:
     """What a reader must know of the named defenses: which judged the run, and for each rule set that was
     evaluated after the run what its rules were given and what they were not."""
@@ -1070,14 +1125,7 @@ def defense_notes(manifest: dict) -> list[str]:
         matched = entry.get("rules that matched") or []
         if matched:
             # The rule set's licence asks that what is said of a match keeps the rule's author.
-            said.append(
-                f"The rules of {name} that matched in this run, each with its author as the rule gives it: "
-                + "; ".join(
-                    f"{rule['title']} ({rule['rule']}), by {rule.get('author') or 'no author named'}"
-                    for rule in matched
-                )
-                + "."
-            )
+            said += matched_rule_notes(name, matched)
         groups = [group for group in entry["groups"] if not group.get("not evaluated")]
         given = "; ".join(
             f"{group['log source']}: {', '.join(group['fields given']) or 'the line itself'}, of "
