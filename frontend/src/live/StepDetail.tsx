@@ -5,10 +5,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Alert, Recording, RecordingEvent, Step } from "./recording";
 import { alertMoment, timeOf } from "./recording";
-import type { StepRow } from "./analyse";
-import { fixHint, ordinaryMatches, otherRuns } from "./analyse";
+import type { RuleMatches, StepRow } from "./analyse";
+import { fixHint, matchesByRule, ordinaryMatches, otherRuns } from "./analyse";
 import { capital, clockTime, comparedStep, count, elapsed, eventMarks, howItWent, ordinaryAlertEvents, outcomeClass, outcomeWords, plural, seenWords, sensorLabel, sensorShortName, sensorWord, sentence, span, stepLabel, stepShortName, titleInSentence, unitWord, unseenWords } from "./format";
 import type { MatchKind } from "./format";
+import { minOf } from "./playback";
 import { FreeText } from "./FreeText";
 import { refusalOf } from "./EventLog";
 import type { StyleVars } from "./motion";
@@ -66,42 +67,66 @@ function raisedAfter(alert: Alert, ended: number | null): string | null {
   return late > 0 ? `Raised ${span(late)} after the step ended.` : null;
 }
 
+/**
+ * For a rule with several matches, how many of them were raised live after
+ * the step ended: "12 of its 796 matches were raised after the step ended."
+ * Null when none was.
+ */
+function raisedAfterOfMany(alerts: readonly Alert[], ended: number | null): string | null {
+  const late = alerts.filter((alert) => raisedAfter(alert, ended) !== null).length;
+  if (late === 0) return null;
+  if (late === alerts.length) return alerts.length === 2 ? "Both of its matches were raised after the step ended." : `All ${count(alerts.length)} of its matches were raised after the step ended.`;
+  return `${count(late)} of its ${count(alerts.length)} matches ${late === 1 ? "was" : "were"} raised after the step ended.`;
+}
+
+/** One rule of a group, once however often it matched: its events counted once each, and when its first match came. */
+function RuleRow({ recording, match, ended }: { recording: Recording; match: RuleMatches; ended: number | null }) {
+  const [first] = match.alerts;
+  if (!first) return null;
+  const { rule } = match;
+  const look = chip(first);
+  const ordinary = first.counts && rule.origin === "pinned" ? ordinaryAlertEvents(recording, rule.title) : 0;
+  // How noisy a rule for review is on ordinary activity: what a defender weighs before raising it to alert.
+  const noise = !first.counts && rule.origin === "pinned" && first.launcher_only !== true ? ordinaryMatches(recording, rule.title) : null;
+  const one = match.alerts.length === 1;
+  const late = one ? raisedAfter(first, ended) : raisedAfterOfMany(match.alerts, ended);
+  const firstAt = minOf(match.alerts.map(alertMoment));
+  return (
+    <div className={`lv-dt-match${first.launcher_only === true ? " is-dim" : ""}`}>
+      <span className={`lv-mchip ${look.className}`} title={look.title}>
+        {look.words}
+      </span>
+      {/* The title is whole: its counts stand beside it where both fit, and on a line of their own under it where they do not. */}
+      <span className="lv-dt-mline">
+        <span className="lv-dt-rule" title={rule.id}>
+          {rule.title}
+        </span>
+        <span className="lv-dt-mmeta">
+          {match.events > 0 ? plural(match.events, "event") : "no event"} &middot; {one ? clockTime(firstAt) : `first at ${clockTime(firstAt)}`}
+          {noise !== null ? (
+            <span className="lv-dt-noise" title="Events of ordinary activity, outside every step, that this rule matched">
+              {" "}
+              &middot; {noise === 0 ? "none" : count(noise)} in ordinary activity
+            </span>
+          ) : null}
+        </span>
+      </span>
+      {late ? <span className="lv-dt-mnote">{late}</span> : null}
+      {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: one false alert.</span> : null}
+    </div>
+  );
+}
+
+/** One group of the rules that matched, each rule on one row, in the order of its first match. */
 function MatchGroup({ recording, title, alerts, ended }: { recording: Recording; title: string; alerts: Alert[]; ended: number | null }) {
-  if (alerts.length === 0) return null;
+  const rules = matchesByRule(alerts);
+  if (rules.length === 0) return null;
   return (
     <div className="lv-dt-group">
       <h5>{title}</h5>
-      {alerts.map((alert) => {
-        const look = chip(alert);
-        const ordinary = alert.counts && alert.rule.origin === "pinned" ? ordinaryAlertEvents(recording, alert.rule.title) : 0;
-        // How noisy a rule for review is on ordinary activity: what a defender weighs before raising it to alert.
-        const noise = !alert.counts && alert.rule.origin === "pinned" && alert.launcher_only !== true ? ordinaryMatches(recording, alert.rule.title) : null;
-        const late = raisedAfter(alert, ended);
-        return (
-          <div key={alert.id} className={`lv-dt-match${alert.launcher_only === true ? " is-dim" : ""}`}>
-            <span className={`lv-mchip ${look.className}`} title={look.title}>
-              {look.words}
-            </span>
-            {/* The title is whole: its counts stand beside it where both fit, and on a line of their own under it where they do not. */}
-            <span className="lv-dt-mline">
-              <span className="lv-dt-rule" title={alert.rule.id}>
-                {alert.rule.title}
-              </span>
-              <span className="lv-dt-mmeta">
-                {alert.events.length > 0 ? plural(alert.events.length, "event") : "no event"} &middot; {clockTime(alertMoment(alert))}
-                {noise !== null ? (
-                  <span className="lv-dt-noise" title="Events of ordinary activity, outside every step, that this rule matched">
-                    {" "}
-                    &middot; {noise === 0 ? "none" : count(noise)} in ordinary activity
-                  </span>
-                ) : null}
-              </span>
-            </span>
-            {late ? <span className="lv-dt-mnote">{late}</span> : null}
-            {ordinary > 0 ? <span className="lv-dt-mnote">The same rule also alerted on {plural(ordinary, "event")} of ordinary activity, outside every step: one false alert.</span> : null}
-          </div>
-        );
-      })}
+      {rules.map((match) => (
+        <RuleRow key={`${match.rule.origin}:${match.rule.id}`} recording={recording} match={match} ended={ended} />
+      ))}
     </div>
   );
 }

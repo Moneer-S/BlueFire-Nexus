@@ -4,10 +4,10 @@
 // the fixed words of the model's place. Nothing here guesses a rule or reads
 // the repository: the change itself is a file there, run by its CI.
 
-import type { MatchGroups, StepRow } from "../live/analyse";
-import { ordinaryMatches, otherRuns } from "../live/analyse";
+import type { MatchGroups, RuleMatches, StepRow } from "../live/analyse";
+import { matchesByRule, ordinaryMatches, otherRuns } from "../live/analyse";
 import { sensorLabel, sensorShortName } from "../live/format";
-import type { Alert, Recording, RecordingEvent, Rule, RuleVerdict, Step } from "../live/recording";
+import type { Alert, Recording, RecordingEvent, RuleVerdict, Step } from "../live/recording";
 import type { CatalogResponse } from "../types";
 import type { Delta, DeltaSide, DeltaStep, DeltaSummary } from "./api";
 import { momentSearch, pairsInOrder, recordedRunPath } from "./recorded-runs";
@@ -33,35 +33,24 @@ export function backPath(recordingId: string, file: string | undefined, stepId: 
 }
 
 /** One rule that matched the step, with every match of it, and what the recording says of it. */
-export interface RuleMatch {
-  rule: Rule;
-  alerts: Alert[];
+export interface RuleMatch extends RuleMatches {
   /** For a rule of the lab's own: how this run judged it, when the recording says so. */
   verdict?: RuleVerdict;
   /** For a published rule: how many events of ordinary activity it matched, or null when the recording does not say. */
   ordinary?: number | null;
 }
 
-/** Matches grouped by rule, in the order their first match comes. */
+/** Matches grouped by rule as analyse mode groups them (`matchesByRule`), with what only the fix page shows. */
 function byRule(recording: Recording, alerts: readonly Alert[]): RuleMatch[] {
   const verdicts = labVerdicts(recording);
-  const found = new Map<string, RuleMatch>();
-  for (const alert of alerts) {
-    const key = `${alert.rule.origin}:${alert.rule.id}`;
-    const entry = found.get(key);
-    if (entry) {
-      entry.alerts.push(alert);
-      continue;
-    }
-    const verdict = alert.rule.origin === "lab" ? verdicts.find((item) => item.rule === alert.rule.id) : undefined;
-    found.set(key, {
-      rule: alert.rule,
-      alerts: [alert],
+  return matchesByRule(alerts).map((match) => {
+    const verdict = match.rule.origin === "lab" ? verdicts.find((item) => item.rule === match.rule.id) : undefined;
+    return {
+      ...match,
       ...(verdict ? { verdict } : {}),
-      ...(alert.rule.origin === "pinned" ? { ordinary: ordinaryMatches(recording, alert.rule.title) } : {}),
-    });
-  }
-  return [...found.values()];
+      ...(match.rule.origin === "pinned" ? { ordinary: ordinaryMatches(recording, match.rule.title) } : {}),
+    };
+  });
 }
 
 /** How the run judged each rule of the lab's own, as its detector `lab` says. Empty when the recording does not say. */
