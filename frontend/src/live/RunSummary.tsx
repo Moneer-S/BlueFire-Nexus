@@ -15,12 +15,18 @@ interface RunSummaryProps {
   recording: Recording;
   timeline: Timeline;
   facts: RunFacts;
+  judge?: string;
   onSelect: (stepId: string) => void;
 }
 
 const ALERT_LEVELS = new Set(["high", "critical"]);
 
-export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryProps) {
+function unseenLead(unit: string, count: number, judge?: string): string {
+  if (judge) return count === 1 ? `${judge} did not see the ${unit}:` : `${judge} did not see ${count} ${unit}s:`;
+  return count === 1 ? `The ${unit} nobody saw:` : `${count} ${unit}s nobody saw:`;
+}
+
+export function RunSummary({ recording, timeline, facts, judge, onSelect }: RunSummaryProps) {
   const score = recording.score;
   const source = recording.source;
   const first = timeline.firstAlert;
@@ -57,7 +63,7 @@ export function RunSummary({ recording, timeline, facts, onSelect }: RunSummaryP
       </p>
       {unseen.length > 0 ? (
         <p className="lv-sum-gap">
-          {unseen.length === 1 ? `The ${unit} nobody saw:` : `${unseen.length} ${unit}s nobody saw:`}{" "}
+          {unseenLead(unit, unseen.length, judge)}{" "}
           {unseen.map((step, index) => (
             <span key={step.id}>
               {index > 0 ? ", " : ""}

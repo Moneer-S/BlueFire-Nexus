@@ -120,6 +120,8 @@ export interface DefenseSide {
   note: Point | null;
   /** How wide that line may run before it wraps. */
   noteWidth: number;
+  /** Where the list of defenses stands, when the map holds one (`StageHints.foot`): above the line about the sensors. */
+  rows?: Box;
 }
 
 /** The room the line at the foot of the defense's side takes: two lines of 11.5 px words. */
@@ -480,6 +482,66 @@ export function markGoalHost(network: Network, id: string): void {
   keptLayouts.delete(network);
 }
 
+/**
+ * What a recording judged by several defenses asks of the map of a network, the
+ * same whichever defense is chosen, so that no host moves when another one is:
+ * `engines`, how many rule engines each of its defenses has, the most of which
+ * sets the width of their column; and `list`, the names of the defenses the map
+ * lists at the foot of the defense's side, above its line about the sensors,
+ * one line each (empty where the map holds no such list). With a list, the rule
+ * engines stand at the top of their column, so the list under them has the room.
+ */
+export interface StageHints {
+  engines: number[];
+  list: string[];
+}
+
+const STAGE = new WeakMap<Network, StageHints>();
+
+/** The heights of one line of the list of defenses and of the line of heads over its counts. */
+export const LIST_ROW = 16;
+export const LIST_HEADS = 12;
+
+/**
+ * The least height the rule engines' column needs on a map that holds a list of
+ * defenses `foot` pixels tall at the foot of the defense's side, for a defense
+ * with `engines` rule engines: the engines from the top down, the list, and the
+ * line about the sensors. One engine keeps room to name an alert whole: its
+ * chip, its title on two lines, where and when it was raised, and the count of
+ * the rest.
+ */
+function stageNeed(engines: number, foot: number): number {
+  const under = engines <= 1 ? 160 : ENGINE_BELOW + 14;
+  return HEADS_MANY + 6 + 32 + Math.max(0, engines - 1) * STAGE_PITCH + under + foot + 6 + DEFENSE_NOTE + 2 + 10;
+}
+
+/** Pixels between two rule engines that stand at the top of their column over a list of defenses: a name, its rules and one line of matches each. */
+const STAGE_PITCH = 100;
+
+/** Says what the map of `network` keeps room for (`StageHints`). The layouts kept for the network are dropped. */
+export function hintStage(network: Network, hints: StageHints): void {
+  STAGE.set(network, hints);
+  keptLayouts.delete(network);
+}
+
+/**
+ * Marks every sensor of the field as one whose name the map tells once, in the
+ * line at the foot of the defense's side: each is a dot by its host, with its
+ * count of events as a line under the host's role. A network that holds the
+ * sensors of several defenses is drawn so, and a host keeps its place whichever
+ * of them is lit.
+ */
+export function markQuietSensors(network: Network): void {
+  const field = new Map(network.hosts.filter((host) => host.kind !== "defense").map((host) => [host.id, host]));
+  for (const sensor of network.sensors) {
+    const host = field.get(sensor.host);
+    if (!host) continue;
+    NAMED_ONCE.add(sensor);
+    COUNTED.add(host);
+  }
+  keptLayouts.delete(network);
+}
+
 /** The box a host's badge takes where it stands: as wide as the widest badge the host shows. */
 export function badgeBoxOf(node: HostNode): Box {
   const half = (GOAL.has(node.host) ? GOAL_BADGE_WIDTH : BADGE.width) / 2;
@@ -524,6 +586,10 @@ export function layoutNetwork(network: Network, width: number, height: number, s
   const W = Math.max(LEAST_MAP_WIDTH, width);
   const defense = network.hosts.filter((host) => host.kind === "defense");
   const top = 64;
+  const stage = STAGE.get(network);
+  const listed = stage?.list ?? [];
+  const listTall = listed.length > 0 ? LIST_HEADS + LIST_ROW * listed.length : 0;
+  const footRoom = listTall > 0 ? listTall + 6 + DEFENSE_NOTE + 2 : 0;
   const bottom = 14;
   // The columns of defense hosts and of rule engines each fit the map's height; one that needs more makes the map taller.
   const engineRadius = (H: number): number => Math.round(clamp((H - top - bottom) * 0.075, 22, 32));
@@ -533,7 +599,8 @@ export function layoutNetwork(network: Network, width: number, height: number, s
   const columnsNeed = (H: number): number =>
     Math.max(
       ENGINE_PITCH * Math.max(0, network.detectors.length - 1) + HEADS_BOTTOM + 6 + engineRadius(H) + ENGINE_BELOW + bottom,
-      SINGLE_DEFENSE_PITCH * Math.max(0, defense.length - 1) + SINGLE_DEFENSE_TOP + SINGLE_DEFENSE_BELOW + bottom,
+      SINGLE_DEFENSE_PITCH * Math.max(0, defense.length - 1) + SINGLE_DEFENSE_TOP + SINGLE_DEFENSE_BELOW + footRoom + bottom,
+      listTall > 0 ? maxOf((stage?.engines ?? []).map((count) => stageNeed(count, listTall)), 0) : 0,
       sensorReach > 0 ? top + bottom + Math.max((sensorReach + 46 + HEADS_BOTTOM - top) / 0.44, (sensorReach + 48) / 0.56) : 0,
     );
   let least = 240;
@@ -565,7 +632,7 @@ export function layoutNetwork(network: Network, width: number, height: number, s
   let junction: Junction;
   const firstDefense = defense[0];
   if (firstDefense) {
-    fitColumn(defense.length, centerY, SINGLE_DEFENSE_PITCH, SINGLE_DEFENSE_PITCH, SINGLE_DEFENSE_TOP, H - bottom - SINGLE_DEFENSE_BELOW).ys.forEach((y, index) => {
+    fitColumn(defense.length, centerY, SINGLE_DEFENSE_PITCH, SINGLE_DEFENSE_PITCH, SINGLE_DEFENSE_TOP, H - bottom - SINGLE_DEFENSE_BELOW - footRoom).ys.forEach((y, index) => {
       const host = defense[index];
       if (host) hosts.set(host.id, { host, x: jx, y: Math.round(y), r: 34, badge: badgeOf(jx, Math.round(y), 34), roleWidth: null });
     });
@@ -578,7 +645,9 @@ export function layoutNetwork(network: Network, width: number, height: number, s
   const detectorGap = clamp(room * 0.46, ENGINE_PITCH, 280);
   const detectorRadius = engineRadius(H);
   const detectors: DetectorNode[] = [];
-  fitColumn(network.detectors.length, centerY, detectorGap, ENGINE_PITCH, HEADS_BOTTOM + 6 + detectorRadius, H - bottom - ENGINE_BELOW).ys.forEach((y, index) => {
+  const enginesTop = HEADS_BOTTOM + 6 + detectorRadius;
+  const enginesCentre = listTall > 0 ? enginesTop + ((network.detectors.length - 1) * STAGE_PITCH) / 2 : centerY;
+  fitColumn(network.detectors.length, enginesCentre, listTall > 0 ? STAGE_PITCH : detectorGap, listTall > 0 ? STAGE_PITCH : ENGINE_PITCH, enginesTop, H - bottom - ENGINE_BELOW - footRoom).ys.forEach((y, index) => {
     const detector = network.detectors[index];
     if (detector) detectors.push({ detector, x: railX, y: Math.round(y), r: detectorRadius });
   });
@@ -776,6 +845,16 @@ export function layoutNetwork(network: Network, width: number, height: number, s
   const corridorY = clear(centerY)
     ? centerY
     : ([Math.min(...reaching.map((box) => box[1])) - half.y - 4, Math.max(...reaching.map((box) => box[3])) + half.y + 4].find((y) => y - half.y >= HEADS_BOTTOM && y + half.y <= H && clear(y)) ?? centerY);
+  let defenseSide: DefenseSide | null = null;
+  if (listTall > 0) {
+    const left = Math.max(fieldX + 140, jx - 72);
+    const right = W - ENGINE_EDGE + 14;
+    const foot = H - 4;
+    const noteX = Math.round(left + 16);
+    defenseSide = { box: [left, HEADS_BOTTOM + 4, right, foot], note: { x: noteX, y: Math.round(foot - DEFENSE_NOTE - 2) }, noteWidth: Math.round(right - 16 - noteX) };
+    const rowsFoot = Math.round(foot - DEFENSE_NOTE - 8);
+    defenseSide.rows = [noteX, rowsFoot - listTall, Math.round(right - 16), rowsFoot];
+  }
   return {
     width: W,
     height: H,
@@ -789,14 +868,14 @@ export function layoutNetwork(network: Network, width: number, height: number, s
     links,
     pathLinks: [],
     zones: [],
-    defenseSide: null,
+    defenseSide,
     junction,
     hostToSensor,
     sensorToJunction,
     junctionToDetector,
     orbit,
     fieldHeadX,
-    detectorsHeadX: firstDetector ? firstDetector.x - firstDetector.r : railX,
+    detectorsHeadX: defenseSide ? Math.round(defenseSide.box[0] + 16) : firstDetector ? firstDetector.x - firstDetector.r : railX,
     silence: { x: corridorX, y: corridorY },
     silenceAt,
   };
@@ -1109,7 +1188,9 @@ const ENGINE_R = 26;
  * several, one under another, have a little more, as their matches share the room.
  */
 function engineWordsOf(network: Network, W: number): number {
-  return Math.round(clamp(W * (network.detectors.length > 1 ? 0.23 : 0.205), 270, 400));
+  // A recording judged by several defenses keeps one width for every defense: that of the one with the most engines.
+  const engines = maxOf(STAGE.get(network)?.engines ?? [], network.detectors.length);
+  return Math.round(clamp(W * (engines > 1 ? 0.23 : 0.205), 270, 400));
 }
 
 /**
@@ -1235,7 +1316,7 @@ function columnLeast(network: Network, field: readonly Host[], lone = false): nu
   let least = COLUMN_LEAST;
   for (const host of field) {
     const own = network.sensors.filter((sensor) => sensor.host === host.id);
-    if (own.length === 0 || (own.length === 1 && !lone)) continue;
+    if (own.length === 0 || ((own.length === 1 || quietStack(network, own)) && !lone)) continue;
     least = Math.max(least, Math.ceil(HOST_R + 18 + maxOf(own.map(smallName)) + 18 + (own.length > 1 ? STACK_COUNT + STACK_CLEAR : HOST_R + 10)));
   }
   return least;
@@ -1251,9 +1332,18 @@ function defenseReserve(network: Network, field: readonly Host[]): number {
   for (const host of field) {
     const own = network.sensors.filter((sensor) => sensor.host === host.id);
     if (own.length === 0) continue;
-    reserve = Math.max(reserve, Math.ceil(HOST_R + 18 + maxOf(own.map(smallName)) + 18 + (own.length > 1 ? STACK_COUNT : 0) + HOST_R + 8));
+    reserve = Math.max(reserve, Math.ceil(HOST_R + 18 + maxOf(own.map(smallName)) + 18 + (own.length > 1 && !quietStack(network, own) ? STACK_COUNT : 0) + HOST_R + 8));
   }
   return reserve;
+}
+
+/**
+ * True for the sensors of one host on a map that holds the sensors of several
+ * defenses (`markQuietSensors`), when each is a dot whose name is told once:
+ * they take the room of one such dot, not of a stack of names and counts.
+ */
+function quietStack(network: Network, own: readonly Sensor[]): boolean {
+  return STAGE.has(network) && own.length > 1 && own.every((sensor) => NAMED_ONCE.has(sensor));
 }
 
 /**
@@ -1678,13 +1768,22 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
   // (`extra` below 0, down to `COMPACT`), the badge stands beside its host instead.
   const pitchLeast = upperBelow + 4 + BADGE.height + BADGE.above + r + extra;
   const reach = reachAt(pitchLeast);
+  // What a recording judged by several defenses keeps room for: a list of the defenses at the foot of the defense's side,
+  // one line each: a name too long for the room its line has beside its key and counts is cut, whole in the line's tooltip.
+  const stage = STAGE.get(network);
+  const listed = stage?.list ?? [];
+  const listTall = listed.length > 0 ? LIST_HEADS + LIST_ROW * listed.length : 0;
+  const footRoom = listTall > 0 ? listTall + 6 + DEFENSE_NOTE + 2 : 0;
+  const top = listTall > 0;
   // Every column fits: the hosts' rows, the defense hosts and the rule engines. The one that needs the most room sets the least height.
   const need = Math.ceil(
     Math.max(
       // `words` more pixels under the bottom row, when the words for silence need them.
       firstLeast + units * pitchLeast + reach + words + bottom,
-      defenseTop + Math.max(0, defense.length - 1) * defensePitch + maxOf(defense.map(belowOf), r) + bottom,
+      defenseTop + Math.max(0, defense.length - 1) * defensePitch + maxOf(defense.map(belowOf), r) + footRoom + bottom,
       HEADS_MANY + 6 + 32 + Math.max(0, network.detectors.length - 1) * ENGINE_PITCH + ENGINE_BELOW + bottom,
+      // With a list of defenses, the room the defense with the most engines needs over it: the same for every defense.
+      top ? maxOf((stage?.engines ?? []).map((count) => stageNeed(count, listTall)), 0) : 0,
     ),
   );
   const H = Math.max(240, height, need);
@@ -1742,7 +1841,8 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
   let junction: Junction;
   const firstDefense = defense[0];
   if (firstDefense) {
-    fitColumn(defense.length, centerY, defensePitch, defensePitch, defenseTop, H - bottom - below).ys.forEach((y, index) => {
+    // Where a list of defenses stands at the foot of the defense's side, the defense hosts' words end above it.
+    fitColumn(defense.length, centerY, defensePitch, defensePitch, defenseTop, Math.max(defenseTop, H - bottom - below - footRoom)).ys.forEach((y, index) => {
       const host = defense[index];
       if (host) hosts.set(host.id, { host, x: jx, y: Math.round(y), r, badge: { x: jx, y: Math.round(y) - r - BADGE.above }, roleWidth: defenseWidth });
     });
@@ -1758,7 +1858,10 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
   const detectors: DetectorNode[] = [];
   // The rule engines stand from the top row down, so their matches have the height of the map under them.
   // Never so high that an engine's name stands close under the heads.
-  fitColumn(network.detectors.length, Math.min(centerY, startY + ((network.detectors.length - 1) * detectorGap) / 2), detectorGap, ENGINE_PITCH, HEADS_MANY + 16 + detectorRadius, H - bottom - ENGINE_BELOW).ys.forEach((y, index) => {
+  // With a list of defenses under them, they stand at the top of their column, the same place whichever defense is chosen.
+  const enginesTop = HEADS_MANY + 16 + detectorRadius;
+  const enginesCentre = top ? enginesTop + ((network.detectors.length - 1) * STAGE_PITCH) / 2 : Math.min(centerY, startY + ((network.detectors.length - 1) * detectorGap) / 2);
+  fitColumn(network.detectors.length, enginesCentre, top ? STAGE_PITCH : detectorGap, top ? STAGE_PITCH : ENGINE_PITCH, enginesTop, Math.max(enginesTop, H - bottom - ENGINE_BELOW - footRoom)).ys.forEach((y, index) => {
     const detector = network.detectors[index];
     if (detector) detectors.push({ detector, x: railX, y: Math.round(y), r: detectorRadius });
   });
@@ -1901,11 +2004,12 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
     const node = hosts.get(host.id);
     const own = network.sensors.filter((sensor) => sensor.host === host.id);
     if (!node || own.length === 0) continue;
-    // A lone sensor whose name is told once has only its count beside its dot, on one line.
-    const unnamed = own.length === 1 && own.every((sensor) => NAMED_ONCE.has(sensor));
-    const label = maxOf(own.map(smallName)) + 18 + (own.length > 1 ? STACK_COUNT : 0);
+    // A lone sensor whose name is told once has only its count beside its dot, on one line. So have the sensors of
+    // several defenses on one host, each a dot with no words: they stand where the one dot would, one by the other.
+    const unnamed = (own.length === 1 || quietStack(network, own)) && own.every((sensor) => NAMED_ONCE.has(sensor));
+    const label = maxOf(own.map(smallName)) + 18 + (own.length > 1 && !unnamed ? STACK_COUNT : 0);
     // Room for each name and, while a step runs, its count of events under it.
-    const tall = unnamed ? 20 : stackTall(own.length);
+    const tall = unnamed ? 20 + (own.length - 1) * SENSOR_STACK : stackTall(own.length);
     const inline = own.length > 1 || unnamed;
     let best: { score: number; x: number; y: number; side: 1 | -1; over: boolean; up: boolean } | null = null;
     // A field host's dot whose name the head tells stands on the side that faces the defense, where its events go:
@@ -2329,7 +2433,23 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
     // The line starts at the field's inner left, under the defense host it names, and takes the field's inner width.
     const noteX = Math.round(left + 16);
     defenseSide = { box, note: { x: noteX, y: Math.round(foot - DEFENSE_NOTE - 2) }, noteWidth: Math.round(box[2] - 16 - noteX) };
+    // The list of defenses, where the map holds one: above that line, as wide as it.
+    if (listTall > 0) {
+      const rowsFoot = Math.round(foot - DEFENSE_NOTE - 2 - 6);
+      defenseSide.rows = [noteX, rowsFoot - listTall, Math.round(box[2] - 16), rowsFoot];
+    }
   }
+  // Some recordings have no dedicated defense host. Their rule engines and
+  // collection junction still form the defense side and hold the same list.
+  if (!defenseSide && listTall > 0) {
+    const fieldRight = Math.max(0, ...drawnZones.map((zone) => zone.box[2]));
+    const left = Math.max(fieldRight + ZONE_GAP, junction.x - 20);
+    const foot = drawnZones.length > 0 ? Math.max(...drawnZones.map((zone) => zone.box[3])) : H - 4;
+    const box: Box = [left, HEADS_MANY + 4, W - ENGINE_EDGE + 14, foot];
+    const noteX = Math.round(left + 16);
+    defenseSide = { box, note: { x: noteX, y: Math.round(foot - DEFENSE_NOTE - 2) }, noteWidth: Math.round(box[2] - 16 - noteX), rows: [noteX, Math.round(foot - DEFENSE_NOTE - 8 - listTall), Math.round(box[2] - 16), Math.round(foot - DEFENSE_NOTE - 8)] };
+  }
+
 
   // Badges: above the host, 7 px clear of its lit ring, the same place at every size. Beside it or under its name only
   // where a host has no room above it at all.
