@@ -1,5 +1,32 @@
 # Third-party notices and source intake
 
+## Range packet sensor and rules
+
+The lab runs tcpdump from Ubuntu's pinned package snapshot inside a disposable
+range host to record that host's own traffic. tcpdump is distributed under the
+BSD 3-Clause license. It is an external operating-system program; its source
+and executable are not bundled in this repository.
+
+The lab runs Suricata 8.0.8 as an external containerized program. Its exact
+multi-platform image reference is
+`jasonish/suricata:8.0.8@sha256:d5a3a1785299ab40918d465e54fedf8e3afeeedba76bb64b0cc74dbc20bda2c3`.
+Suricata is GPL-2.0-only. Its source and executable are not copied into this
+repository, and BlueFire's license does not replace its terms.
+
+The repository keeps a verbatim subset of the published Emerging Threats Open
+rules, version 11342, under `lab/rules/et-open/`. Its source archive SHA-256,
+each retained file's SHA-256, and the exact nine-category coverage are in
+`lab/rules/et-open/SOURCE.md`; the archive itself is not committed. The subset
+comes from `https://rules.emergingthreats.net/open/suricata-7.0.3/emerging.rules.tar.gz`,
+whose SHA-256 is
+`993ba9ec3a0a185e30f418a157e1858e2276f27dc8fb7059402d96ead16c0a88`.
+It preserves the distribution's three complete licence files. Rules with SIDs
+1 through 3464 and 100000000 through 100000908 are GPLv2; rules with SIDs
+2000000
+through 2799999 are under the BSD 3-Clause terms printed by the distribution.
+Copyright (c) 2003-2026 Emerging Threats. Suricata reads the retained rule text
+as data after the range has ended.
+
 ## Inter web font
 
 The packaged interface includes `InterVariable.woff2` from Inter 4.1, released by

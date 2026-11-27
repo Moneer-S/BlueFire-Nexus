@@ -1,22 +1,16 @@
-"""The public rule sets a range's defenses run: fetched file by file at each set's commit, and locked.
+"""The pinned public rule sets a range's defenses run.
 
-A rule set is folders of a public repository at a commit, with the
-repository's licence file (`rule_sets` in the spec). Its lock file, beside the
-spec, gives the SHA-256 of every selected file, as `<sha256>  <path>` lines
-under a line that names the set, its repository and its commit. A set may take
-every file or only rule documents below named source paths; the lock records
-that selection and counts what it left out. Rule sets that name the same lock
-file share it, one section each.
-`bluefire-lab range lock <spec>` writes it: it lists each folder through
-GitHub's contents API and fetches each selected candidate from
-raw.githubusercontent.com at the commit. Nothing is cloned.
+Repository sets are fetched file by file at a commit and checked against the
+lock beside the spec. They may select only executable rule formats below
+named source paths; the lock records every omission and exact SHA-256. The
+locker lists the pinned GitHub tree and fetches each candidate from raw
+content individually. Nothing is cloned.
 
-A run fetches the files by the lock into its own folder, `rules/<set>/`, each
-at its path in the repository, the licence file with them, and writes
-`SOURCE` there, one line that says where they come from:
-`<repository>@<commit>`. A file whose SHA-256 is not the lock's stops the run
-with the file's name. `held` reads a run folder's rules back and checks them
-the same way, so scoring a run folder again fetches nothing.
+A tracked set names a ``SHA256SUMS`` manifest inside this repository, pinned
+by the manifest's own SHA-256; its listed inert files are checked and copied
+byte for byte. Both forms are written below ``rules/<set>/`` with a generated
+``SOURCE`` file. ``held`` verifies that exact file closure before a recorded
+run is judged again, so rescoring fetches nothing.
 """
 
 from __future__ import annotations
@@ -33,6 +27,108 @@ from .spec import RuleSet, Spec, SpecError
 
 FOLDER = "rules"
 SOURCE = "SOURCE"
+MANIFEST_ENTRY = re.compile(r"([0-9a-f]{64})  ([^\r\n]+)\Z")
+
+
+def local(rule_set: RuleSet) -> bool:
+    """Whether this set is tracked in this repository behind a pinned manifest."""
+
+    return bool(rule_set.source_file)
+
+
+def manifest_name(rule_set: RuleSet) -> str:
+    return PurePosixPath(rule_set.source_file).name
+
+
+def repository(spec: Spec, rule_set: RuleSet) -> Path:
+    """The real repository root above the spec; never a guessed fallback folder."""
+
+    if spec.folder is None:
+        raise SpecError(f"the tracked rule set {rule_set.name} needs a spec file inside the repository")
+    folder = Path(spec.folder).resolve()
+    for candidate in (folder, *folder.parents):
+        marker = candidate / ".git"
+        if not marker.is_symlink() and (marker.is_file() or marker.is_dir()):
+            return candidate
+    raise SpecError(f"the tracked rule set {rule_set.name} needs a spec file inside a Git repository")
+
+
+def regular_source(root: Path, relative: str, what: str) -> Path:
+    """A regular file below ``root`` reached without following any symlink."""
+
+    parts = PurePosixPath(relative).parts
+    path = root.joinpath(*parts)
+    components = [root.joinpath(*parts[:place]) for place in range(1, len(parts) + 1)]
+    if any(component.is_symlink() for component in components):
+        raise SpecError(f"{what} must be a regular file reached without a symlink")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise SpecError(f"{what} is missing or is not a regular file") from error
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        raise SpecError(f"{what} must be a regular file inside the repository")
+    return resolved
+
+
+def read_manifest(data: bytes, rule_set: RuleSet) -> dict[str, str]:
+    """Strict sha256sum entries from a tracked rule set's pinned manifest."""
+
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise SpecError(f"the manifest {rule_set.source_file} must be ASCII text") from error
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    found: dict[str, str] = {}
+    reserved = {SOURCE, manifest_name(rule_set)}
+    for number, line in enumerate(lines, start=1):
+        matched = MANIFEST_ENTRY.fullmatch(line)
+        digest_, path = matched.groups() if matched else ("", "")
+        overlaps = any(path.startswith(other + "/") or other.startswith(path + "/") for other in found)
+        reserved_overlap = any(
+            path == other or path.startswith(other + "/") or other.startswith(path + "/")
+            for other in reserved
+        )
+        if (
+            matched is None
+            or not plain(path)
+            or path != path.strip()
+            or path in found
+            or reserved_overlap
+            or overlaps
+        ):
+            raise SpecError(
+                f"line {number} of {rule_set.source_file} is not '<64 lower-case hex>  <relative path>' "
+                "of a new file"
+            )
+        found[path] = digest_
+    if not found:
+        raise SpecError(f"the manifest {rule_set.source_file} lists no file")
+    if not any(PurePosixPath(path).suffix == ".rules" for path in found):
+        raise SpecError(f"the manifest {rule_set.source_file} lists no .rules file")
+    return found
+
+
+def manifest(spec: Spec, rule_set: RuleSet) -> tuple[Path, bytes, dict[str, str]]:
+    """The verified manifest path and bytes, and its strictly parsed file hashes."""
+
+    root = repository(spec, rule_set)
+    path = regular_source(root, rule_set.source_file, f"the manifest {rule_set.source_file}")
+    data = path.read_bytes()
+    digest_ = atomics.sha256(data)
+    if digest_ != rule_set.sha256:
+        raise SpecError(
+            f"the manifest {rule_set.source_file} of {rule_set.name} has SHA-256 {digest_}, and the spec says "
+            f"{rule_set.sha256}: the run stops"
+        )
+    return path, data, read_manifest(data, rule_set)
+
+
+def manifest_lock(rule_set: RuleSet, listed: dict[str, str]) -> dict[str, str]:
+    """The exact files copied to a run, excluding its generated ``SOURCE``."""
+
+    return {manifest_name(rule_set): rule_set.sha256, **listed}
 
 
 class Locked(dict[str, str]):
@@ -172,7 +268,11 @@ def wanted(rule_set: RuleSet, locked: dict[str, str]) -> list[str]:
 
 
 def locked(spec: Spec, rule_set: RuleSet) -> dict[str, str]:
-    """A rule set's lock, read from the file beside the spec and checked against the spec's folders."""
+    """The exact files a run holds for a rule set, with each expected SHA-256."""
+
+    if local(rule_set):
+        _, _, listed = manifest(spec, rule_set)
+        return manifest_lock(rule_set, listed)
 
     path = lock_path(spec, rule_set)
     try:
@@ -190,6 +290,8 @@ def raw_url(rule_set: RuleSet, path: str) -> str:
 
 
 def source(rule_set: RuleSet) -> str:
+    if local(rule_set):
+        return f"{rule_set.source_file}@{rule_set.version}"
     return f"{rule_set.repo}@{rule_set.commit}"
 
 
@@ -209,6 +311,43 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
 
     Returns what the run's manifest records of the set: where it came from and the lock it was checked against.
     """
+
+    if local(rule_set):
+        root = rule_root(out)
+        folder = root / rule_set.name
+        if folder.is_symlink() or folder.exists():
+            raise SpecError(
+                f"{FOLDER}/{rule_set.name} exists already in the run's folder: use a new run folder, or "
+                "remove that rule set before fetching it"
+            )
+        manifest_path, manifest_data, listed = manifest(spec, rule_set)
+        files = {manifest_name(rule_set): manifest_data}
+        for relative, wanted_hash in sorted(listed.items()):
+            path = regular_source(
+                manifest_path.parent,
+                relative,
+                f"{rule_set.source_file}: listed file {relative}",
+            )
+            data = path.read_bytes()
+            found_hash = atomics.sha256(data)
+            if found_hash != wanted_hash:
+                raise SpecError(
+                    f"{relative} of {rule_set.name} has SHA-256 {found_hash}, and {rule_set.source_file} "
+                    f"says {wanted_hash}: the run stops"
+                )
+            files[relative] = data
+        hashes = manifest_lock(rule_set, listed)
+        root = rule_root(out, create=True)
+        folder = root / rule_set.name
+        if folder.is_symlink() or folder.exists():
+            raise SpecError(f"{FOLDER}/{rule_set.name} appeared while the rule set was being copied")
+        folder.mkdir()
+        for relative, data in files.items():
+            target = folder.joinpath(*PurePosixPath(relative).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        (folder / SOURCE).write_text(source(rule_set) + "\n", encoding="utf-8")
+        return record(rule_set, hashes)
 
     hashes = locked(spec, rule_set)
     root = rule_root(out)
@@ -248,6 +387,21 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
 def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
     """What a run's manifest holds of a rule set."""
 
+    if local(rule_set):
+        return {
+            "kind": rule_set.kind,
+            "source": rule_set.source_file,
+            "version": rule_set.version,
+            "sha256": rule_set.sha256,
+            "folder": f"{FOLDER}/{rule_set.name}",
+            "files": sum(PurePosixPath(path).suffix == ".rules" for path in hashes),
+            "digest": digest(rule_set, hashes),
+            "lock": dict(sorted(hashes.items())),
+            "note": (
+                "the pinned SHA256SUMS manifest and every file it lists were copied byte for byte from "
+                "the repository after their SHA-256 matched; SOURCE names the manifest and version"
+            ),
+        }
     left_out = dict(getattr(hashes, "left_out", {}))
     return {
         "kind": rule_set.kind,
@@ -278,7 +432,11 @@ def digest(rule_set: RuleSet, hashes: dict[str, str]) -> str:
     """The SHA-256 of what `sha256sum` prints for the set's rule files, sorted by their path in the set's
     folder: the files of the rule folders, without the licence file and SOURCE."""
 
-    listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(hashes) if in_folder(rule_set, path))
+    if local(rule_set):
+        paths = [path for path in hashes if PurePosixPath(path).suffix == ".rules"]
+    else:
+        paths = [path for path in hashes if in_folder(rule_set, path)]
+    listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(paths))
     return atomics.sha256(listing.encode("utf-8"))
 
 
@@ -307,10 +465,13 @@ def held(run: Path, name: str, expected: dict[str, str]) -> Path:
                 f"{FOLDER}/{name}/{relative} has SHA-256 {found}, and the lock the run was checked against "
                 f"says {wanted_hash}"
             )
+    source_path = folder / SOURCE
+    if source_path.is_symlink() or (source_path.exists() and not source_path.is_file()):
+        raise SpecError(f"{FOLDER}/{name}/{SOURCE} is not a regular file in the run's folder")
     extra = sorted(
         path.relative_to(folder).as_posix()
         for path in folder.rglob("*")
-        if (path.is_file() or path.is_symlink())
+        if (path.is_symlink() or not path.is_dir())
         and path.relative_to(folder).as_posix() not in expected
         and path.relative_to(folder).as_posix() != SOURCE
     )
@@ -445,6 +606,8 @@ def lock(spec: Spec, get: atomics.Fetch = atomics.http_get) -> list[Path]:
 
     sections: dict[str, list[str]] = {}
     for rule_set in spec.rule_sets:
+        if local(rule_set):
+            continue
         lock_path(spec, rule_set)
         candidates: list[str] = []
         for folder in rule_set.folders:

@@ -118,6 +118,13 @@ the limits are `MAX_HOSTS`, `MAX_DEFENSE_HOSTS`, `MAX_LINKS`, `MAX_SENSORS`,
 `MAX_SENSORS_ON_A_HOST`, `MAX_DETECTORS` and `MAX_DETECTORS_WITH_DEFENSES` in
 `bluefire/recordings.py` and `frontend/src/live/recording.ts`.
 
+A packet sensor belongs to the host whose interfaces it records, not to either
+remote endpoint. Its id is `packet-capture-<host>`; for example,
+`packet-capture-web` records traffic on `web`'s range interfaces. Events from
+that sensor therefore have `host: "web"`, while their source and destination
+addresses remain in `fields`. A Suricata detector that reads the retained
+capture has `when: "after the run"`.
+
 A rule set's `digest` is the SHA-256 of what `sha256sum` prints for its files,
 sorted by their path inside the rule set's folder, so it can be checked from a
 run's artifact: `cd rules/linux && find . -type f -printf '%P\n' | LC_ALL=C sort
@@ -247,9 +254,13 @@ rules, with an alert of an accepted lab rule counted as an alert too.
 optional `user`, `image` (the program), and `fields` (a small object of the
 source's own field names and values, and for auditd also `paths` and `command`,
 which the lab puts together from the record). `sensor` is a sensor id. `kind`
-is plain words such as `process start`, `file created`, `network connection`,
-or the sensor's own name for the record: a call such as auditd's `execve` or
-`openat`, or a record type such as `USER_ACCT`. `text` is one line, where a line
+is plain words such as `process start`, `file created`, `network flow`, `HTTP
+request`, `TLS handshake`, `SSH session` or `DNS query`, or the sensor's own
+name for the record: a call such as auditd's `execve` or `openat`, or a record
+type such as `USER_ACCT`. Packet-event text names its
+observed endpoints and protocol; protocol records add the request, handshake,
+session or query in plain words, and distinguish a DNS response from its
+query. `text` is one line, where a line
 break or a tab the sensor recorded is shown as "Characters a text cannot hold"
 says (`\u{A}`, `\u{9}`): the command
 line for a program start, the file for a file record, a sentence that names the
@@ -260,6 +271,12 @@ has none, as for a process end. `text` is at most 2,000
 characters and each `fields` value at most 300; a cut one keeps its start and
 ends in `...`. auditd's `fields.msg` is the record's id in auditd's own form,
 `audit(<seconds>.<ms>:<serial>)`.
+
+A canonical packet event keeps its stable ECS id in `fields.ecs_event_id` and
+uses the packet timestamp, not the later evaluation time. Its bounded scalar
+fields can include the source and destination address and port, transport and
+application protocol, capture interface, and Suricata flow or transaction id.
+A 64-bit Suricata id is text, so a reader cannot round it by parsing a number.
 
 `step` is the id of the step the engine tied the event to, and `tied_by` says
 how: `session` (in the test's login session), `launcher` (done by the shell
@@ -290,6 +307,11 @@ of what its own sensors recorded. A recording without defenses may instead
 keep the first events of the step in time order, whichever sensor recorded
 them.
 
+A packet recording follows the same cut. It keeps every canonical packet event
+that any Suricata rule matched, including a lower-level match that does not
+count as an alert. In each defense view `visibility.events` is the full count
+from that defense's sensors and `visibility.kept` is the exact count retained.
+
 ## An alert
 
 | Key | Type | Meaning |
@@ -304,6 +326,11 @@ them.
 | `step` | string | The id of the step the matched event belongs to. |
 | `events` | array of strings | The ids of the matched events, in evidence order. Usually they belong to the alert's step. For a multi-event correlation whose detector ran after the run, earlier evidence may belong to earlier steps on the same host; the last id is its terminal event, belongs to the alert's step, and has the alert's `time`. No evidence is later than that terminal event, and observed users do not disagree. A live alert's moment (`raised`) is not earlier than the earliest event; it can be earlier than a later event of its own step. |
 | `launcher_only` | boolean | Optional. True when the rule matched only the one shell command that carried the whole test, not what the test did. Such a match never counts, and its `events` is empty: that command is the step's `command`, not one of its events. |
+
+A Suricata alert is an after-run alert: `time` is the matched packet event's
+time and `raised` is absent. Its one `events` entry is the canonical packet
+event that the match was tied to. If the evaluator cannot link a match to one
+event without guessing, that rule set is not presented as evaluated.
 
 ## `ordinary`
 
