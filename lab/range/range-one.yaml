@@ -48,7 +48,7 @@ rule_sets:                         # public rule sets, each file pinned before u
   et-open:
     kind: suricata
     source: lab/rules/et-open/SHA256SUMS
-    sha256: 3bea34d2fd30638768191a820e12d5e7c590ec96338bde2f1b01a81abc03842a
+    sha256: [a7b140e3, 95557d19, a234b0fa, 465f4471, 39ba5071, 7ee6efcb, 0e23df6b, 7c6f30dc]
     version: "11342"
 defenses:                          # each judges the same run; the first is the baseline
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}

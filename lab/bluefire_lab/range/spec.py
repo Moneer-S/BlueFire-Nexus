@@ -1194,9 +1194,23 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 raise SpecError(
                     f"{where}: source must be a SHA256SUMS manifest inside the repository, relative to its root"
                 )
-            digest = entry["sha256"]
-            if not isinstance(digest, str) or not SHA256.match(digest):
-                raise SpecError(f"{where}: sha256 must be 64 lower-case hex digits")
+            digest_value = entry["sha256"]
+            if isinstance(digest_value, str):
+                digest = digest_value
+            elif (
+                isinstance(digest_value, list)
+                and len(digest_value) == 8
+                and all(isinstance(part, str) and re.fullmatch(r"[0-9a-f]{8}", part) for part in digest_value)
+            ):
+                digest = "".join(digest_value)
+            else:
+                raise SpecError(
+                    f"{where}: sha256 must be 64 lower-case hex digits, as one string or eight 8-digit chunks"
+                )
+            if not SHA256.match(digest):
+                raise SpecError(
+                    f"{where}: sha256 must be 64 lower-case hex digits, as one string or eight 8-digit chunks"
+                )
             version = entry["version"]
             if (
                 not isinstance(version, str)
