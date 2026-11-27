@@ -330,6 +330,14 @@ jobs:
         if: always()
         run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
+      # Use the image that the range will run, its generated capture wrapper and the engine's exact
+      # stop/copy/analyse path. A single final packet must leave no unread libpcap tail at TERM.
+      - name: A final packet survives capture teardown
+        run: |
+          image=$(jq -er '.target.web.tags[0]' range-build/bake.json)
+          "$RUNNER_TEMP/venv/bin/python" lab/tests/range_capture_stop.py \
+            --image "$image" --out "$RUNNER_TEMP/capture-stop"
+
       # Offline scoring never pulls an evaluator. Preload the exact image that the run records
       # and gives to its network-telemetry and packet-rule passes.
       - name: Preload the packet rule engine
