@@ -37,8 +37,9 @@ whole candidate to 16 MiB. It selects the two live Wazuh JSON streams only
 after their bytes exactly match the chronological, decompressed files collected
 from the manager: any rotated daily JSON gzip files followed by the current
 top-level JSON gzip file, or the daily files alone when the current path was a
-refused link. Expected daily text-alert siblings are permitted in that collected
-directory but are not selected or substituted for JSON. The
+refused link. Expected matching-day, kind-matching daily text-log siblings are
+permitted for both streams in those collected directories but are not selected
+or substituted for JSON. The
 exporter also selects the manager startup record, every
 file of every completed path step, every declared PCAP and its counter record,
 plus only the manifest context needed to score and record them later. Raw bytes

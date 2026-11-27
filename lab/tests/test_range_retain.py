@@ -289,8 +289,8 @@ def write_collected(run: Path, manager: str, kind: str, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(path, "wb") as stream:
         stream.write(data)
-    if kind == "alerts":
-        (path.parent / "ossec-alerts-26.log").write_text("expected Wazuh text alert sibling\n")
+    text = "" if kind == "archives" else "expected Wazuh text alert sibling\n"
+    (path.parent / f"ossec-{singular}-26.log").write_text(text)
 
 
 def write_current_collected(run: Path, manager: str, kind: str, data: bytes) -> None:
@@ -336,7 +336,10 @@ def test_exports_identity_bytes_with_derived_hosted_provenance_and_actual_verifi
         for entry in proof.files
     )
     assert set(projected).isdisjoint({"ecs", "score", "recording", "rule_sets", "docker"})
-    assert all("ossec-alerts-26.log" not in entry["run_path"] for entry in document["files"])
+    assert all(
+        not entry["run_path"].endswith(("ossec-archive-26.log", "ossec-alerts-26.log"))
+        for entry in document["files"]
+    )
     assert projected["recording_clock"] == {
         "started": retain.iso(1_795_643_323_123_456_789),
         "ended": retain.iso(1_795_643_384_987_654_321),
@@ -723,6 +726,29 @@ def test_refuses_an_unexpected_file_in_the_collected_wazuh_log_folders(tmp_path)
     manager = load(spec_path).manager
     unexpected = run / f"raw/hosts/{manager}/var/ossec/logs/alerts/2026/Nov/unexpected.log"
     unexpected.write_text("not a Wazuh daily alert log\n")
+
+    with pytest.raises(retain.RetainError, match="exact set of current or daily JSON gzip files"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(("kind", "singular"), [("archives", "archive"), ("alerts", "alerts")])
+def test_refuses_a_daily_text_file_without_matching_json(tmp_path, kind, singular):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    unmatched = run / f"raw/hosts/{manager}/var/ossec/logs/{kind}/2026/Nov/ossec-{singular}-27.log"
+    unmatched.write_text("unmatched Wazuh daily text sibling\n")
+
+    with pytest.raises(retain.RetainError, match="daily text file without matching JSON"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+def test_refuses_a_wrong_kind_daily_text_file(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    wrong_kind = run / f"raw/hosts/{manager}/var/ossec/logs/archives/2026/Nov/ossec-alerts-26.log"
+    wrong_kind.write_text("wrong-kind Wazuh daily text sibling\n")
 
     with pytest.raises(retain.RetainError, match="exact set of current or daily JSON gzip files"):
         retain.export(run, spec_path, out, environment)

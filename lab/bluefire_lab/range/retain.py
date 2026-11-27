@@ -54,7 +54,7 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 PLAIN = re.compile(r"[^\x00-\x1f\x7f]+\Z")
 INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 RULES_LOADED = re.compile(r"Total rules enabled: '([0-9]+)'")
-WAZUH_TEXT_ALERT = re.compile(r"ossec-alerts-([0-9]{2})\.log\Z")
+WAZUH_TEXT_DAILY = re.compile(r"ossec-(archive|alerts)-([0-9]{2})\.log\Z")
 AT_FDCWD = -100
 RENAME_NOREPLACE = 1
 
@@ -1079,7 +1079,8 @@ def _same_as_collected(
     current = None
     seen_days = set()
     text_days = set()
-    expected_prefix = "ossec-archive-" if kind == "archives" else "ossec-alerts-"
+    expected_kind = "archive" if kind == "archives" else "alerts"
+    expected_prefix = f"ossec-{expected_kind}-"
     for path in actual:
         parts = path.relative.relative_to(relative).parts
         if len(parts) == 1:
@@ -1095,12 +1096,12 @@ def _same_as_collected(
             )
         year, month, filename = parts
         match = wazuh.DAILY.fullmatch(filename)
-        text_match = WAZUH_TEXT_ALERT.fullmatch(filename) if kind == "alerts" else None
+        text_match = WAZUH_TEXT_DAILY.fullmatch(filename)
         valid_folder = year.isascii() and year.isdecimal() and month in wazuh.MONTHS
-        if valid_folder and text_match is not None:
-            day = (int(year), wazuh.MONTHS.index(month), int(text_match.group(1)))
+        if valid_folder and text_match is not None and text_match.group(1) == expected_kind:
+            day = (int(year), wazuh.MONTHS.index(month), int(text_match.group(2)))
             if day in text_days:
-                raise RetainError(f"the collected Wazuh {kind} folder repeats one daily text alert file")
+                raise RetainError(f"the collected Wazuh {kind} folder repeats one daily text file")
             text_days.add(day)
             continue
         if (
@@ -1125,7 +1126,7 @@ def _same_as_collected(
             f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
         )
     if not text_days.issubset(seen_days):
-        raise RetainError(f"the collected Wazuh {kind} folder has a text alert file without matching JSON")
+        raise RetainError(f"the collected Wazuh {kind} folder has a daily text file without matching JSON")
 
     digest = hashlib.sha256()
     count = 0
