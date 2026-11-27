@@ -649,32 +649,93 @@ def test_a_run_folders_rules_are_refused_when_an_expected_parent_is_a_link(tmp_p
 
 def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> None:
     spec = range_spec.load(Path(__file__).parents[1] / "range" / "range-one.yaml")
-    manifest_digest = "".join(
+    et_manifest_digest = "".join(
         ("a7b140e3", "95557d19", "a234b0fa", "465f4471", "39ba5071", "7ee6efcb", "0e23df6b", "7c6f30dc")
     )
-    rule_digest = "".join(
+    et_rule_digest = "".join(
         ("64294a19", "ec3946f5", "4c5e4cb3", "39a13766", "cd41aa69", "c2021d9f", "dbf7cbe4", "1efcc508")
     )
+    ordered_digest = "".join(
+        ("d489218c", "3a2cd098", "a23e04a7", "902f0a23", "53f2fca0", "2efd37cf", "bda141a9", "5ce47b41")
+    )
 
-    sigma, et_open = spec.rule_sets
+    sigma, et_open, aipt_sigma, aipt_suricata, agentic_sigma, agentic_suricata, ordered = spec.rule_sets
     locked = rulesets.locked(spec, sigma)
 
     assert (sigma.repo, sigma.licence, sigma.lock) == ("SigmaHQ/sigma", "LICENSE", "range-one.rules.lock")
     assert rulesets.wanted(sigma, locked) == sorted(locked)
     assert {path.split("/")[1] for path in locked if path != "LICENSE"} == {"linux", "web"}
+    assert len(locked) == 166 and rulesets.record(sigma, locked)["files"] == 165
     assert (et_open.kind, et_open.source_file, et_open.sha256, et_open.version) == (
         "suricata",
         "lab/rules/et-open/SHA256SUMS",
-        manifest_digest,
+        et_manifest_digest,
         "11342",
     )
     et_lock = rulesets.locked(spec, et_open)
     assert len(et_lock) == 13 and et_lock["SHA256SUMS"] == et_open.sha256
     assert sum(path.endswith(".rules") for path in et_lock) == 8
     assert rulesets.record(et_open, et_lock)["files"] == 8
-    assert rulesets.digest(et_open, et_lock) == rule_digest
+    assert rulesets.digest(et_open, et_lock) == et_rule_digest
+
+    aipt_sigma_lock = rulesets.locked(spec, aipt_sigma)
+    assert len(aipt_sigma_lock) == 64
+    assert rulesets.record(aipt_sigma, aipt_sigma_lock)["files"] == 63
+    assert sum(path.endswith((".yml", ".yaml")) for path in aipt_sigma_lock) == 63
+    assert aipt_sigma_lock.left_out == {"not YAML": 1, "outside selected source paths": 5}
+    assert rulesets.digest(aipt_sigma, aipt_sigma_lock) == "".join(
+        ("0ba4e884", "35928449", "e6c5792b", "7d0b6ead", "85c648fc", "d3b8af71", "32dea514", "266508f7")
+    )
+
+    aipt_suricata_lock = rulesets.locked(spec, aipt_suricata)
+    assert len(aipt_suricata_lock) == 5
+    assert rulesets.record(aipt_suricata, aipt_suricata_lock)["files"] == 4
+    assert aipt_suricata_lock.left_out == {
+        "excluded by the spec": 1,
+        "not a Suricata .rules file": 3,
+    }
+    assert rulesets.digest(aipt_suricata, aipt_suricata_lock) == "".join(
+        ("e78d8feb", "6aa9b263", "c622e580", "03193127", "b3867ec7", "e9bbe24c", "1963f4a4", "329f0871")
+    )
+
+    agentic_sigma_lock = rulesets.locked(spec, agentic_sigma)
+    assert len(agentic_sigma_lock) == 350
+    assert rulesets.record(agentic_sigma, agentic_sigma_lock)["files"] == 349
+    assert agentic_sigma_lock.left_out == {"outside selected source paths": 991}
+    assert rulesets.digest(agentic_sigma, agentic_sigma_lock) == "".join(
+        ("d3e1ba5c", "bebe8064", "88d817a9", "bd05742d", "a2f95702", "681a66fe", "a24d6d62", "6f6e01d0")
+    )
+
+    agentic_suricata_lock = rulesets.locked(spec, agentic_suricata)
+    assert len(agentic_suricata_lock) == 75
+    assert rulesets.record(agentic_suricata, agentic_suricata_lock)["files"] == 74
+    assert agentic_suricata_lock.left_out == {
+        "no active Suricata rule": 77,
+        "not a Suricata .rules file": 1,
+        "outside selected source paths": 1153,
+    }
+    assert rulesets.digest(agentic_suricata, agentic_suricata_lock) == "".join(
+        ("9093c538", "0087e1e9", "09c6efc8", "91c7d114", "60e4c063", "97772a6d", "bb386faf", "dc00833d")
+    )
+
+    ordered_lock = rulesets.locked(spec, ordered)
+    assert (ordered.kind, ordered.source_file, ordered.sha256, ordered.version) == (
+        "sigma",
+        "lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS",
+        ordered_digest,
+        "1",
+    )
+    assert len(ordered_lock) == 5 and ordered_lock["SHA256SUMS"] == ordered_digest
+    assert rulesets.record(ordered, ordered_lock)["files"] == 4
+    assert rulesets.digest(ordered, ordered_lock) == ordered_digest
     assert [(defense.id, defense.sensors, defense.rules) for defense in spec.defenses] == [
         ("wazuh-stock", ("wazuh-agent",), ("wazuh",)),
         ("sigma-public", ("wazuh-agent",), ("sigma",)),
         ("packets-et-open", ("packet-capture",), ("et-open",)),
+        (
+            "ai-tool-packs",
+            ("wazuh-agent", "packet-capture"),
+            ("aipt-sigma", "aipt-suricata", "agentic-sigma", "agentic-suricata"),
+        ),
+        ("ordered-credential", ("wazuh-agent",), ("ordered-credential",)),
     ]

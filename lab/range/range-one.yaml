@@ -36,7 +36,7 @@ defense:
       - {path: /var/log/snoopy.log, format: syslog}
       - {path: /var/log/dpkg.log, format: syslog}
     fim_realtime: [/etc, /home, /root, /tmp, /var/tmp]
-rule_sets:                         # public rule sets, each file pinned before use
+rule_sets:                         # rule sets, each file pinned before use
   sigma:
     kind: sigma                    # Sigma rules, each given the events of its log source after the run
     repo: SigmaHQ/sigma
@@ -50,12 +50,60 @@ rule_sets:                         # public rule sets, each file pinned before u
     source: lab/rules/et-open/SHA256SUMS
     sha256: [a7b140e3, 95557d19, a234b0fa, 465f4471, 39ba5071, 7ee6efcb, 0e23df6b, 7c6f30dc]
     version: "11342"
+  aipt-sigma:
+    kind: sigma
+    repo: theori-io/aipt-detections
+    commit: 9e4653db4d9c9aaa6438354348953dbe89322848
+    folders: [sigma]
+    rule_paths: [sigma/correlation, sigma/file_event, sigma/network_connection,
+                 sigma/process_creation, sigma/proxy, sigma/web, sigma/zeek]
+    include: rules
+    pipelines: [sigma/pipelines/aipt-placeholders.yaml]
+    licence: LICENSE
+    lock: range-one.rules.lock
+  aipt-suricata:
+    kind: suricata
+    repo: theori-io/aipt-detections
+    commit: 9e4653db4d9c9aaa6438354348953dbe89322848
+    folders: [suricata]
+    include: rules
+    exclude: [suricata/retired.rules]
+    licence: LICENSE
+    lock: range-one.rules.lock
+  agentic-sigma:
+    kind: sigma
+    repo: ThreatDefence/agentic-attack-detections
+    commit: 12e37af3bcce482d0053e7241a31ba43a7ce0e64
+    folders: [behaviors, general, frameworks]
+    rule_paths: [behaviors/sigma, general/sigma, "frameworks/*/sigma"]
+    include: rules
+    licence: LICENSE
+    lock: range-one.rules.lock
+  agentic-suricata:
+    kind: suricata
+    repo: ThreatDefence/agentic-attack-detections
+    commit: 12e37af3bcce482d0053e7241a31ba43a7ce0e64
+    folders: [behaviors, frameworks]
+    rule_paths: [behaviors/suricata, "frameworks/*/suricata"]
+    include: rules
+    licence: LICENSE
+    lock: range-one.rules.lock
+  ordered-credential:
+    kind: sigma
+    source: lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS
+    sha256: [d489218c, 3a2cd098, a23e04a7, 902f0a23, 53f2fca0, 2efd37cf, bda141a9, 5ce47b41]
+    version: "1"
 defenses:                          # each judges the same run; the first is the baseline
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
   - {id: sigma-public, name: Public Sigma rules on host logs,
      sensors: [wazuh-agent], rules: [sigma]}
   - {id: packets-et-open, name: "Packets on web, judged by Suricata with the ET Open rules",
      sensors: [packet-capture], rules: [et-open]}
+  - {id: ai-tool-packs, name: AI tool detection packs on host logs and packets,
+     sensors: [wazuh-agent, packet-capture],
+     rules: [aipt-sigma, aipt-suricata, agentic-sigma, agentic-suricata]}
+  - {id: ordered-credential, name: Ordered credential activity on host logs,
+     sensors: [wazuh-agent], rules: [ordered-credential]}
 networks:                          # all: --internal, gateway_mode_ipv4=isolated, no IPv6
   edge: {}                         # the stand-in internet
   inside: {}                       # web, build, db
