@@ -2383,7 +2383,7 @@ function placeMany(network: Network, width: number, height: number, extra: numbe
     const h = 16;
     // Its name in a corner of its field, the top left first: the first corner where no host, name, badge's place, line or
     // hop's number would be under it. With no corner free, the field is not named on the map; its hosts' details name it.
-    const inset = 16;
+    const inset = 12;
     const corners: Box[] = [
       [box[0] + inset, box[1] + 9, box[0] + inset + w, box[1] + 9 + h],
       [box[2] - 12 - w, box[1] + 9, box[2] - 12, box[1] + 9 + h],
