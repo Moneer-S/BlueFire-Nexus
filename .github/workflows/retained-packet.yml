@@ -208,7 +208,15 @@ jobs:
       - name: Export the exact retained candidate
         run: |
           mkdir -p "$ARTIFACT_ROOT"
-          "$LAB" range retain "$OUT" --spec "$SPEC" --out "$ARTIFACT_ROOT/$FIXTURE"
+          if ! "$LAB" range retain "$OUT" --spec "$SPEC" --out "$ARTIFACT_ROOT/$FIXTURE"; then
+            manager=$(jq -er '.defense.manager | select(type == "string" and test("^[a-z0-9-]+$"))' "$OUT/manifest.json")
+            for kind in archives alerts; do
+              printf 'Wazuh %s source files (type, relative path, bytes):\n' "$kind"
+              find "$OUT/raw/hosts/$manager/var/ossec/logs/$kind" -mindepth 1 -printf '%y\t%P\t%s\n' |
+                LC_ALL=C sort
+            done
+            exit 1
+          fi
           candidate_bytes=$(du -sb "$ARTIFACT_ROOT/$FIXTURE" | cut -f1)
           echo "Retained candidate: $candidate_bytes bytes."
           test "$candidate_bytes" -le $((16 * 1024 * 1024))
