@@ -151,7 +151,7 @@ def test_refuses_unsafe_paths(tmp_path, field, value):
         retained.verify_retained(source)
 
 
-@pytest.mark.parametrize("same", ["stored_path", "run_path"])
+@pytest.mark.parametrize("same", ["stored_path", "run_path", "artifact_path"])
 def test_refuses_duplicate_paths(tmp_path, same):
     source = held_run(tmp_path)
     proof = _proof(source)
@@ -168,6 +168,29 @@ def test_refuses_a_link_anywhere_in_the_source(tmp_path):
     (source / "files/link.json").symlink_to(source / "files/raw/sensor.json")
 
     with pytest.raises(retained.RetainedError, match="is a link"):
+        retained.verify_retained(source)
+
+
+@pytest.mark.parametrize("relative", [retained.PROVENANCE, "files/raw/sensor.json"])
+def test_refuses_a_declared_file_hard_linked_to_an_outside_file(tmp_path, relative):
+    source = held_run(tmp_path)
+    original = source / relative
+    outside = tmp_path / f"outside-{original.name}"
+    outside.write_bytes(original.read_bytes())
+    original.unlink()
+    original.hardlink_to(outside)
+
+    with pytest.raises(retained.RetainedError, match="more than one hard link"):
+        retained.verify_retained(source)
+
+
+def test_refuses_an_unlisted_hard_link_to_an_outside_file(tmp_path):
+    source = held_run(tmp_path)
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}\n", encoding="utf-8")
+    (source / "files/unlisted.json").hardlink_to(outside)
+
+    with pytest.raises(retained.RetainedError, match="more than one hard link"):
         retained.verify_retained(source)
 
 
@@ -286,6 +309,45 @@ def test_rejudge_failure_leaves_no_output_or_partial_folder(tmp_path, monkeypatc
     monkeypatch.setattr(retained.engine, "rules", lambda *_: 1)
 
     assert retained.rejudge(source, RANGE_ONE, out, template, rule_engine) == 1
+    assert not out.exists()
+    assert list(out.parent.iterdir()) == []
+
+
+def test_rejudge_discards_a_copied_recording_and_requires_a_new_one(tmp_path, monkeypatch, capsys):
+    source = held_run(tmp_path)
+    stale = b'{"recording":"stale"}\n'
+    stored = source / "files/stale-recording.json"
+    stored.write_bytes(stale)
+    proof = _proof(source)
+    proof["files"].append(
+        {
+            "stored_path": "files/stale-recording.json",
+            "run_path": "recording.json",
+            "artifact_path": "retained/files/stale-recording.json",
+            "role": "derived recording that must not be reused",
+            "bytes": len(stale),
+        }
+    )
+    proof["files"].sort(key=lambda entry: entry["stored_path"])
+    _write_proof(source, proof)
+    rule_engine = tmp_path / "Zircolite"
+    rule_engine.write_text("program\n", encoding="utf-8")
+    template = tmp_path / "template.html"
+    template.write_text("template\n", encoding="utf-8")
+    out = tmp_path / "parent/rejudged"
+    replayed = []
+    monkeypatch.setattr(retained.engine, "rules", lambda *_: 0)
+
+    def rescore_without_output(folder, *_):
+        assert not (folder / "recording.json").exists()
+        return 0
+
+    monkeypatch.setattr(retained.engine, "rescore", rescore_without_output)
+    monkeypatch.setattr(retained.replay_page, "main", lambda *_: replayed.append(True) or 0)
+
+    assert retained.rejudge(source, RANGE_ONE, out, template, rule_engine) == 2
+    assert "newly generated recording.json" in capsys.readouterr().err
+    assert replayed == []
     assert not out.exists()
     assert list(out.parent.iterdir()) == []
 

@@ -3,6 +3,8 @@
 A retained range run is real raw sensor data made by the hosted range
 workflow, small enough to keep in the repository and judge again after the
 rules change. It is not a recording or a score. Those are derived from it.
+No retained run is committed yet; this document defines the required shape
+for a future fixture made by a separate hosted CI run.
 
 Only the hosted workflow adds a run below this folder. Files produced on a
 developer machine are never retained. A candidate is committed only after the
@@ -28,23 +30,27 @@ file's:
 - `run_path`: the canonical path restored in a disposable run folder;
 - `role` and byte count.
 
-The Actions run and artifact are the public provenance of the retained bytes.
-The repository commit binds the checked-in bytes. The small provenance file
-does not duplicate artifact or file digests: those secret-like opaque values
-are unrelated to rejudgment and fail the repository's secret gate. This means
-the verifier can independently prove the committed file closure, byte counts,
-copy equality, and that the source stayed unchanged while it was used. After
-the hosted artifact expires, it cannot independently prove that a retained
-file equals the former artifact; that relationship is the hosted workflow's
-attestation, reached through the recorded run URL.
+`provenance.json` declares an Actions run and artifact. The verifier validates
+the declared values' shape and internal consistency; it does not contact
+GitHub, establish that the run, job, head or artifact exists, or prove that the
+artifact supplied these bytes. Authenticity is established separately by the
+future fixture's hosted CI run and artifact link. The repository commit then
+binds the checked-in bytes. The small provenance file does not duplicate
+artifact or file digests: those secret-like opaque values are unrelated to
+rejudgment and fail the repository's secret gate. The verifier can
+independently prove only the committed file closure, byte counts, copy
+equality, and that the source stayed unchanged while it was used. After the
+hosted artifact expires, neither it nor the repository alone can independently
+prove that a retained file equals the former artifact.
 
 The stored and materialized sensor bytes are identical. Path remapping lets a
 hosted workflow retain a regular text file under a permitted name, such as
 `.txt`, and restore the canonical name the scorer reads. It does not redact,
 decode, or otherwise transform raw telemetry.
 
-The file list is an exact closure. Missing, extra, linked, duplicated, unsafe,
-or changed files are refused. A packet-capable retained run keeps:
+The file list is an exact closure. Missing, extra, symbolically or hard linked,
+duplicated, unsafe, or changed files are refused. A packet-capable retained
+run keeps:
 
 - a minimal hosted context manifest with only the real fields scoring and
   recording need;
@@ -71,12 +77,14 @@ bluefire-lab range rejudge lab/retained/<run> \
   --out .bluefire-runs/rejudged/<run>
 ```
 
-The command verifies the source, copies the declared bytes to their canonical
-paths, verifies each copy, restores the pinned spec into the copied context,
-fetches only the judging spec's locked public rules, scores the copy, and
-writes `recording.json` and `replay.html`. It verifies the retained source
-again before the output folder becomes visible. A failure removes only the
-command's private partial folder. The retained source is never changed.
+The command validates the exact source closure and declared provenance, copies
+the declared bytes to their canonical paths, verifies each copy, restores the
+pinned spec into the copied context, fetches only the judging spec's locked
+public rules, scores the copy, and writes `recording.json` and `replay.html`.
+Any copied `recording.json` is discarded before scoring, and publication
+requires the scorer to create a fresh one. The command validates the retained
+source again before the output folder becomes visible. A failure removes only
+the command's private partial folder. The retained source is never changed.
 
 Open the generated replay page directly, or import its `recording.json` on the
 app's Runs screen. A later evaluation keeps the original run identity and

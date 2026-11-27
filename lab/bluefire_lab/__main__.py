@@ -181,7 +181,10 @@ def main(arguments: list[str] | None = None) -> int:
     )
     rejudging = actions.add_parser(
         "rejudge",
-        help="verify a retained CI run, copy its raw files, judge the copy by another spec, and write replay.html",
+        help=(
+            "validate a retained run's exact files and declared provenance, copy its raw files, "
+            "judge the copy by another spec, and write replay.html"
+        ),
     )
     rejudging.add_argument("retained", type=Path, help="folder with provenance.json and the retained files")
     rejudging.add_argument(

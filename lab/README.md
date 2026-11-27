@@ -1541,9 +1541,9 @@ stock rules, and its recording has no `defenses`.
 writes all of these again from a run folder's own files, with the spec the
 run's manifest holds and the rule files in its folder, and starts nothing.
 
-A hosted run whose raw sensor data is retained in the repository can be
-verified, copied and judged by a later defense without changing the retained
-source:
+A hosted run whose raw sensor data is retained in the repository can have its
+exact closure and declared provenance validated, then be copied and judged by
+a later defense without changing the retained source:
 
 ```bash
 bluefire-lab range rejudge lab/retained/<run> \
@@ -1554,8 +1554,8 @@ bluefire-lab range rejudge lab/retained/<run> \
 ```
 
 The output is a new run folder with the new `recording.json` and a standalone
-`replay.html`. The retained-run layout, hosted provenance, minimum raw inputs,
-verification limits and refusal rules are in
+`replay.html`. The retained-run layout, declared provenance and its proof
+limits, minimum raw inputs, and refusal rules are in
 [`retained/README.md`](retained/README.md).
 
 **`score.md`** opens with the path's outcome in one sentence (whether it

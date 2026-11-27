@@ -123,6 +123,8 @@ def _regular(path: Path, what: str) -> None:
         raise RetainedError(f"{what} is a link; retained evidence must be regular files and folders")
     if not stat.S_ISREG(status.st_mode):
         raise RetainedError(f"{what} is not a regular file")
+    if status.st_nlink != 1:
+        raise RetainedError(f"{what} has more than one hard link; retained evidence must not contain links")
 
 
 def _file(value: object, number: int) -> RetainedFile:
@@ -233,7 +235,7 @@ def _cross_check(root: Path, source: dict, run: dict, files: tuple[RetainedFile,
 
 
 def verify_retained(root: Path) -> RetainedRun:
-    """Verify one exact retained source tree and its hosted-run provenance."""
+    """Verify one exact retained source tree and validate its declared provenance."""
 
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
@@ -251,12 +253,15 @@ def verify_retained(root: Path) -> RetainedRun:
     files = tuple(_file(value, number) for number, value in enumerate(document["files"]))
     stored = [entry.stored_path.as_posix() for entry in files]
     materialized = [entry.run_path.as_posix() for entry in files]
+    artifacts = [entry.artifact_path.as_posix() for entry in files]
     if stored != sorted(stored):
         raise RetainedError("files must be sorted by stored_path")
     if len(set(stored)) != len(stored):
         raise RetainedError("two file entries have the same stored_path")
     if len(set(materialized)) != len(materialized):
         raise RetainedError("two file entries have the same run_path")
+    if len(set(artifacts)) != len(artifacts):
+        raise RetainedError("two file entries have the same artifact_path")
 
     actual = {PROVENANCE}
     for path in root.rglob("*"):
@@ -268,6 +273,10 @@ def verify_retained(root: Path) -> RetainedRun:
             continue
         if not stat.S_ISREG(status.st_mode):
             raise RetainedError(f"{relative} is not a regular file or folder")
+        if status.st_nlink != 1:
+            raise RetainedError(
+                f"{relative} has more than one hard link; retained evidence must not contain links"
+            )
         actual.add(relative)
     expected = {PROVENANCE, *stored}
     missing, extra = sorted(expected - actual), sorted(actual - expected)
@@ -369,7 +378,7 @@ def rejudge(
     template: Path,
     rule_engine: Path | None = None,
 ) -> int:
-    """Verify, copy and rejudge a retained run, then write its standalone replay page."""
+    """Validate, copy and rejudge a retained run, then write its standalone replay page."""
 
     try:
         proof = verify_retained(retained)
@@ -389,6 +398,10 @@ def rejudge(
     published = False
     try:
         _copy(proof, work)
+        recording = work / "recording.json"
+        if recording.is_symlink() or (recording.exists() and not recording.is_file()):
+            raise RetainedError("the materialized recording.json is not a regular file")
+        recording.unlink(missing_ok=True)
         run_spec = work.joinpath(*PurePosixPath(proof.run["spec"]).parts)
         original = load(run_spec)
         manifest_path = work / "manifest.json"
@@ -400,11 +413,12 @@ def rejudge(
         code = engine.rescore(work, rule_engine, defenses)
         if code != 0:
             return code
+        _regular(recording, "the newly generated recording.json")
         page = work / "replay.html"
         if page.is_symlink() or (page.exists() and not page.is_file()):
             raise RetainedError("the materialized replay.html is not a regular file")
         page.unlink(missing_ok=True)
-        code = replay_page.main(work / "recording.json", template, page)
+        code = replay_page.main(recording, template, page)
         if code != 0:
             return code
         # A concurrent edit of the source is caught before the derived folder becomes visible.
