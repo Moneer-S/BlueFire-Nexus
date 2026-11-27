@@ -990,8 +990,8 @@ class Run:
         """Prove each capture process is alive and recorded one mark on every range interface.
 
         A UDP mark goes to another host on each network. The route says which
-        interface must hold it, and tcpdump's immediate-write mode makes its
-        payload visible in that interface's PCAP before this gate passes.
+        interface must hold it. tcpdump's immediate capture and write modes
+        make its payload visible in that interface's PCAP before this gate passes.
         """
 
         capture = self.manifest["packet_capture"]

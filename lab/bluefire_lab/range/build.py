@@ -236,7 +236,8 @@ def start_script(spec: Spec, host: str) -> str:
             '      mv "$status_file.partial" "$status_file"',
             "      exit 125",
             "    fi",
-            f'    tcpdump -i "$iface" -p -nn -s 0 -U -Z tcpdump -w "{CAPTURE_DIR}/$iface.pcap" '
+            f'    tcpdump -i "$iface" -p -nn -s 0 -U --immediate-mode -Z tcpdump '
+            f'-w "{CAPTURE_DIR}/$iface.pcap" '
             f"'{CAPTURE_FILTER}' 2> \"{CAPTURE_DIR}/$iface.log\" &",
             "    child=$!",
             '    if [ "$stopping" -ne 0 ]; then',
