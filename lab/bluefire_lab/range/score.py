@@ -909,7 +909,12 @@ def after_the_run(
             )
         folder = rulesets.held(out, rule_set.name, lock)
         made = sigma.evaluate_set(
-            engine, folder, list(rule_set.folders), events, out / "engine" / rule_set.name
+            engine,
+            folder,
+            list(rule_set.folders),
+            events,
+            out / "engine" / rule_set.name,
+            rule_set.pipelines,
         )
     except (SpecError, sigma.EngineError, OSError) as error:
         (out / name).unlink(missing_ok=True)

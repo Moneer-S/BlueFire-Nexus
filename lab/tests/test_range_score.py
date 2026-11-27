@@ -886,10 +886,11 @@ def matching(
     Returns a file to pass as the engine's program, which is never started.
     """
 
-    def evaluate_set(program, rules, folders, events, work) -> dict:
+    def evaluate_set(program, rules, folders, events, work, pipelines=()) -> dict:
         assert (rules / "LICENSE").is_file() and events[0]["full_log"]
         return {
             "engine": {"name": "Zircolite", "version": "4.7.1"},
+            "pipelines": list(pipelines),
             "groups": [
                 {
                     "folder": folders[0],

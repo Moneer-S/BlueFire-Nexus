@@ -479,12 +479,14 @@ def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
                 rule_paths=["rules/linux/process_creation"],
                 include="rules",
                 exclude=["rules/linux/process_creation/retired.yml"],
+                pipelines=["rules/web/placeholders.yml"],
             )
         )
     ).rule_sets[0]
     assert selected.rule_paths == ("rules/linux/process_creation",)
     assert selected.include == "rules"
     assert selected.exclude == ("rules/linux/process_creation/retired.yml",)
+    assert selected.pipelines == ("rules/web/placeholders.yml",)
     # The first defense is the baseline; a defense that only records runs no rules.
     assert spec.defenses == (
         range_spec.Defense("wazuh-stock", "Wazuh with its stock rules", ("wazuh-agent",), ("wazuh",)),
@@ -548,6 +550,17 @@ def rename_set(name):
             "exclude must list repository file paths once each",
         ),
         (change_set(exclude=["tests/rule.yml"]), "outside the folders the rule set takes"),
+        (change_set(pipelines="rules/web/pipeline.yml"), "pipelines must list repository file paths"),
+        (change_set(pipelines=["../pipeline.yml"]), "pipelines must list repository file paths"),
+        (
+            change_set(pipelines=["rules/web/pipeline.yml", "rules/web/pipeline.yml"]),
+            "pipelines must list repository file paths once each",
+        ),
+        (change_set(pipelines=["tests/pipeline.yml"]), "pipelines names tests/pipeline.yml, outside"),
+        (
+            change_set(pipelines=["rules/web/pipeline.yml"], exclude=["rules/web/pipeline.yml"]),
+            "pipelines names rules/web/pipeline.yml, which exclude also names",
+        ),
         (change_set(folders=[]), "folders must list folders of the repository"),
         (change_set(folders=["/rules/linux"]), "folders must list folders of the repository"),
         (change_set(folders=["rules", "rules/linux"]), "once each and none inside another"),

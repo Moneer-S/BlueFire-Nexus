@@ -142,6 +142,7 @@ def test_an_access_line_is_a_row_with_the_fields_the_web_rules_name_taken_from_t
         "sc-status": 404,
         "cs-method": "GET",
         "cs-uri-query": "/admin.php?id=1",
+        "cs-uri-stem": "/admin.php",
         "cs-referer": "http://web/",
         "cs-user-agent": "Mozilla/5.0",
     }
@@ -290,6 +291,70 @@ def test_an_engine_copy_for_a_correlation_requires_its_real_sigma_source() -> No
     assert made["name"] == "made_up_ordered_first_stage"
     assert made["detection"]["bluefire_source"] == {"BlueFireSource": sigma.PROCESS.name}
     assert made["detection"]["condition"] == "(selection) and bluefire_source"
+
+
+def test_a_locked_value_placeholder_pipeline_and_hyphenated_correlation_fields_run_in_the_real_engine(
+    engine: Path, tmp_path: Path
+) -> None:
+    root = tmp_path / "set"
+    rules = root / "rules"
+    pipeline = root / "pipelines" / "values.yml"
+    rules.mkdir(parents=True)
+    pipeline.parent.mkdir()
+    pipeline.write_text(
+        "name: Made Up Values\npriority: 10\nvars:\n"
+        "  approved_sources:\n    - '0.0.0.0/32'\n"
+        "transformations:\n  - id: made_up_values\n    type: value_placeholders\n"
+    )
+    (rules / "base.yml").write_text(
+        "title: Made Up - Pipeline Base\nname: made_up_pipeline_base\n"
+        "id: 20000000-0000-4000-8000-000000000001\nauthor: The lab's tests\n"
+        "logsource:\n    category: webserver\ndetection:\n"
+        "    selection:\n        sc-status: 404\n"
+        "    filter_approved:\n        c-ip|expand: '%approved_sources%'\n"
+        "    condition: selection and not filter_approved\nlevel: low\n"
+    )
+    (rules / "count.yml").write_text(
+        "title: Made Up - Pipeline Event Count\nname: made_up_pipeline_count\n"
+        "id: 20000000-0000-4000-8000-000000000002\nauthor: The lab's tests\n"
+        "correlation:\n    type: event_count\n    rules:\n        - made_up_pipeline_base\n"
+        "    group-by:\n        - c-ip\n    timespan: 1m\n"
+        "    condition:\n        gte: 2\n    generate: false\nlevel: high\n"
+    )
+    (rules / "value.yml").write_text(
+        "title: Made Up - Pipeline Value Count\nname: made_up_pipeline_value\n"
+        "id: 20000000-0000-4000-8000-000000000003\nauthor: The lab's tests\n"
+        "correlation:\n    type: value_count\n    rules:\n        - made_up_pipeline_base\n"
+        "    group-by:\n        - c-ip\n    timespan: 1m\n"
+        "    condition:\n        field: cs-user-agent\n        gte: 2\n"
+        "    generate: false\nlevel: high\n"
+    )
+    events = [
+        access("GET /first HTTP/1.1", 404, agent="one", second=0),
+        access("GET /second HTTP/1.1", 404, agent="two", second=10),
+    ]
+
+    found = sigma.evaluate_set(
+        engine,
+        root,
+        ["rules"],
+        events,
+        tmp_path / "engine",
+        ("pipelines/values.yml",),
+    )
+
+    correlations = [match for match in found["matches"] if match["rule"]["kind"] == "correlation"]
+    assert found["pipelines"] == ["pipelines/values.yml"]
+    assert (found["atomic loaded"], found["correlations loaded"]) == (1, 2)
+    assert found["conversion errors"] == []
+    assert {match["rule"]["title"] for match in correlations} == {
+        "Made Up - Pipeline Event Count",
+        "Made Up - Pipeline Value Count",
+    }
+    assert [(match["event"], match["evidence"]) for match in correlations] == [
+        (1, [0, 1]),
+        (1, [0, 1]),
+    ]
 
 
 def test_the_engine_matches_each_rule_on_the_events_of_its_log_source_and_no_others(

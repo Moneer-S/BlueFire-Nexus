@@ -835,8 +835,16 @@ the rule. What it asks for:
   licence file, which is fetched and kept with the rules) and `lock` (a file
   beside the spec with the SHA-256 of every one of those files; rule sets can
   share it, and it is not the lock of `atomic_red_team`). All six are
-  required. The name is the rule set's detector in a recording, so it is not
-  `pinned` or `lab`, which a recording uses already, nor `wazuh`.
+  required. A set may select only executable rule files with `include: rules`,
+  restrict discovery to source folders with `rule_paths` (where `*` is one
+  whole path part), and name exact files under `exclude`. A Sigma set may also
+  name exact `pipelines`: each must be a YAML pipeline made only of
+  `value_placeholders` transformations. The lock records the selection, the
+  number left out for each reason, and every selected file's SHA-256. A
+  declared pipeline is selected even when it is outside `rule_paths`; its
+  placeholder values are applied only to engine copies of the rules, never to
+  the fetched files. The name is the rule set's detector in a recording, so it
+  is not `pinned` or `lab`, which a recording uses already, nor `wazuh`.
 - **Defenses.** `defenses` is a list of 1 to 8 named defenses, each with `id`
   (letters, digits, `-` and `_`), `name` (a few plain words), `sensors` (the
   kinds of sensor it records with; the one kind today is `wazuh-agent`, the
@@ -1732,7 +1740,10 @@ with its rule set under `rule_sets`.
 each folder of the rule set at its commit through GitHub's contents API,
 fetches every file from `raw.githubusercontent.com` at that commit, and writes
 their SHA-256 to [`range/range-one.rules.lock`](range/range-one.rules.lock),
-with the repository's `LICENSE`. A run fetches the files by that lock into
+with the repository's `LICENSE`. With `include: rules`, the locker fetches and
+checks each candidate individually, keeps only a rule of the set's kind, and
+records why every other candidate was omitted. It never clones or downloads
+an archive. A run fetches the selected files by that lock into
 `rules/sigma/` of its own folder, with the `LICENSE` and a file `SOURCE` that
 says `SigmaHQ/sigma@<commit>`, before anything is created; a file that is
 missing or has another SHA-256 stops the run with the file's name. Nothing is
@@ -1758,9 +1769,10 @@ source its rules name and no others, in Sigma's field names:
 - `file_event` for Linux: the files the agents' file integrity monitoring saw
   added or changed, as `TargetFilename`.
 - `webserver`: nginx's access lines, as `c-ip`, `cs-method`, `cs-uri-query`
-  (the request's path and query as the line holds them), `sc-status`,
-  `cs-user-agent` and `cs-referer`, with the line itself, all taken from the
-  line. The engine names a column by the letters and digits of a field's name,
+  (the request's path and query as the line holds them), `cs-uri-stem` (the
+  request's path without its query), `sc-status`, `cs-user-agent` and
+  `cs-referer`, with the line itself, all taken from the line. The engine names
+  a column by the letters and digits of a field's name,
   so it reads a copy of each such rule with the field's name written that way;
   the fetched files stay as the lock has them.
 - the keyword rules of `builtin`: a rule that names a `service` (`sshd`,
@@ -1773,6 +1785,14 @@ engine's own and unattributed ones. For each folder and log source the run
 records how many rules it holds, how many the engine says it loaded, and how
 many events it was given and read: the engine skips a rule it cannot convert,
 and a rule it did not load was not evaluated.
+
+Atomics and Sigma v2 `event_count`, `value_count`, `temporal` and
+`temporal_ordered` correlations run over one database. Every engine row
+carries its source, host, time and stable archive event id, and each atomic
+dependency is constrained to its own source. A correlation alert is attributed
+to the latest real event that completed it; its ordered evidence event ids are
+retained with the alert. Conversion failures and unsupported sources are
+recorded per rule and are not described as evaluated.
 
 **A match.** Each match is an alert of the detector `sigma`, at the time of
 the event it matched and with no `raised` time, at the rule's own level; it

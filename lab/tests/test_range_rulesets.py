@@ -104,6 +104,7 @@ def selection_spec(
     *,
     rule_paths: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
+    pipelines: tuple[str, ...] = (),
 ) -> range_spec.Spec:
     """A parsed spec changed only to exercise made-up format-aware discovery."""
 
@@ -115,6 +116,7 @@ def selection_spec(
         rule_paths=rule_paths,
         include="rules",
         exclude=exclude,
+        pipelines=pipelines,
     )
     return replace(spec, rule_sets=(rule_set,))
 
@@ -139,6 +141,7 @@ def test_a_sigma_set_locks_only_rules_in_selected_source_paths_and_records_what_
         "include": "rules",
         "rule paths": ["sigma/source"],
         "exclude": [],
+        "pipelines": [],
         "selected files": 2,
         "left out files": 4,
         "left out by reason": {
@@ -149,6 +152,62 @@ def test_a_sigma_set_locks_only_rules_in_selected_source_paths_and_records_what_
         },
     }
     assert len([url for url in asked if "raw.githubusercontent.com" in url]) == 6
+
+
+def test_a_sigma_value_placeholder_pipeline_is_explicitly_locked_beside_the_rules(
+    tmp_path: Path, served
+) -> None:
+    pipeline = "sigma/source/pipeline.yml"
+    spec = selection_spec(
+        tmp_path,
+        "sigma",
+        "sigma",
+        rule_paths=("sigma/source",),
+        pipelines=(pipeline,),
+    )
+
+    rulesets.lock(spec, served(SELECTION))
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {
+        "LICENSE",
+        pipeline,
+        "sigma/source/atomic.yml",
+        "sigma/source/correlation.yml",
+    }
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": ["sigma/source"],
+        "exclude": [],
+        "pipelines": [pipeline],
+        "selected files": 3,
+        "left out files": 3,
+        "left out by reason": {
+            "not a Sigma rule or correlation": 1,
+            "not YAML": 1,
+            "outside selected source paths": 1,
+        },
+    }
+    assert f"{rulesets.PIPELINE}{pipeline}" in (tmp_path / "made-up.lock").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "vars: {}\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  bad-name:\n    - value\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source: value\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source:\n    - ''\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source:\n    - value\n    - value\ntransformations:\n  - type: value_placeholders\n",
+        "vars:\n  source:\n    - value\ntransformations:\n  - type: field_name_mapping\n",
+    ],
+)
+def test_a_declared_sigma_pipeline_must_have_exact_value_placeholder_shapes(text: str) -> None:
+    assert (
+        rulesets.sigma_pipeline_reason("sigma/pipelines/values.yml", text.encode())
+        == "not a Sigma value-placeholder pipeline"
+    )
 
 
 def test_a_suricata_set_locks_only_active_rule_files_and_keeps_an_exact_exclusion_distinct(
@@ -167,6 +226,7 @@ def test_a_suricata_set_locks_only_active_rule_files_and_keeps_an_exact_exclusio
         "include": "rules",
         "rule paths": [],
         "exclude": list(omitted),
+        "pipelines": [],
         "selected files": 1,
         "left out files": 3,
         "left out by reason": {

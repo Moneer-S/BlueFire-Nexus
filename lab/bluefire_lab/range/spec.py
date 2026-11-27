@@ -192,6 +192,7 @@ class RuleSet:
     rule_paths: tuple[str, ...] = ()
     include: str = "all"
     exclude: tuple[str, ...] = ()
+    pipelines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1111,7 +1112,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
     if not isinstance(value, dict) or not value:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
     required = {"kind", "repo", "commit", "folders", "licence", "lock"}
-    keys = required | {"rule_paths", "include", "exclude"}
+    keys = required | {"rule_paths", "include", "exclude", "pipelines"}
     found = []
     for name, settings in value.items():
         if not isinstance(name, str) or not NAME.match(name) or len(name) > 64:
@@ -1197,6 +1198,29 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
             raise SpecError(
                 f"{where}: exclude names {', '.join(outside[:5])}, outside the folders the rule set takes"
             )
+        pipelines = entry.get("pipelines", [])
+        if (
+            not isinstance(pipelines, list)
+            or not all(isinstance(path, str) and RELATIVE.match(path) for path in pipelines)
+            or len(set(pipelines)) != len(pipelines)
+        ):
+            raise SpecError(
+                f"{where}: pipelines must list repository file paths once each, with no absolute or parent path"
+            )
+        if pipelines and entry["kind"] != "sigma":
+            raise SpecError(f"{where}: pipelines is only for sigma rule sets")
+        outside_pipelines = sorted(
+            path for path in pipelines if not any(path.startswith(folder + "/") for folder in folders)
+        )
+        if outside_pipelines:
+            raise SpecError(
+                f"{where}: pipelines names {', '.join(outside_pipelines[:5])}, outside the folders the rule set takes"
+            )
+        excluded_pipelines = sorted(set(pipelines) & set(exclude))
+        if excluded_pipelines:
+            raise SpecError(
+                f"{where}: pipelines names {', '.join(excluded_pipelines[:5])}, which exclude also names"
+            )
         licence = entry["licence"]
         if not isinstance(licence, str) or not RELATIVE.match(licence):
             raise SpecError(
@@ -1225,6 +1249,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 tuple(rule_paths),
                 include,
                 tuple(exclude),
+                tuple(pipelines),
             )
         )
     return tuple(found)

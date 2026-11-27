@@ -15,7 +15,8 @@ events of the Sigma log source it names, and no others:
   integrity monitoring saw added or changed, as `TargetFilename`. The sensor
   does not know which program wrote a file, so `Image` is not given.
 - `category: webserver`: the lines of nginx's access log, as `cs-method`,
-  `cs-uri-query` (the request's path and query as the line holds them),
+  `cs-uri-stem` (the request's path), `cs-uri-query` (the request's path and
+  query as the line holds them),
   `sc-status`, `cs-user-agent`, `cs-referer` and `c-ip`, with the line itself
   for the rules that look for a word anywhere in it.
 - `product: linux` with no category, the rules that look for words in a log
@@ -81,6 +82,7 @@ EVENT_FIELD = "BlueFireEventId"
 SOURCE_FIELD = "BlueFireSource"
 CONTEXT_FIELDS = (TIME_FIELD, HOST_FIELD)
 CORRELATION_TYPES = ("event_count", "value_count", "temporal", "temporal_ordered")
+PLACEHOLDER = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
 
 
 class EngineError(RuntimeError):
@@ -113,7 +115,9 @@ def _web(event: dict) -> dict | None:
         return row
     row["c-ip"], request, row["sc-status"] = found.group(1), found.group(2).split(" "), int(found.group(3))
     if len(request) == 3:
-        row["cs-method"], row["cs-uri-query"] = request[0], request[1]
+        target = request[1]
+        row["cs-method"], row["cs-uri-query"] = request[0], target
+        row["cs-uri-stem"] = target.partition("?")[0]
     # nginx writes - for a request without the header.
     for name, value in (("cs-referer", found.group(4)), ("cs-user-agent", found.group(5))):
         if value != "-":
@@ -164,7 +168,15 @@ FILE = Source(
 WEB = Source(
     "webserver",
     "lines of nginx's access log",
-    ("cs-method", "cs-uri-query", "sc-status", "cs-user-agent", "cs-referer", "c-ip"),
+    (
+        "cs-method",
+        "cs-uri-query",
+        "cs-uri-stem",
+        "sc-status",
+        "cs-user-agent",
+        "cs-referer",
+        "c-ip",
+    ),
     "message",
     _web,
 )
@@ -268,7 +280,10 @@ def read_rule(text: str, file: str) -> dict | str:
         group_by = correlation.get("group-by") or []
         if isinstance(group_by, str):
             group_by = [group_by]
-        value = correlation.get("field")
+        condition = correlation.get("condition")
+        value = condition.get("field") if isinstance(condition, dict) else None
+        if value is None:
+            value = correlation.get("field")
         fields = [str(name) for name in group_by if isinstance(name, str)]
         if isinstance(value, str):
             fields.append(value)
@@ -293,15 +308,93 @@ def column(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", name)
 
 
-def engine_copy(text: str, fields: tuple[str, ...], source: Source | None = None) -> str:
+def pipeline_values(text: str, file: str) -> dict[str, list[str]]:
+    """Values of one public pySigma value-placeholder pipeline, or why it cannot be applied."""
+
+    try:
+        documents = [document for document in yaml.safe_load_all(text) if document is not None]
+    except yaml.YAMLError as error:
+        raise EngineError(f"the Sigma pipeline {file} is not readable as YAML: {error}") from error
+    pipeline = documents[0] if len(documents) == 1 else None
+    transformations = pipeline.get("transformations") if isinstance(pipeline, dict) else None
+    if (
+        not isinstance(transformations, list)
+        or not transformations
+        or any(
+            not isinstance(item, dict) or item.get("type") != "value_placeholders" for item in transformations
+        )
+    ):
+        raise EngineError(
+            f"the Sigma pipeline {file} is not solely a value-placeholder pipeline the lab can apply"
+        )
+    variables = pipeline.get("vars")
+    if not isinstance(variables, dict) or not variables:
+        raise EngineError(f"the Sigma pipeline {file} defines no placeholder values")
+    found: dict[str, list[str]] = {}
+    for name, values in variables.items():
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            or not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) or not value for value in values)
+            or len(set(values)) != len(values)
+        ):
+            raise EngineError(
+                f"the Sigma pipeline {file} must give each plainly named placeholder distinct string values"
+            )
+        found[name] = list(values)
+    return found
+
+
+def _expand_placeholders(value: object, placeholders: dict[str, list[str]]) -> object:
+    """Replace pySigma value placeholders in a detection, flattening one inside a value list."""
+
+    if isinstance(value, str):
+        found = PLACEHOLDER.fullmatch(value)
+        if found:
+            name = found.group(1)
+            if name not in placeholders:
+                raise EngineError(f"a Sigma rule names the placeholder {name}, which no pipeline defines")
+            return list(placeholders[name])
+        unresolved = PLACEHOLDER.search(value)
+        if unresolved:
+            raise EngineError(
+                f"a Sigma rule uses the placeholder {unresolved.group(1)} as part of another value"
+            )
+        return value
+    if isinstance(value, list):
+        expanded = []
+        for item in value:
+            made = _expand_placeholders(item, placeholders)
+            if isinstance(item, str) and PLACEHOLDER.fullmatch(item):
+                expanded.extend(made)
+            else:
+                expanded.append(made)
+        return expanded
+    if isinstance(value, dict):
+        return {key: _expand_placeholders(item, placeholders) for key, item in value.items()}
+    return value
+
+
+def engine_copy(
+    text: str,
+    fields: tuple[str, ...],
+    source: Source | None = None,
+    *,
+    placeholders: dict[str, list[str]] | None = None,
+    correlation: bool = False,
+) -> str:
     """A rule's text for the engine: each given field whose name holds a character other than a letter or
     a digit is written as the engine names it. With a source, a mandatory selector keeps the rule on rows
-    of that Sigma log source when correlations join several sources in one database."""
+    of that Sigma log source when correlations join several sources in one database. A configured public
+    value-placeholder pipeline is applied to detection values, and correlation field names are normalized."""
 
     for name in fields:
         if column(name) != name:
             text = re.sub(rf"(?m)^(\s*(?:- )?){re.escape(name)}(?=[|:])", rf"\g<1>{column(name)}", text)
-    if source is None:
+    expands = placeholders is not None and PLACEHOLDER.search(text) is not None
+    if source is None and not correlation and not expands:
         return text
     try:
         documents = [document for document in yaml.safe_load_all(text) if document is not None]
@@ -310,7 +403,26 @@ def engine_copy(text: str, fields: tuple[str, ...], source: Source | None = None
     rule = documents[0] if len(documents) == 1 else None
     detection = rule.get("detection") if isinstance(rule, dict) else None
     if not isinstance(detection, dict):
-        raise EngineError("an atomic rule copied for a correlation has no detection")
+        if source is not None or expands:
+            raise EngineError("an atomic rule copied for the engine has no detection")
+    elif expands:
+        rule["detection"] = detection = _expand_placeholders(detection, placeholders)
+    if correlation:
+        specification = rule.get("correlation") if isinstance(rule, dict) else None
+        if not isinstance(specification, dict):
+            raise EngineError("a correlation copied for the engine has no correlation specification")
+        group_by = specification.get("group-by")
+        if isinstance(group_by, str):
+            specification["group-by"] = column(group_by)
+        elif isinstance(group_by, list):
+            specification["group-by"] = [column(name) if isinstance(name, str) else name for name in group_by]
+        condition = specification.get("condition")
+        if isinstance(condition, dict) and isinstance(condition.get("field"), str):
+            condition["field"] = column(condition["field"])
+        if isinstance(specification.get("field"), str):
+            specification["field"] = column(specification["field"])
+    if source is None:
+        return yaml.safe_dump(rule, sort_keys=False, allow_unicode=True)
     condition = detection.get("condition")
     if (
         not isinstance(condition, (str, list))
@@ -594,7 +706,14 @@ def _not_loaded(rule: dict, conversion: list[dict]) -> dict:
     return {"rule": rule["id"], "title": rule["title"], "why": reason}
 
 
-def evaluate_set(engine: Path, folder: Path, folders: list[str], events: list[dict], work: Path) -> dict:
+def evaluate_set(
+    engine: Path,
+    folder: Path,
+    folders: list[str],
+    events: list[dict],
+    work: Path,
+    pipelines: tuple[str, ...] = (),
+) -> dict:
     """Give the rules under `folder` to the engine, each of its `folders` by log source, over the events.
 
     `folder` holds a fetched rule set at its repository's paths and `events` the
@@ -608,6 +727,18 @@ def evaluate_set(engine: Path, folder: Path, folders: list[str], events: list[di
     version = engine_version(engine)
     work.mkdir(parents=True, exist_ok=True)
     groups, matches, left_out, errors = [], [], [], []
+    placeholders: dict[str, list[str]] = {}
+    for relative in pipelines:
+        path = folder / relative
+        try:
+            values = pipeline_values(path.read_text(encoding="utf-8"), relative)
+        except OSError as error:
+            raise EngineError(f"the Sigma pipeline {relative} cannot be read: {error}") from error
+        overlap = sorted(set(placeholders) & set(values))
+        if overlap:
+            raise EngineError(f"the Sigma pipelines define {', '.join(overlap[:5])} more than once")
+        placeholders.update(values)
+
     records: list[dict] = []
     by_folder: dict[str, list[dict]] = {name: [] for name in folders}
 
@@ -619,6 +750,8 @@ def evaluate_set(engine: Path, folder: Path, folders: list[str], events: list[di
             if not path.is_file() or path.is_symlink():
                 continue
             file = path.relative_to(folder).as_posix()
+            if file in pipelines:
+                continue
             rule = read_rule(path.read_text(encoding="utf-8", errors="replace"), file)
             if not isinstance(rule, str) and rule["id"] in seen:
                 rule = "its id is that of another rule of the folder"
@@ -691,7 +824,12 @@ def evaluate_set(engine: Path, folder: Path, folders: list[str], events: list[di
             for count, rule in enumerate(rules, start=1):
                 text = (folder / rule["file"]).read_text(encoding="utf-8", errors="replace")
                 (copies / f"{count:04d}-{Path(rule['file']).name}").write_text(
-                    engine_copy(text, source.fields), encoding="utf-8"
+                    engine_copy(
+                        text,
+                        source.fields,
+                        placeholders=placeholders if pipelines else None,
+                    ),
+                    encoding="utf-8",
                 )
             found, engine_loaded, group["read"], conversion, converted = run_engine(
                 engine, work, slug, copies, [row for _, row in rows]
@@ -804,9 +942,19 @@ def evaluate_set(engine: Path, folder: Path, folders: list[str], events: list[di
                 source = source_of(rule["logsource"])
                 if not isinstance(source, Source):
                     raise EngineError(f"the source of {rule['file']} changed while making its correlation")
-                text = engine_copy(text, source.fields, source)
+                text = engine_copy(
+                    text,
+                    source.fields,
+                    source,
+                    placeholders=placeholders if pipelines else None,
+                )
             else:
-                text = engine_copy(text, ())
+                text = engine_copy(
+                    text,
+                    tuple(rule["fields"]),
+                    placeholders=placeholders if pipelines else None,
+                    correlation=True,
+                )
             (copies / f"{count:04d}-{Path(rule['file']).name}").write_text(text, encoding="utf-8")
         found, engine_loaded, group["read"], conversion, converted = run_engine(
             engine, work, slug, copies, [row for _, row in rows]
@@ -848,6 +996,7 @@ def evaluate_set(engine: Path, folder: Path, folders: list[str], events: list[di
     matches.sort(key=lambda match: (match["event"], match["rule"]["id"]))
     return {
         "engine": {"name": ENGINE, "version": version},
+        "pipelines": list(pipelines),
         "groups": groups,
         "files that are not a rule": left_out,
         "rules": len(records),

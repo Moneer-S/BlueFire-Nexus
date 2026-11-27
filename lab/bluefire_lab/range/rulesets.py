@@ -46,6 +46,7 @@ class Locked(dict[str, str]):
 INCLUDE = "# include: "
 RULE_PATH = "# rule path: "
 EXCLUDE = "# exclude: "
+PIPELINE = "# pipeline: "
 LEFT_OUT = "# left out: "
 SURICATA_RULE = re.compile(r"^(alert|drop|pass|reject(?:src|dst|both)?)\s+", re.IGNORECASE)
 
@@ -75,6 +76,7 @@ def read_lock(text: str, rule_set: RuleSet) -> Locked:
     include = "all"
     rule_paths: list[str] = []
     excluded: list[str] = []
+    pipelines: list[str] = []
     left_out: dict[str, int] = {}
     start = lines.index(header(rule_set)) + 1
     for number, line in enumerate(lines[start:], start=start + 1):
@@ -92,6 +94,12 @@ def read_lock(text: str, rule_set: RuleSet) -> Locked:
             if not plain(path) or path in excluded:
                 raise SpecError(f"line {number} of {rule_set.lock} does not name a new excluded file")
             excluded.append(path)
+            continue
+        if line.startswith(PIPELINE):
+            path = line.removeprefix(PIPELINE)
+            if not plain(path) or path in pipelines:
+                raise SpecError(f"line {number} of {rule_set.lock} does not name a new pipeline file")
+            pipelines.append(path)
             continue
         if line.startswith(LEFT_OUT):
             count, separator, reason = line.removeprefix(LEFT_OUT).partition(" ")
@@ -111,6 +119,7 @@ def read_lock(text: str, rule_set: RuleSet) -> Locked:
         include != rule_set.include
         or sorted(rule_paths) != sorted(rule_set.rule_paths)
         or sorted(excluded) != sorted(rule_set.exclude)
+        or sorted(pipelines) != sorted(rule_set.pipelines)
     ):
         raise SpecError(
             f"the section for {rule_set.name} in {rule_set.lock} selects different files than the spec: "
@@ -144,6 +153,11 @@ def wanted(rule_set: RuleSet, locked: dict[str, str]) -> list[str]:
     if rule_set.licence not in locked:
         raise SpecError(
             f"{rule_set.lock} does not list {rule_set.licence}, the licence of {rule_set.name}: {again}"
+        )
+    missing_pipelines = sorted(set(rule_set.pipelines) - set(locked))
+    if missing_pipelines:
+        raise SpecError(
+            f"{rule_set.lock} does not list {', '.join(missing_pipelines[:5])}, a pipeline of {rule_set.name}: {again}"
         )
     for folder in rule_set.folders:
         if not any(path.startswith(folder + "/") for path in locked):
@@ -247,6 +261,7 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
             "include": rule_set.include,
             "rule paths": list(rule_set.rule_paths),
             "exclude": list(rule_set.exclude),
+            "pipelines": list(rule_set.pipelines),
             "selected files": len(hashes) - 1,
             "left out files": sum(left_out.values()),
             "left out by reason": left_out,
@@ -307,6 +322,8 @@ def held(run: Path, name: str, expected: dict[str, str]) -> Path:
 def selection_reason(rule_set: RuleSet, path: str, data: bytes) -> str | None:
     """Why fetched bytes are not one rule of the set's kind, or None when the lock takes them."""
 
+    if path in rule_set.pipelines:
+        return sigma_pipeline_reason(path, data)
     if rule_set.include == "all":
         return None
     if rule_set.kind == "sigma":
@@ -321,6 +338,8 @@ def path_selection_reason(rule_set: RuleSet, path: str) -> str | None:
 
     if path in rule_set.exclude:
         return "excluded by the spec"
+    if path in rule_set.pipelines:
+        return None
     if rule_set.rule_paths and not any(in_rule_path(path, pattern) for pattern in rule_set.rule_paths):
         return "outside selected source paths"
     return None
@@ -356,6 +375,43 @@ def sigma_reason(path: str, data: bytes) -> str | None:
     return "not a Sigma rule or correlation"
 
 
+def sigma_pipeline_reason(path: str, data: bytes) -> str | None:
+    """Why bytes are not one Sigma value-placeholder pipeline the evaluator can apply."""
+
+    if PurePosixPath(path).suffix.lower() not in (".yml", ".yaml"):
+        return "Sigma pipeline is not YAML"
+    try:
+        documents = [found for found in yaml.safe_load_all(data.decode("utf-8")) if found is not None]
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return "Sigma pipeline is not readable as YAML"
+    document = documents[0] if len(documents) == 1 and isinstance(documents[0], dict) else {}
+    transformations = document.get("transformations")
+    supported = (
+        isinstance(transformations, list)
+        and transformations
+        and all(
+            isinstance(item, dict) and item.get("type") == "value_placeholders" for item in transformations
+        )
+    )
+    variables = document.get("vars")
+    valid_variables = (
+        isinstance(variables, dict)
+        and bool(variables)
+        and all(
+            isinstance(name, str)
+            and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
+            and isinstance(values, list)
+            and bool(values)
+            and all(isinstance(value, str) and bool(value) for value in values)
+            and len(set(values)) == len(values)
+            for name, values in variables.items()
+        )
+    )
+    if not valid_variables or not supported:
+        return "not a Sigma value-placeholder pipeline"
+    return None
+
+
 def suricata_reason(path: str, data: bytes) -> str | None:
     """Why bytes are not an active Suricata rule file."""
 
@@ -379,6 +435,7 @@ def selection_lines(rule_set: RuleSet, left_out: dict[str, int]) -> list[str]:
         lines.append(INCLUDE + rule_set.include)
     lines += [RULE_PATH + path for path in sorted(rule_set.rule_paths)]
     lines += [EXCLUDE + path for path in sorted(rule_set.exclude)]
+    lines += [PIPELINE + path for path in sorted(rule_set.pipelines)]
     lines += [f"{LEFT_OUT}{count} {reason}" for reason, count in sorted(left_out.items())]
     return lines
 
@@ -404,6 +461,12 @@ def lock(spec: Spec, get: atomics.Fetch = atomics.http_get) -> list[Path]:
             raise SpecError(
                 f"{rule_set.name}: exclude names {', '.join(missing[:5])}, which the configured folders do "
                 "not hold at the pinned commit"
+            )
+        missing_pipelines = sorted(set(rule_set.pipelines) - set(candidates))
+        if missing_pipelines:
+            raise SpecError(
+                f"{rule_set.name}: pipelines names {', '.join(missing_pipelines[:5])}, which the configured "
+                "folders do not hold at the pinned commit"
             )
         unmatched = sorted(
             pattern
