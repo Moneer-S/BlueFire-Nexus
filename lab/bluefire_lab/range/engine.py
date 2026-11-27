@@ -2487,18 +2487,29 @@ def rules(spec_path: Path, out: Path) -> int:
         if not spec.rule_sets:
             raise SpecError(f"the spec {Path(spec_path).name} names no rule set under rule_sets")
         own = run_rule_sets(Path(out))
+        locks = {}
         for rule_set in spec.rule_sets:
-            if rule_set.name in own and own[rule_set.name] != rulesets.locked(spec, rule_set):
+            locks[rule_set.name] = rulesets.locked(spec, rule_set)
+            if rule_set.name in own and own[rule_set.name] != locks[rule_set.name]:
                 raise SpecError(
                     f"the run in {out} fetched a rule set {rule_set.name} of its own into "
                     f"{rulesets.FOLDER}/{rule_set.name}/, and the rule set {rule_set.name} of "
                     f"{Path(spec_path).name} has another lock: give it another name there, so that the run "
                     "keeps its own"
                 )
+        root = rulesets.rule_root(Path(out))
         fetched = {}
         for rule_set in spec.rule_sets:
-            folder = Path(out) / rulesets.FOLDER / rule_set.name
-            if rule_set.name not in own and (folder.is_symlink() or folder.exists()):
+            if rule_set.name in own:
+                rulesets.held(Path(out), rule_set.name, locks[rule_set.name])
+                fetched[rule_set.name] = rulesets.record(rule_set, locks[rule_set.name])
+                continue
+            folder = root / rule_set.name
+            if folder.is_symlink():
+                raise SpecError(f"{rulesets.FOLDER}/{rule_set.name} is a link, not a rule-set folder")
+            if folder.exists() and not folder.is_dir():
+                raise SpecError(f"{rulesets.FOLDER}/{rule_set.name} is not a rule-set folder")
+            if folder.exists():
                 shutil.rmtree(folder)
             fetched[rule_set.name] = rulesets.fetch(spec, rule_set, Path(out))
     except (OSError, ValueError, SpecError) as error:

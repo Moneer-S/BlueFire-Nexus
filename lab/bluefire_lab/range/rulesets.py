@@ -139,6 +139,17 @@ def source(rule_set: RuleSet) -> str:
     return f"{rule_set.repo}@{rule_set.commit}"
 
 
+def rule_root(out: Path, *, create: bool = False) -> Path:
+    """The real ``rules`` folder under an output folder, never a link or another kind of file."""
+
+    root = Path(out) / FOLDER
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise SpecError(f"{FOLDER} is not a folder in the run's folder")
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics.http_get) -> dict:
     """Fetch a rule set by its lock into `out`/rules/<set>/; a file whose hash is not the lock's stops it, by name.
 
@@ -176,7 +187,14 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
         return record(rule_set, {target.name: digest_})
 
     hashes = locked(spec, rule_set)
-    folder = Path(out) / FOLDER / rule_set.name
+    root = rule_root(out)
+    folder = root / rule_set.name
+    if folder.is_symlink() or folder.exists():
+        raise SpecError(
+            f"{FOLDER}/{rule_set.name} exists already in the run's folder: use a new run folder, or "
+            "remove that rule set before fetching it"
+        )
+    files: dict[str, bytes] = {}
     for relative in sorted(hashes):
         try:
             data = get(raw_url(rule_set, relative))
@@ -189,6 +207,13 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
                 f"{relative} of {rule_set.name} at {rule_set.commit} has SHA-256 {atomics.sha256(data)}, and "
                 f"{rule_set.lock} says {hashes[relative]}: the run stops"
             )
+        files[relative] = data
+    root = rule_root(out, create=True)
+    folder = root / rule_set.name
+    if folder.is_symlink() or folder.exists():
+        raise SpecError(f"{FOLDER}/{rule_set.name} appeared while the rule set was being fetched")
+    folder.mkdir()
+    for relative, data in files.items():
         target = folder.joinpath(*PurePosixPath(relative).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
@@ -246,10 +271,17 @@ def held(run: Path, name: str, expected: dict[str, str]) -> Path:
     rule file the lock does not list.
     """
 
-    folder = Path(run) / FOLDER / name
+    root = rule_root(run)
+    folder = root / name
+    if folder.is_symlink() or not folder.is_dir():
+        raise SpecError(f"{FOLDER}/{name} is not a folder in the run's folder")
     for relative, wanted_hash in sorted(expected.items()):
-        path = folder.joinpath(*PurePosixPath(relative).parts)
-        if not plain(relative) or path.is_symlink() or not path.is_file():
+        if not plain(relative):
+            raise SpecError(f"{FOLDER}/{name}/{relative} is not in the run's folder")
+        parts = PurePosixPath(relative).parts
+        path = folder.joinpath(*parts)
+        parents = [folder.joinpath(*parts[:place]) for place in range(1, len(parts))]
+        if any(parent.is_symlink() for parent in parents) or path.is_symlink() or not path.is_file():
             raise SpecError(f"{FOLDER}/{name}/{relative} is not in the run's folder")
         found = atomics.sha256(path.read_bytes())
         if found != wanted_hash:

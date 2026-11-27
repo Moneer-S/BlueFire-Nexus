@@ -84,8 +84,36 @@ function part(value: Value, ...path: (string | number)[]): Value {
   return at as Value;
 }
 
+/**
+ * Makes `small` one run judged by two defenses. The first is all that `small`
+ * holds, so the top level holds its verdicts. The second has a packet capture
+ * and Sigma's rules besides: the capture recorded a packet of the second step,
+ * a Sigma rule alerted on it, and so that defense alerted on both steps.
+ */
+function judgedTwice(value: Value): void {
+  const network = part(value, "network");
+  (network.sensors as Value[]).push({ id: "capture", name: "Packet capture", host: "target", records: "packets" });
+  (network.detectors as Value[]).push({ id: "sigma", name: "Sigma rules", rules: 3, when: "after the run" });
+  (value.events as Value[]).push({ id: "2-2", time: "2026-11-17T17:07:22.200Z", host: "target", sensor: "capture", kind: "packet", text: "a packet to port 22", step: "2", tied_by: "session" });
+  (value.alerts as Value[]).push({ id: "alert-2", time: "2026-11-17T17:07:22.200Z", host: "target", detector: "sigma", rule: { id: "rule-2", title: "Connection To A Port", level: "high", origin: "pinned" }, counts: true, step: "2", events: ["2-2"] });
+  const verdict = (step: Value): Value => Object.fromEntries(["visibility", "outcome", "first_event", "first_alert"].filter((key) => key in step).map((key) => [key, step[key]]));
+  const [one, two] = [part(value, "steps", 0), part(value, "steps", 1)];
+  const score = part(value, "score");
+  value.defenses = [
+    { id: "sysmon-alone", name: "Sysmon with the published rules", sensors: ["sysmon"], detectors: ["pinned"], steps: { "1": verdict(one), "2": verdict(two) }, score: { ...score } },
+    {
+      id: "with-capture",
+      name: "Sysmon, a packet capture and Sigma's rules",
+      sensors: ["sysmon", "capture"],
+      detectors: ["pinned", "sigma"],
+      steps: { "1": verdict(one), "2": { visibility: { answer: "alert", basis: "a rule matched the packet", events: 2 }, outcome: "alerted", first_event: two.first_event, first_alert: "2026-11-17T17:07:22.200Z" } },
+      score: { ...score, alerted: 2, seen: 0 },
+    },
+  ];
+}
+
 /** Each edge is one way a recording can be at the limits of the format, with the answer both readers must give. */
-const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap?: string }[] = [
+const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap?: string; nowhere?: string }[] = [
   { name: "the smallest test list, with every optional key left out", answer: "kept and plays", make: () => undefined },
   {
     name: "times with six digits after the second",
@@ -504,6 +532,58 @@ const EDGES: { name: string; answer: Answer; make: (value: Value) => void; onMap
       (part(value, "network").detectors as Value[]).push(...["a", "b", "c", "d"].map((id) => ({ id, name: `${id} rules`, rules: 1, when: "after the run" })));
     },
   },
+  // The page plays the first defense's view: the second defense's sensor is on no screen of it.
+  { name: "one run judged by two defenses", answer: "kept and plays", make: judgedTwice, nowhere: "Packet capture" },
+  {
+    name: "defenses with more rule engines between them than the map draws at once",
+    answer: "kept and plays",
+    make: (value) => {
+      judgedTwice(value);
+      (part(value, "network").detectors as Value[]).push(...["a", "b", "c", "d"].map((id) => ({ id, name: `${id} rules`, rules: 1, when: "after the run" })));
+    },
+    nowhere: "Packet capture",
+  },
+  {
+    name: "a top level that does not hold the first defense's verdicts",
+    answer: "refused",
+    make: (value) => {
+      judgedTwice(value);
+      Object.assign(part(value, "score"), { alerted: 2, seen: 0 });
+    },
+  },
+  {
+    name: "an event of a sensor that no defense has",
+    answer: "refused",
+    make: (value) => {
+      judgedTwice(value);
+      part(value, "defenses", 1).sensors = ["sysmon"];
+    },
+  },
+  {
+    name: "an alert of a rule set that no defense has",
+    answer: "refused",
+    make: (value) => {
+      judgedTwice(value);
+      part(value, "defenses", 1).detectors = ["pinned"];
+    },
+  },
+  {
+    name: "a defense that leaves a step out",
+    answer: "refused",
+    make: (value) => {
+      judgedTwice(value);
+      delete part(value, "defenses", 1, "steps")["2"];
+    },
+  },
+  {
+    name: "a defense with more rule engines than the map draws",
+    answer: "refused",
+    make: (value) => {
+      judgedTwice(value);
+      (part(value, "network").detectors as Value[]).push(...["a", "b", "c"].map((id) => ({ id, name: `${id} rules`, rules: 1, when: "after the run" })));
+      part(value, "defenses", 1).detectors = ["pinned", "sigma", "a", "b", "c"];
+    },
+  },
 ];
 
 let workspace = "";
@@ -528,9 +608,9 @@ function pageByHand(recording: Value, file: string): void {
 
 /**
  * What the page makes of its recording: plays, in watch mode at its start and end and in analyse mode, or refuses.
- * `onMap` is a sensor's name that the watch view's map must show.
+ * `onMap` is a sensor's name that the watch view's map must show, and `nowhere` one that neither mode may show.
  */
-async function pageAnswer(page: Page, file: string, recording: Value, onMap?: string): Promise<"plays" | string> {
+async function pageAnswer(page: Page, file: string, recording: Value, onMap?: string, nowhere?: string): Promise<"plays" | string> {
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(String(error)));
   const address = pathToFileURL(file).href;
@@ -547,6 +627,7 @@ async function pageAnswer(page: Page, file: string, recording: Value, onMap?: st
     await page.waitForTimeout(400);
     await expect(title).toBeVisible();
     if (onMap && !query.startsWith("?mode=analyse")) await expect(page.getByText(onMap, { exact: true })).toBeVisible();
+    if (nowhere) await expect(page.getByText(nowhere, { exact: true })).toHaveCount(0);
   }
   expect(problems).toEqual([]);
   return "plays";
@@ -578,7 +659,7 @@ EDGES.forEach((edge, index) => {
       const made = bluefire("recordings", "page", String(recording.id), "--out", pageFile);
       if (made.status === 0) {
         answer = "kept and plays";
-        expect(await pageAnswer(page, pageFile, recording, edge.onMap)).toBe("plays");
+        expect(await pageAnswer(page, pageFile, recording, edge.onMap, edge.nowhere)).toBe("plays");
       } else {
         // A page is made of a finished run only; the page says the same of a running one.
         answer = "kept while running";

@@ -1003,9 +1003,11 @@ starts: in [run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/
 `cat` that the shell started, and none for the `sh` that `find` started. It
 logs an exec call when it is made, not when it succeeds, so `exe` is the file
 the call named even when there is no such file. The lab's line names no
-parent program. That the program's path arrives in the manager's archive is
-not yet shown by a CI run: the runs this file cites were made before snoopy's
-line held it. The agent package is for amd64 only.
+parent program. [Run 45905224820](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45905224820)
+shows the program's path arriving in the manager's archive on a hosted runner:
+all 1,205 snoopy process events in its ECS output have
+`process.executable`, which the Sigma evaluator received as `Image`. The agent
+package is for amd64 only.
 
 The `range-one` job of the `range-one` workflow runs this on a GitHub-hosted
 runner, fails unless there was no delivery gap, every agent host got its marks
@@ -1810,15 +1812,14 @@ Limits:
   most of the `process_creation` rules need one and can match nothing there,
   and the recording's notes say so. Each recording's notes say which fields
   the rules were given and which they named and were not given.
-- Not yet shown: what the public Sigma rules make of a run of range one on a
-  hosted runner.
+- [Run 45905224820](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45905224820)
+  shows the public Sigma rules judging range one on a hosted runner: 162 of
+  165 rules loaded, 6 rules matched below the alert level, all 11 path steps
+  were seen and none alerted, and no false alert counted on the ordinary day.
 
 ## Not yet shown
 
 - Tests on Windows.
-- What the public Sigma rules make of a run of range one on a hosted runner,
-  and that snoopy's line brings the program's path to the manager's archive
-  there ([range one: its defenses](#range-one-its-defenses)).
 
 ## How to run it
 

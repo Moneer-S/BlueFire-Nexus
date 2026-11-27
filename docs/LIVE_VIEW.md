@@ -7,7 +7,10 @@ places: inside the app, where the Runs screen plays a recorded run (see the
 [user guide](USER_GUIDE.md#recorded-runs)), and as the single replay page: one
 HTML file that holds the view and one recording, and plays in a browser with
 nothing installed. A recording whose run is still going plays as far as it
-goes, and the view says the run is still running.
+goes, and the view says the run is still running. A recording that holds one
+run judged by several defenses plays as its first defense judged it: with that
+defense's sensors, rule engines, events and alerts (see
+[RECORDING.md](RECORDING.md#defenses)).
 
 The app ships a recorded attack path: eleven steps of ten published tests on a
 path through range one, a network of seven containers watched by Wazuh,
@@ -146,16 +149,19 @@ Linux machine shipped with the app is
   the step's verdict and its host's badge say alerted from then too, and its
   sentence still says there was no alert by the end of the step. A match
   raised after the last step ended plays in one more short silence at the end.
-  In analyse mode each such match says how long after its step ended it was
-  raised. Where a step has several alerts, the caption, the first alert's flag
+  In analyse mode a rule whose only match was raised after its step ended
+  says how long after, and a rule that matched several times says how many of
+  its matches were raised after the step ended, where any was. Where a step
+  has several alerts, the caption, the first alert's flag
   and the step's detail all name the one that fired first on screen (by its
   `raised` time where the rules ran live), not the one whose event came first,
   and a rule is named only once its alert has fired. The same holds for every
   match, at any level: the caption's count of rules for review, its "Fix this"
   hint, its text for screen readers and a rule engine's "no rule matched" speak
   only of the matches that have fired by then, and a match that fires later
-  appears when it fires. Analyse mode shows the whole run at once and lists a
-  step's matches in firing order.
+  appears when it fires. Analyse mode shows the whole run at once and lists
+  the rules that matched a step, within each group, in the order their first
+  matches fired.
 - **The score is the recording's.** While watching, the score counts a step
   as alerted, seen or unseen once the screen has told its outcome, and as
   stopped from its recorded end on, when its host's badge and the log say it
@@ -338,8 +344,9 @@ A map of one host is drawn as before.
   The map draws at most 12 hosts (3 of them defense hosts), 16 links, 16
   sensors with at most 4 on one host, and 4 rule engines; the service and the
   page refuse a recording beyond that, saying which limit it passes (see
-  [RECORDING.md](RECORDING.md)). A link from a host to itself, or one given
-  twice, is refused the same way.
+  [RECORDING.md](RECORDING.md)). A recording with defenses may hold 8 rule
+  engines, of which each defense has at most 4: the map draws one defense's.
+  A link from a host to itself, or one given twice, is refused the same way.
 - The map uses the room the screen gives it. A network that needs more room
   than that makes the map taller, and the view then grows and the page
   scrolls as in a small window: [Two modes](#two-modes) says where the play
@@ -413,7 +420,15 @@ A map of one host is drawn as before.
   the goal. A flag's label opens
   to the right of its flag, or to its left near the end of the line; when the
   two labels would touch, they stand one to each side of their flags, or the
-  goal's a row higher.
+  goal's a row higher. A rerun stands beside the run it repeats, in a pair
+  under its outcome once its step has ended: for a hardened rerun "With the
+  change" says what it did and "Without it · test 10" what the same test did
+  before. A hardened rerun the change stopped names the change in its sentence
+  ("Hardening change: the account's ~/.ssh and authorized_keys owned by
+  root."); one the change did not stop names it on a quiet line under what it
+  did, on the side "With the change" ("Hardening change: crontab limited to
+  root with /etc/cron.allow"), and the text a screen reader is given names it
+  too.
 - **Analyse** shows the whole run on one axis, the table of every step with
   filters by role and outcome, and the chosen step's detail: how it went, its
   times, the command, the rules that matched and its events. "Watch from here"
@@ -430,7 +445,16 @@ A map of one host is drawn as before.
   counts rules, each once however often it matched, as the step's sentence
   does: step 1 of the attack path shows "1 alert", "6 review" after a dot of
   its colour, and "2 info", one under the other where the column is narrow,
-  though its six rules for review matched 1,361 times. The table and the detail beside it let their last visible lines fade
+  though its six rules for review matched 1,361 times. The detail beside it
+  lists those rules under "Rules that matched" the same way: each rule once in
+  its group, in the order of its first match, with the number of different
+  events it matched, as the card of the same rule on the step's fix page
+  counts them. On that step "sshd: Attempt to login using a non-existent
+  user" stands once, "796 events · first at 05:44:50.877", with "18 of its 796
+  matches were raised after the step ended." under it. A rule that matched
+  once keeps its event and its time ("1 event · 05:46:06.940"), and where that
+  match was raised after the step ended it says how long after ("Raised 280
+  ms after the step ended."). The table and the detail beside it let their last visible lines fade
   out at their foot, with as much room after their end, so no row or line is
   cut hard by an edge. When the table scrolls to the chosen row, it stands at
   a row's edge under its head with the chosen row whole, and it finds that
@@ -446,13 +470,26 @@ and the page scrolls; at phone width its bands stack. The network map keeps
 its least width and scrolls sideways inside its own box; nothing else scrolls
 sideways. Nothing is cut off beyond reach.
 
-On the single replay page, from 1280 by 720 up to 1920 by 1080, the step's
-words and the transport (the play button, the speeds, the clock and the
-timeline) stand in the window without scrolling, the transport at its foot.
-In a lower window the page scrolls wherever the view needs more height than
-the window gives, and while watching the transport stays at the foot of the
-window as the rest scrolls under it, so playing, pausing and moving on the
-timeline stay in reach.
+On the single replay page the step's words and the transport (the play
+button, the speeds, the clock and the timeline) stand in the window without
+scrolling, the transport at its foot, when the window is high enough for
+them. The page of the attack path shows each of its 11 steps that way at
+1280 by 720, 1366 by 768, 1440 by 900 and 1920 by 1080. The page of the run
+on one Linux machine shows each of its 91 steps that way at 1440 by 900 and
+1920 by 1080, and at the two lower sizes all but the steps whose words take
+the most lines. At 1366 by 768 that is one step, the hardened rerun of test
+50, whose words hold a sentence of two lines, the note of a lab alert and
+the pair that names its change. At 1280 by 720 it is 39 steps: the 28
+reruns, each with its pair under its outcome, and 11 tests whose words hold
+a sentence of two lines and the note of a lab alert; the other 52 fit. On a
+step that does not fit, the map reaches down to the transport and the step's
+words are below the fold as a whole (see
+[What gives way in a short room](#what-gives-way-in-a-short-room)): the page
+scrolls by 273 pixels to them at 1366 by 768, and by 190 to 270 pixels at
+1280 by 720. In a lower window still, the page scrolls wherever the view
+needs more height than the window gives. Where it scrolls, the transport
+stays at the foot of the window while watching, as the rest scrolls under
+it, so playing, pausing and moving on the timeline stay in reach.
 
 The app's page of a recorded run stands under the app's top bar and a line
 that names the run, and needs a window 860 pixels high. At 1440 by 900 and
@@ -460,22 +497,32 @@ that names the run, and needs a window 860 pixels high. At 1440 by 900 and
 as the single page does. In a lower window the page scrolls by what it lacks,
 and the transport reaches below the window until the page is scrolled: at
 1366 by 768 the page scrolls by 92 pixels and the transport is below the
-window, and on some steps the hint too; at 1280 by 720 it scrolls by 140
-pixels, and the hint is below the window with the transport, the outcome's
-line at the window's edge or below it. Scrolled to its end, the page shows the transport whole at the
-foot of the window. In a window 700 pixels high or lower the app's page takes
-the small window's layout of the single page: the transport stays at the foot
-of the window from the start, and what does not fit of the step's words is
-below the fold.
+window, all but its top 2 or 3 pixels on the run on one Linux machine, and on
+the attack path the last line of the step's words is at the window's edge; at
+1280 by 720 it scrolls by 140
+pixels, and the hint is below the window with the transport, and on most
+steps the outcome's line is at the window's edge or below it. Scrolled to its
+end, the page shows the transport whole at the foot of the window. On a step
+whose words need more height than the view has there, the view's own box
+scrolls too, as the single page does: the map reaches down to the transport,
+and the step's words are below the fold as a whole. That is 2 of the 91
+steps of the run on one Linux machine at 1366 by 768, the hardened reruns of
+tests 16 and 50, which their changes did not stop, and 22 at 1280 by 720,
+all of them reruns. In a window 700 pixels high or lower the app's page
+takes the small window's layout of the single page: the transport stays at
+the foot of the window from the start, and a step's words that do not fit
+above it are below the fold as a whole.
 
 ### What gives way in a short room
 
 The step's sentence, the line with its outcome (and "Fix this" where the step
-has it) and the hint under it never give way: in watch mode they stand whole
-above the transport, without scrolling, on the single page in a window from
-1280 by 720 up to 1920 by 1080, and in the app at 1440 by 900 and 1920 by
-1080; in a lower window the app's page scrolls, as said above. The band that
-holds them keeps the height of its eyebrow, a
+has it) and the hint under it never give way: the view takes no room from
+them. In watch mode they stand whole above the transport, without scrolling,
+on every step of both runs shipped with the app at 1440 by 900 and 1920 by
+1080, on the single page and in the app, and on the attack path's single page
+at 1366 by 768 and 1280 by 720 too. What a lower window does on the single
+page of the run on one Linux machine and in the app is said above. The band
+that holds them keeps the height of its eyebrow, a
 sentence of two lines, the outcome's line and the hint at every step, so the
 map and the log stand still from step to step; a step whose words need more
 makes the band taller, never cut. When the room is short, the parts give way
@@ -497,12 +544,15 @@ in this order:
    then, with the rows closer and a lower host's badge beside it, the least
    height at which no host, name, count, badge or line lies on another any
    more than at the roomier one.
-3. **Only then does the page scroll.** The map keeps its least height and
-   reaches down to the transport, so what does not fit, the step's words, is
-   below the fold as a whole and never cut in half by the transport. This is
-   the single page in a short window, and the app's page in a window 700
-   pixels high or lower; between that and 860 pixels the app's page scrolls
-   for its own least height, as said above.
+3. **Only then does the page scroll.** The map, never lower than its least
+   height, reaches down to the transport, so what does not fit, the step's
+   words, is below the fold as a whole and never cut in half by the
+   transport; scrolled to the end, every line of them stands whole above it.
+   This is the single page on the steps named above and in a lower window,
+   and the app's page in a window 700 pixels high or lower. Between that and
+   860 pixels the app's page scrolls for its own least height, and the view's
+   own box inside it scrolls this way where a step's words still do not fit,
+   as said above.
 
 The view measures its parts to decide this (`room.ts`); in a short window the
 band's words stand a little closer.

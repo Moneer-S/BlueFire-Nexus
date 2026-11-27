@@ -404,6 +404,41 @@ describe("the page for fixing a step", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("for a step of a run that two defenses judged, shows it as the first defense judged it, with nothing of the second", async () => {
+    // The first defense has Sysmon and the published rules, and saw the test; the second has a packet capture and Sigma's rules too, and alerted on it.
+    const seen = { visibility: { answer: "telemetry only", basis: "one event", events: 1 }, outcome: "seen", first_event: at(1.1) } as const;
+    const alerted = { visibility: { answer: "alert", basis: "an event, a packet and a rule", events: 2 }, outcome: "alerted", first_event: at(1.1), first_alert: at(1.2) } as const;
+    const base = fixture({
+      steps: [step("1", 1, 2, { title: "Clear Bash history (rm)", ...seen })],
+      events: [event("1-1", "1", 1.1), { ...event("1-2", "1", 1.2), sensor: "capture", kind: "packet", text: "a packet the capture kept" }],
+      alerts: [alert("on-the-packet", "1", 1.2, ["1-2"], { detector: "sigma", rule: { id: "s1", title: "Sigma rule on a packet", level: "high", origin: "pinned" } })],
+    });
+    const score = { ...base.score, took_effect: 1, seen: 1 };
+    const judged: Recording = {
+      ...base,
+      id: "rec-6",
+      network: {
+        ...base.network,
+        sensors: [...base.network.sensors, { id: "capture", name: "Packet capture", host: "target", records: "packets" }],
+        detectors: [...base.network.detectors, { id: "sigma", name: "Sigma rules", rules: 3, when: "after the run" }],
+      },
+      score,
+      defenses: [
+        { id: "sysmon-alone", name: "Sysmon with the published rules", sensors: ["sysmon"], detectors: ["pinned"], steps: { "1": seen }, score },
+        { id: "with-capture", name: "Sysmon, a packet capture and Sigma's rules", sensors: ["sysmon", "capture"], detectors: ["sigma"], steps: { "1": alerted }, score: { ...score, seen: 0, alerted: 1 } },
+      ],
+    };
+    mount("1", { recording: judged, pairs: [] });
+
+    const recorded = await screen.findByRole("region", { name: /^What was recorded/ });
+    // The first defense's one sensor with its one event of the test, and its verdict: seen, with no alert.
+    expect(within(recorded).getAllByRole("article").map((card) => card.getAttribute("aria-label"))).toEqual(["Sensor Sysmon"]);
+    expect(within(recorded).getByRole("article", { name: "Sensor Sysmon" })).toHaveTextContent("1 event of this step");
+    expect(screen.getByRole("region", { name: "Where to start" })).toHaveTextContent("A sensor recorded this test, but no rule raised an alert.");
+    // Nothing of the second defense: not its sensor, its packet, its rule set or its alert.
+    expect(screen.queryAllByText(/Packet capture|a packet the capture kept|Sigma rules|Sigma rule on a packet/)).toEqual([]);
+  });
+
   it("for step 1 of the attack path, which a published rule alerted on, lists all nine rules that matched it, each in its group", async () => {
     mount("s01", { recording: shipped("lab-range-one-path"), pairs: [] });
     const start = await screen.findByRole("region", { name: "Where to start" });
@@ -421,6 +456,12 @@ describe("the page for fixing a step", () => {
       ["Published rules at informational level: nobody reviews them", ["PAM: Login session closed.", "PAM: Login session opened."]],
     ]);
     expect(screen.getByRole("article", { name: "sshd: Attempt to login using a non-existent user" })).toHaveTextContent("review · low");
+  });
+
+  it("counts an event of a rule once where its match names it twice, as analyse mode's detail does", async () => {
+    // Test 42 of a later run of the 60 tests: its one match of this rule names the event 45-3 twice.
+    mount("test:23d348f3", { recording: shipped("lab-pair-history-watch-after"), pairs: [] });
+    expect(await screen.findByRole("article", { name: "Use Of Hidden Paths Or Files" })).toHaveTextContent("published · on 1 event · 3 events in ordinary activity");
   });
 
   it("for a test of the run on one Linux machine a published rule alerted on, lists the rule below alert level and the lab's rule, and ends with the recording's note on the lab's rules", async () => {

@@ -125,6 +125,11 @@ function whyText(step: Step, stood: Outcome, first: Alert | null, heard: readonl
   return `${sentence(step.happened.basis)}.`;
 }
 
+/** The hardening change of a hardened rerun that the change did not stop: its sentence does not name it. Null for any other step. */
+function changeNotStopped(step: Step): string | null {
+  return step.role === "hardened" && step.outcome !== "stopped" && step.defense ? step.defense.title : null;
+}
+
 /**
  * A rerun set against the run it repeats, as a before and after: "with the
  * change" and "without it", or "this run" and "first arguments".
@@ -135,6 +140,7 @@ function Compare({ recording, step, moment }: { recording: Recording; step: Step
   const hardened = step.role === "hardened";
   const refusal = hardened && step.outcome === "stopped" ? refusalOf(moment.events) : undefined;
   const sensor = refusal ? recording.network.sensors.find((item) => item.id === refusal.sensor) : undefined;
+  const change = changeNotStopped(step);
   return (
     <div className="lv-pair">
       <div className={`lv-pair-side${step.outcome === "stopped" ? " is-stopped" : ""}`}>
@@ -148,6 +154,8 @@ function Compare({ recording, step, moment }: { recording: Recording; step: Step
           ) : (
             howItWent(step)
           )}
+          {/* A stopped rerun's sentence names its change; one the change did not stop names it here, under what it did, so its outcome stays level with the other side's. */}
+          {change !== null ? <small>Hardening change: {change}</small> : null}
         </span>
       </div>
       <div className="lv-pair-side">
@@ -179,7 +187,9 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
   const step = moment?.step;
   const outcome = moment?.outcome;
   // One live region for the whole life of the caption: a region that is added already filled is often not read.
-  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, moment.named, moment.heard, total, outcome)}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${plainMarks(step.plain ?? step.title)}`;
+  // A hardened rerun the change did not stop is told with its change too, as the pair on screen names it.
+  const change = step ? changeNotStopped(step) : null;
+  const announcement = !moment || !step || !outcome ? "" : revealed ? `${capital(outcomeWords(outcome))}: ${whyText(step, moment.stood, moment.named, moment.heard, total, outcome)}${change !== null ? ` Hardening change: ${change}.` : ""}` : quiet ? "" : `${capital(stepLabel(recording, step))}: ${plainMarks(step.plain ?? step.title)}`;
   const live = (
     <div className="lv-sr" aria-live="polite" aria-atomic="true">
       {announcement}

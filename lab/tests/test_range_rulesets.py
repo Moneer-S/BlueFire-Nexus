@@ -96,6 +96,33 @@ def test_a_run_fetches_the_rules_by_the_lock_with_the_licence_and_a_line_that_sa
     assert rulesets.held(tmp_path, "made-up", made["lock"]) == folder
 
 
+@pytest.mark.parametrize("existing", ["rules-link", "set-link", "set-folder"])
+def test_a_run_fetch_refuses_an_existing_or_linked_rule_tree(tmp_path: Path, served, existing: str) -> None:
+    run = tmp_path / "run"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("leave this outside the run\n")
+    if existing == "rules-link":
+        run.mkdir()
+        (run / "rules").symlink_to(outside, target_is_directory=True)
+        message = "rules is not a folder in the run's folder"
+    else:
+        target = run / "rules" / "made-up"
+        target.parent.mkdir(parents=True)
+        if existing == "set-link":
+            target.symlink_to(outside, target_is_directory=True)
+        else:
+            target.mkdir()
+            (target / "left-over.yml").write_text("title: left over\n")
+        message = "rules/made-up exists already in the run's folder"
+
+    with pytest.raises(range_spec.SpecError, match=message):
+        rulesets.fetch(defended(), defended().rule_sets[0], run, served())
+
+    assert marker.read_text() == "leave this outside the run\n"
+
+
 def test_a_fetched_file_that_is_not_the_locks_stops_the_run_by_its_name(tmp_path: Path, served) -> None:
     changed = tmp_path / "repository"
     shutil.copytree(RULE_SET, changed)
@@ -216,6 +243,17 @@ def test_a_repository_archive_is_copied_byte_for_byte_after_its_hash_is_checked(
     source.write_bytes(data + b"changed")
     with pytest.raises(range_spec.SpecError, match="has SHA-256 .* and the spec says"):
         rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "other")
+def test_a_run_folders_rules_are_refused_when_an_expected_parent_is_a_link(tmp_path: Path, served) -> None:
+    spec = defended()
+    lock = rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run", served())["lock"]
+    parent = tmp_path / "run" / "rules" / "made-up" / "rules" / "linux" / "process_creation"
+    outside = tmp_path / "outside"
+    shutil.copytree(parent, outside)
+    shutil.rmtree(parent)
+    parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(range_spec.SpecError, match="is not in the run's folder"):
+        rulesets.held(tmp_path / "run", "made-up", lock)
 
 
 def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> None:

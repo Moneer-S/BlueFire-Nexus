@@ -10,9 +10,10 @@ import { LiveView } from "./live/LiveView";
 import type { LiveViewProps, OriginKind } from "./live/LiveView";
 import { LiveViewBoundary } from "./live/LiveViewBoundary";
 import { plainMarks } from "./live/format";
-import { RecordingError, readRecording } from "./live/recording";
+import { RecordingError, firstView, readRecording } from "./live/recording";
 import type { Recording } from "./live/recording";
 
+/** The recording the page holds, as it is played: one with defenses as its first defense judged the run. */
 function readPage(): { recording: Recording } | { problem: string; empty: boolean } {
   const holder = document.getElementById("bluefire-recording");
   const text = holder?.textContent?.trim() ?? "";
@@ -25,7 +26,7 @@ function readPage(): { recording: Recording } | { problem: string; empty: boolea
     return { problem: "The recording in this page could not be read.", empty: false };
   }
   try {
-    return { recording: readRecording(value) };
+    return { recording: firstView(readRecording(value)) };
   } catch (error) {
     if (error instanceof RecordingError) return { problem: error.message, empty: false };
     return { problem: `The recording in this page could not be checked: ${error instanceof Error ? error.message : "an unknown failure"}.`, empty: false };

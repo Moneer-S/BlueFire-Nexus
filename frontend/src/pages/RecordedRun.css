@@ -8,8 +8,10 @@
   height: calc(100dvh - var(--topbar-height, 60px));
   /* Below this the live view squeezes its network map away: a short window scrolls instead. */
   min-height: 800px;
-  animation: page-in 220ms ease both;
+  /* It only fades in: the other pages' rise (page-in) could leave the box around this page 1 or 2 px of scrollable overflow for seconds after it, so a page as tall as the window scrolled. Nor does it hold its last frame once it ends, which would keep the page on a layer of its own, its text drawn a shade apart from the page without it. */
+  animation: recorded-run-in 220ms ease;
 }
+@keyframes recorded-run-in { from { opacity: 0; } }
 .recorded-run.is-message { height: auto; min-height: calc(100dvh - var(--topbar-height, 60px)); }
 
 .recorded-run-bar {

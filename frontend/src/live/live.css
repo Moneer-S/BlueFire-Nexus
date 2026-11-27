@@ -4578,6 +4578,8 @@
    and the page scrolls, so nothing is cut off beyond reach. */
 @media (max-width: 1100px), (max-height: 700px) {
   .lv {
+    /* Read by the view (LiveView.tsx): its box now grows with it, so its room is measured from the window. */
+    --lv-grows: 1;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto minmax(440px, auto) auto auto;
     height: auto;
