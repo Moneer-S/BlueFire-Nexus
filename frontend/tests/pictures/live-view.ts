@@ -502,7 +502,9 @@ async function expectLabelledAxis(page: Page): Promise<void> {
 async function expectGoal(page: Page, name: string): Promise<void> {
   await expectMoment(page, pathLast, path);
   await expect(page.getByText(/goal reached/i).filter({ visible: true }).first(),`${name}: the goal is not marked reached`).toBeVisible();
-  await expect(page.getByText(/The attacker reached its goal/), `${name}: the race line does not say the attacker reached its goal`).toBeVisible();
+  const raceLine = page.locator(".lv-winning");
+  await expect(raceLine, `${name}: the race line is not visible`).toBeVisible();
+  await expect(raceLine, `${name}: the race line does not say the attacker reached its goal`).toContainText("The attacker reached its goal");
   await expectWholeRaceLine(page, name);
 }
 
@@ -648,7 +650,7 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   const defenseChoices = page.getByRole("group", { name: "The defenses that judge this run" });
   await expect(defenseChoices.getByRole("button")).toHaveCount(5);
   await expect(defenseChoices.getByRole("button", { name: /Wazuh with its stock rules/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText(/with no step stopped/)).toBeVisible();
+  await expect(page.locator(".lv-winning")).toContainText("with no step stopped");
   await picture(page, folder, "path-goal-wide.png");
 
   // Inside the app: the Overview, which leads with the attack path and the turns of the loop.

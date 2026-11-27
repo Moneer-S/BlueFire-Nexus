@@ -8,6 +8,7 @@ import type { NetworkLayout } from "../src/live/networkLayout";
 import { planRoom } from "../src/live/room";
 import type { RoomParts } from "../src/live/room";
 import { count, stepLabel, unitWord } from "../src/live/format";
+import { judgeAll } from "../src/live/defenses";
 import { EventLog } from "../src/live/EventLog";
 import { momentOf, runFacts, stepMatches } from "../src/live/moment";
 import { fitScale, hopsOf } from "../src/live/NetworkMap";
@@ -367,21 +368,37 @@ describe("the line about the defense's sensors on range one's map", () => {
 
 // ---------- the shipped recordings' maps ----------
 
-/** A shipped recording, and the host its goal is on, as the watch view finds it. */
-function shippedMap(name: string): { value: Recording; goalAt: string | null } {
-  const value = readRecording(JSON.parse(readFileSync(resolve(process.cwd(), `../bluefire/data/recordings/${name}.json`), "utf-8")));
-  const facts = runFacts(value, buildTimeline(value));
-  const goalAt = facts.goal === null ? null : (value.steps.find((item) => item.ended !== undefined && Math.abs(timeOf(item.ended) - (facts.goal ?? 0)) <= 1)?.host ?? null);
-  return { value, goalAt };
+interface ShippedStage {
+  label: string;
+  value: Recording;
+  network: Network;
+  alerts: readonly Alert[];
+  goalAt: string | null;
 }
 
-/** The map of a shipped recording at stage sizes from a small laptop's to a large screen's, squeezed as the watch view may squeeze it and not. */
-function shippedLayouts(name: string): { room: string; layout: NetworkLayout; value: Recording }[] {
-  const { value, goalAt } = shippedMap(name);
-  const out: { room: string; layout: NetworkLayout; value: Recording }[] = [];
-  for (const width of [1240, 1280, 1320, 1360, 1400, 1440, 1520, 1600, 1680, 1760, 1840, 1880]) {
-    for (const height of [220, 260, 300, 340, 380, 420, 460, 500, 540]) {
-      for (const squeeze of [true, false]) out.push({ room: `${width} by ${height}${squeeze ? ", squeezed" : ""}`, layout: fitScale(value, width, height, goalAt, squeeze).layout, value });
+/** Every real defense stage of a shipped recording, and the host its goal is on, exactly as the watch view finds them. */
+function shippedStages(name: string): ShippedStage[] {
+  const held = readRecording(JSON.parse(readFileSync(resolve(process.cwd(), `../bluefire/data/recordings/${name}.json`), "utf-8")));
+  const judged = judgeAll(held);
+  const stages = judged.length > 0 ? judged.map((item) => ({ label: item.defense.id, value: item.view, network: item.stage })) : [{ label: name, value: held, network: held.network }];
+  return stages.map(({ label, value, network }) => {
+    const facts = runFacts(value, buildTimeline(value));
+    const goalAt = facts.goal === null ? null : (value.steps.find((item) => item.ended !== undefined && Math.abs(timeOf(item.ended) - (facts.goal ?? 0)) <= 1)?.host ?? null);
+    return { label, value, network, alerts: held.alerts, goalAt };
+  });
+}
+
+/** The real defense maps of a shipped recording at stage sizes from a small laptop's to a large screen's, squeezed as the watch view may squeeze them and not. */
+function shippedLayouts(name: string): { room: string; layout: NetworkLayout; value: Recording; network: Network }[] {
+  const out: { room: string; layout: NetworkLayout; value: Recording; network: Network }[] = [];
+  for (const { label, value, network, alerts, goalAt } of shippedStages(name)) {
+    for (const width of [1240, 1280, 1320, 1360, 1400, 1440, 1520, 1600, 1680, 1760, 1840, 1880]) {
+      for (const height of [220, 260, 300, 340, 380, 420, 460, 500, 540]) {
+        for (const squeeze of [true, false]) {
+          const room = `${label}: ${width} by ${height}${squeeze ? ", squeezed" : ""}`;
+          out.push({ room, layout: fitScale(value, width, height, goalAt, squeeze, { network, alerts }).layout, value, network });
+        }
+      }
     }
   }
   return out;
@@ -435,9 +452,9 @@ describe("the fields on the shipped path's map", () => {
     "hold the badge of each host a step runs on wholly inside or wholly outside, never across their edge, wherever the map has more than its least height",
     () => {
       const found: string[] = [];
-      for (const { room, layout, value } of shippedLayouts("lab-range-one-path")) {
+      for (const { room, layout, value, network } of shippedLayouts("lab-range-one-path")) {
         // At its least heights the map has no place for a badge that is clear of every edge: the fields stay, and a badge may lie a few pixels across one.
-        if (layout.height <= leastHeights(value.network, layout.width).roomy) continue;
+        if (layout.height <= leastHeights(network, layout.width).roomy) continue;
         const wearers = new Set(value.steps.map((item) => item.host));
         const drawn = layout.zones.filter((zone) => zone.drawn);
         for (const zone of drawn) {
