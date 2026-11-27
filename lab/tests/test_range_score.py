@@ -1047,6 +1047,18 @@ def test_an_older_tracked_set_without_authorship_is_described_neutrally() -> Non
     assert recording.rule_set_description(entry) == "rule set lab/rules/older/SHA256SUMS at version 1"
 
 
+def test_a_repository_packet_set_is_public_and_names_its_commit() -> None:
+    entry = {
+        "kind": "suricata",
+        "source": "theori-io/aipt-detections@9e4653db4d9c9aaa6438354348953dbe89322848",
+        "source type": "repository",
+    }
+
+    assert recording.rule_set_description(entry) == (
+        "public packet rule set theori-io/aipt-detections at commit 9e4653db4d9c9aaa6438354348953dbe89322848"
+    )
+
+
 def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_repository_source(
     tmp_path: Path, monkeypatch
 ) -> None:

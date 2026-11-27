@@ -192,9 +192,8 @@ def rule_set_description(entry: dict) -> str:
         )
         return f"{relation} {source}" + (f" at version {pin}" if pin else "")
     if source_type == "repository":
-        if entry.get("kind") == "suricata":
-            return f"pinned packet rule set {entry['source']}"
-        return f"public rule set {source}" + (f" at commit {pin}" if pin else "")
+        relation = "public packet rule set" if entry.get("kind") == "suricata" else "public rule set"
+        return f"{relation} {source}" + (f" at commit {pin}" if pin else "")
     return f"rule set {source}"
 
 
