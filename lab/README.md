@@ -1293,15 +1293,23 @@ the manifest recorded for protected sensor hosts: Wazuh agents and packet
 capture hosts. The attacker, stand-in internet, client and manager stay out,
 even when they share a range subnet.
 
-One rule-independent pass writes the run's canonical packet telemetry to
-`events.network.ecs.ndjson`. It holds network flows and the HTTP, TLS, SSH and
-DNS records Suricata derived from the raw packets. Each Suricata rule set gets
-a separate offline pass over the same PCAPs and writes only its matches to
+One rule-independent pass writes the run's canonical packet telemetry to the
+losslessly compressed `events.network.ecs.ndjson.gz`. It holds network flows
+and the HTTP, TLS, SSH and DNS records Suricata derived from the raw packets.
+The manifest records the compressed file's exact byte count, SHA-256 and
+decompressed line count. Each Suricata rule set gets a separate offline pass
+over the same PCAPs and writes only its matches to
 `alerts.<rule set>.ecs.ndjson`, such as `alerts.et-open.ecs.ndjson`; it does
-not duplicate the canonical packet stream. Every match links to a canonical
-network event. A missing image, unusable capture or failed rule set leaves
-only the defenses that depend on it not judged. The Wazuh and Sigma judgments
-still use their own telemetry and rules.
+not duplicate the canonical packet stream. After a pass is fully validated,
+its per-PCAP `eve.json` is discarded as derived workspace; the raw PCAPs and
+counters remain, as do the canonical ECS and per-set alert objects. Every
+match links to a canonical network event. A later judgment recomputes these
+objects semantically from the raw PCAPs. Suricata may assign different flow
+IDs or serialized ECS bytes, so each judgment attests its own compressed byte
+count, SHA-256 and line count rather than promising byte-identical
+regeneration. A missing image, unusable capture or failed rule set leaves only
+the defenses that depend on it not judged. The Wazuh and Sigma judgments still
+use their own telemetry and rules.
 
 Each ECS line keeps the manager's line whole under `wazuh.*`, less its
 `full_log` and `timestamp`. The ECS fields beside it are copies where ECS has a

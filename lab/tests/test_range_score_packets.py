@@ -6,7 +6,9 @@ orchestration, not a claimed range result or the Suricata adapter itself.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -416,12 +418,83 @@ def test_suricata_match_keeps_the_canonical_event_sensor_id_and_tie(tmp_path, mo
     }
 
 
+def test_network_telemetry_records_exact_compressed_file_identity(tmp_path, monkeypatch):
+    raw = {"pcap_filename": "/captures/eth0.pcap"}
+    document = network_event("10.0.0.2", "10.0.0.3", 100.0, 101.0)
+    document["event"]["id"] = "network-web-eth0-000001"
+    engine = {"name": "Suricata", "version": "8.0.8", "image": "example@sha256:" + "a" * 64}
+    captures = tmp_path / "captures"
+
+    monkeypatch.setattr(
+        score,
+        "capture_inputs",
+        lambda out, capture: ({"web": captures}, [{"file": "raw/hosts/web/packets/eth0.pcap"}]),
+    )
+    monkeypatch.setattr(score, "packet_home_net", lambda *args: (["10.0.0.3"], "manifest"))
+    monkeypatch.setattr(
+        score.suricata,
+        "telemetry",
+        lambda *args: {
+            "records": [raw],
+            "alerts": [],
+            "alert event keys": [],
+            "engine": engine,
+            "read": 1,
+        },
+    )
+    monkeypatch.setattr(
+        score.suricata,
+        "record_index",
+        lambda records: {("eth0.pcap", 1): records[0]},
+    )
+    monkeypatch.setattr(
+        score.suricata,
+        "event_key",
+        lambda record: pytest.fail("score recomputed a context-free event key"),
+    )
+    monkeypatch.setattr(score, "_capture_interface", lambda record: "eth0")
+    monkeypatch.setattr(score, "_network_event_document", lambda *args: document)
+    monkeypatch.setattr(
+        score,
+        "network_attributed",
+        lambda *args: [(score.UNATTRIBUTED, None, None, None)],
+    )
+
+    section, documents, ties, places, folders, home_net = score.network_telemetry(
+        tmp_path,
+        engine["image"],
+        {},
+        {},
+        None,
+        None,
+        {},
+        {},
+        [],
+    )
+
+    path = tmp_path / score.NETWORK_EVENTS_FILE
+    assert section["file"] == "events.network.ecs.ndjson.gz"
+    assert section["bytes"] == path.stat().st_size
+    assert section["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert section["lines"] == 1
+    with gzip.open(path, "rt", encoding="utf-8") as source:
+        assert [json.loads(line) for line in source] == [document]
+    assert documents == [document]
+    assert ties == [(score.UNATTRIBUTED, None, None, None)]
+    assert list(places) == [("web", ("eth0.pcap", 1))]
+    assert list(places.values()) == [0]
+    assert folders == {"web": captures}
+    assert home_net == ["10.0.0.3"]
+
+
 def test_record_dispatches_each_rule_kind_and_removes_stale_network_output(tmp_path, monkeypatch):
     logs = tmp_path / "logs"
     (logs / "archives").mkdir(parents=True)
     (logs / "alerts").mkdir()
     stale_network = tmp_path / score.NETWORK_EVENTS_FILE
     stale_network.write_text("old\n", encoding="utf-8")
+    stale_plain_network = tmp_path / score.LEGACY_NETWORK_EVENTS_FILE
+    stale_plain_network.write_text("old\n", encoding="utf-8")
     (tmp_path / "alerts.old.ecs.ndjson").write_text("old\n", encoding="utf-8")
     monkeypatch.setattr(score.wazuh, "daily_files", lambda folder: [folder / "fake.json"])
     monkeypatch.setattr(score.ecs, "read", lambda paths: ([], []))
@@ -469,6 +542,7 @@ def test_record_dispatches_each_rule_kind_and_removes_stale_network_output(tmp_p
     assert result is not None
     assert calls == ["telemetry", "sigma", "suricata"]
     assert not stale_network.exists()
+    assert not stale_plain_network.exists()
     assert not (tmp_path / "alerts.old.ecs.ndjson").exists()
 
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import copy
 import gzip
+import io
 import ipaddress
 import json
 import re
@@ -1109,8 +1110,17 @@ def read(paths: list[Path]) -> tuple[list[dict], list[str]]:
 def write(path: Path, documents: list[dict]) -> int:
     """Write the ECS lines, then count the lines of the file as written."""
 
-    with path.open("w", encoding="utf-8", newline="\n") as target:
-        for document in documents:
-            target.write(json.dumps(document, separators=(",", ":")) + "\n")
-    with path.open(encoding="utf-8", newline="\n") as written:
+    if path.suffix == ".gz":
+        with path.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+                with io.TextIOWrapper(compressed, encoding="utf-8", newline="\n") as target:
+                    for document in documents:
+                        target.write(json.dumps(document, separators=(",", ":")) + "\n")
+        opener = gzip.open
+    else:
+        with path.open("w", encoding="utf-8", newline="\n") as target:
+            for document in documents:
+                target.write(json.dumps(document, separators=(",", ":")) + "\n")
+        opener = open
+    with opener(path, "rt", encoding="utf-8", newline="\n") as written:
         return sum(1 for _ in written)

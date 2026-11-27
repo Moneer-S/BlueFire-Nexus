@@ -123,7 +123,8 @@ REVIEW_FROM = 7
 SHOWN_LINES = 3
 LINE_CHARACTERS = 240
 EVENTS_FILE = "events.ecs.ndjson"
-NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
+NETWORK_EVENTS_FILE = "events.network.ecs.ndjson.gz"
+LEGACY_NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
 ALERTS_FILE = "alerts.ecs.ndjson"
 # The matches of a rule set that was evaluated after the run, by the set's name.
 MATCHES_FILE = "alerts.{}.ecs.ndjson"
@@ -1476,7 +1477,7 @@ def network_telemetry(
 
     folders, retained = capture_inputs(out, capture)
     home_net, home_net_source = packet_home_net(capture, addresses, agents, list(folders))
-    raw: list[tuple[str, dict, dict]] = []
+    raw: list[tuple[str, dict, dict, suricata.EventKey]] = []
     runs = []
     expected_engine = None
     for host, folder in folders.items():
@@ -1500,8 +1501,8 @@ def network_telemetry(
         if expected_engine is not None and engine != expected_engine:
             raise suricata.SuricataError("the canonical packet captures were decoded by different engines")
         expected_engine = engine
-        suricata.record_index(records)
-        raw += [(host, record, engine) for record in records]
+        keys = tuple(suricata.record_index(records))
+        raw += [(host, record, engine, key) for record, key in zip(records, keys, strict=True)]
         runs.append(
             {
                 "host": host,
@@ -1516,17 +1517,17 @@ def network_telemetry(
         key=lambda item: (
             item[0],
             _capture_interface(item[1]),
-            json.dumps(_frozen(suricata.event_key(item[1])), default=str),
+            json.dumps(_frozen(item[3]), default=str),
         )
     )
     documents = []
     places: dict[tuple, int] = {}
     ordinals: Counter = Counter()
-    for host, record, engine in raw:
+    for host, record, engine, event_key in raw:
         interface = _capture_interface(record)
         ordinals[(host, interface)] += 1
         event_id = f"network-{host}-{interface}-{ordinals[(host, interface)]:06d}"
-        key = (host, _frozen(suricata.event_key(record)))
+        key = (host, _frozen(event_key))
         if key in places:
             raise suricata.SuricataError(
                 f"canonical Suricata telemetry on {host} has the same stable event key twice"
@@ -1536,7 +1537,8 @@ def network_telemetry(
     if not documents:
         raise suricata.SuricataError("Suricata produced no canonical network event")
     ties = network_attributed(documents, jobs, addresses, go, stop, steps, capture, home_net)
-    count = ecs.write(out / NETWORK_EVENTS_FILE, documents)
+    network_file = out / NETWORK_EVENTS_FILE
+    count = ecs.write(network_file, documents)
     if count != len(documents):
         raise suricata.SuricataError(
             f"{NETWORK_EVENTS_FILE} has {count} lines for {len(documents)} canonical network events"
@@ -1548,6 +1550,8 @@ def network_telemetry(
         "home_net source": home_net_source,
         "file": NETWORK_EVENTS_FILE,
         "lines": count,
+        "bytes": network_file.stat().st_size,
+        "sha256": _sha256(network_file),
         "captures": retained,
         "runs": runs,
     }
@@ -1938,7 +1942,11 @@ def record(
     try:
         # A rescore is one current judgment of the run. Remove matches and private engine work from
         # an earlier judgment before naming the files written by this one.
-        for stale in (*out.glob("alerts.*.ecs.ndjson"), out / NETWORK_EVENTS_FILE):
+        for stale in (
+            *out.glob("alerts.*.ecs.ndjson"),
+            out / NETWORK_EVENTS_FILE,
+            out / LEGACY_NETWORK_EVENTS_FILE,
+        ):
             if stale.is_symlink() or stale.is_file():
                 stale.unlink()
             elif stale.exists():

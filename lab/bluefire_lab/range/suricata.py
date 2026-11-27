@@ -3,8 +3,9 @@
 The adapter accepts one already-held rule-set folder. It gives that folder and
 one retained capture at a time to a pinned container read-only, gives each
 invocation one writable output folder, and does not pull an image or join a
-network. EVE records stay raw: validation and alert-to-event linking never
-invent or rewrite network evidence.
+network. Each temporary EVE file is parsed and validated without rewriting its
+records, then removed only after the entire multi-capture pass succeeds. The
+retained PCAPs remain the raw packet evidence.
 """
 
 from __future__ import annotations
@@ -512,6 +513,12 @@ def _validate_event(
         _integer(alert.get("severity"), f"{where}'s alert severity")
     elif not isinstance(raw.get(kind), dict):
         raise SuricataError(f"{where} has no {kind} object")
+    elif kind == "flow":
+        flow = raw["flow"]
+        start = _timestamp(flow.get("start"), f"{where}'s flow start")
+        end = _timestamp(flow.get("end"), f"{where}'s flow end")
+        if end < start:
+            raise SuricataError(f"{where}'s flow ends before it starts")
     return raw
 
 
@@ -591,24 +598,85 @@ def _dns_role(event: dict) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def event_key(raw: dict) -> EventKey:
-    """A stable capture occurrence identity that excludes process-local flow_id."""
+def _capture_name(event: dict) -> str:
+    return PurePosixPath(event["pcap_filename"]).relative_to("/captures").as_posix()
 
-    event = _validate_event(raw, "the EVE record")
+
+def _flow_reference(event: dict) -> tuple[object, ...]:
+    """One process-local flow, used only to find its PCAP-derived boundaries."""
+
+    return (
+        _capture_name(event),
+        event["flow_id"],
+        event["community_id"],
+        *_network_tuple(event),
+    )
+
+
+def _flow_boundaries(event: dict) -> tuple[str, str]:
+    flow = event["flow"]
+    return (
+        _timestamp(flow["start"], "the EVE flow start"),
+        _timestamp(flow["end"], "the EVE flow end"),
+    )
+
+
+def _stable_key(event: dict, boundaries: tuple[str, str]) -> EventKey:
     kind = event["event_type"]
-    if kind == "alert":
-        raise SuricataError("an alert is not a non-alert network event")
-    capture = PurePosixPath(event["pcap_filename"]).relative_to("/captures").as_posix()
     return (
         "network",
-        capture,
+        _capture_name(event),
         event["community_id"],
         kind,
         event.get("tx_id"),
         _dns_role(event),
         *_network_tuple(event),
-        _timestamp(event["timestamp"], "the EVE record"),
+        *boundaries,
     )
+
+
+def record_keys(records: Sequence[dict]) -> tuple[EventKey, ...]:
+    """Stable keys aligned with one pass's records, resolved through its exact flows."""
+
+    checked = [_validate_event(record, f"network record {number}") for number, record in enumerate(records)]
+    flows: dict[tuple[object, ...], tuple[str, str]] = {}
+    for event in checked:
+        if event["event_type"] != "flow":
+            continue
+        reference = _flow_reference(event)
+        if reference in flows:
+            raise SuricataError(f"more than one flow record has the process-local identity {reference!r}")
+        flows[reference] = _flow_boundaries(event)
+
+    found: list[EventKey] = []
+    for event in checked:
+        if event["event_type"] == "alert":
+            raise SuricataError("an alert is not a non-alert network event")
+        if event["event_type"] == "flow":
+            boundaries = _flow_boundaries(event)
+        else:
+            reference = _flow_reference(event)
+            boundaries = flows.get(reference)
+            if boundaries is None:
+                raise SuricataError(f"network record {event['event_type']!r} has no exact flow record")
+        found.append(_stable_key(event, boundaries))
+    return tuple(found)
+
+
+def event_key(raw: dict, records: Sequence[dict] | None = None) -> EventKey:
+    """A stable occurrence identity; application records require their pass's flow context."""
+
+    event = _validate_event(raw, "the EVE record")
+    if event["event_type"] == "alert":
+        raise SuricataError("an alert is not a non-alert network event")
+    if records is None:
+        if event["event_type"] != "flow":
+            raise SuricataError("a non-flow network event needs its pass's flow records")
+        return _stable_key(event, _flow_boundaries(event))
+    matches = [key for key, record in record_index(records).items() if record is raw]
+    if len(matches) != 1:
+        raise SuricataError("the EVE record does not occur exactly once in its pass")
+    return matches[0]
 
 
 def _pick_occurrence(alert: dict, candidates: list[dict], description: str) -> dict | None:
@@ -631,13 +699,9 @@ def _pick_occurrence(alert: dict, candidates: list[dict], description: str) -> d
     raise SuricataError(f"alert flow_id {alert['flow_id']} has more than one {description}")
 
 
-def _flow_contains(alert: dict, record: dict) -> bool | None:
-    flow = record.get("flow") or {}
-    if not isinstance(flow.get("start"), str) or not isinstance(flow.get("end"), str):
-        return None
+def _flow_contains(alert: dict, record: dict) -> bool:
     moment = _timestamp(alert["timestamp"], "the EVE alert")
-    start = _timestamp(flow["start"], "a matching flow start")
-    end = _timestamp(flow["end"], "a matching flow end")
+    start, end = _flow_boundaries(record)
     return start <= moment <= end
 
 
@@ -696,18 +760,27 @@ def link_alert(alert: dict, records: Sequence[dict]) -> dict:
     raise SuricataError(f"alert flow_id {alert['flow_id']} has no real non-alert record")
 
 
-def alert_event_key(alert: dict, records: Sequence[dict]) -> EventKey:
+def alert_event_key(
+    alert: dict,
+    records: Sequence[dict],
+    *,
+    index: dict[EventKey, dict] | None = None,
+) -> EventKey:
     """Resolve an alert inside its pass, then return the linked record's stable key."""
 
-    return event_key(link_alert(alert, records))
+    linked = link_alert(alert, records)
+    found = index if index is not None else record_index(records)
+    matches = [key for key, record in found.items() if record is linked]
+    if len(matches) != 1:
+        raise SuricataError("the alert's linked event does not occur exactly once in its pass")
+    return matches[0]
 
 
 def record_index(records: Sequence[dict]) -> dict[EventKey, dict]:
     """Index one pass by stable key, refusing evidence with an ambiguous identity."""
 
     found: dict[EventKey, dict] = {}
-    for record in records:
-        key = event_key(record)
+    for key, record in zip(record_keys(records), records, strict=True):
         if key in found:
             raise SuricataError(f"more than one network record has the stable key {key!r}")
         found[key] = record
@@ -723,6 +796,15 @@ def _regular_output(path: Path, name: str) -> Path:
     except (OSError, ValueError) as error:
         raise SuricataError(f"Suricata wrote {name} outside its output folder") from error
     return target
+
+
+def _discard_eve(path: Path) -> None:
+    """Remove validated derived EVE; retained PCAPs remain the raw evidence."""
+
+    try:
+        path.unlink()
+    except OSError as error:
+        raise SuricataError(f"validated eve.json cannot be removed: {error}") from error
 
 
 def _engine_result(path: Path, rules_enabled: bool) -> tuple[str, int, int, list[str]]:
@@ -873,6 +955,7 @@ def _evaluate(
     alerts: list[dict] = []
     alert_keys: list[EventKey] = []
     runs: list[dict] = []
+    eve_paths: list[Path] = []
     engine_facts: tuple[str, int, int, tuple[str, ...]] | None = None
     total_read = 0
     total_bytes = 0
@@ -938,9 +1021,12 @@ def _evaluate(
                 )
 
             allowed = {f"/captures/{pcap.name}"}
-            made_records, made_alerts = read_eve(_regular_output(capture_output, "eve.json"), allowed)
-            record_index(made_records)
-            made_alert_keys = [alert_event_key(alert, made_records) for alert in made_alerts]
+            eve_path = _regular_output(capture_output, "eve.json")
+            made_records, made_alerts = read_eve(eve_path, allowed)
+            made_index = record_index(made_records)
+            made_alert_keys = [
+                alert_event_key(alert, made_records, index=made_index) for alert in made_alerts
+            ]
             if rules is None and made_alerts:
                 raise SuricataError("the rule-independent telemetry pass produced an alert")
             version, loaded, failed, load_errors = _engine_result(capture_output, rules is not None)
@@ -960,6 +1046,7 @@ def _evaluate(
                 )
             if not made_records:
                 raise SuricataError(f"Suricata wrote no canonical network event for {pcap.name}")
+            eve_paths.append(eve_path)
 
             run_counts = {
                 "packets": read,
@@ -1010,6 +1097,8 @@ def _evaluate(
     }
     if "decoder.bytes" in stats:
         read_counts["bytes"] = stats["decoder.bytes"]
+    for eve_path in eve_paths:
+        _discard_eve(eve_path)
     return {
         "engine": {"name": ENGINE, "version": version, "image": image},
         "rules": loaded + failed,

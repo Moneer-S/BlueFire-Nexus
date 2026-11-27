@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bluefire_lab.range import recording, score
+from bluefire_lab.range import ecs, recording, score
 
 RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
 T0 = 1_795_000_000.0
@@ -130,7 +130,18 @@ def test_packet_events_use_the_capture_sensor_and_plain_words(parts: dict, kind:
 
 
 def write_lines(path: Path, documents: list[dict]) -> None:
-    path.write_text("".join(json.dumps(document) + "\n" for document in documents), encoding="utf-8")
+    ecs.write(path, documents)
+
+
+def test_lines_reads_lossless_gzip_and_refuses_corruption(tmp_path: Path) -> None:
+    path = tmp_path / recording.NETWORK_EVENTS_FILE
+    documents = [packet_event(1), packet_event(2)]
+    assert ecs.write(path, documents) == 2
+    assert recording.lines(path) == documents
+
+    path.write_bytes(b"not a gzip stream")
+    with pytest.raises(OSError):
+        recording.lines(path)
 
 
 def wazuh_event() -> dict:
