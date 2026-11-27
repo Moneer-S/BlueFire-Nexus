@@ -346,7 +346,7 @@ jobs:
               and (.ecs.network.lines | type == "number" and . > 0)
               and (.ecs.network.bytes | type == "number" and . > 0)
               and (.ecs.network.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-              and (.ecs.network.origins.step | type == "number" and . > 0)
+              and (.ecs.files["events.network.ecs.ndjson.gz"].origins.step | type == "number" and . > 0)
               and [.score.defenses[].id] == [
                 "wazuh-stock",
                 "sigma-public",

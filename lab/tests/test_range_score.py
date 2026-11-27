@@ -1567,6 +1567,27 @@ def fetched_from(monkeypatch, served) -> None:
     monkeypatch.setattr(rulesets, "fetch", lambda spec, rule_set, out: fetch(spec, rule_set, out, served()))
 
 
+def test_range_rules_reports_public_and_tracked_sources_from_the_spec(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    spec = range_spec.load(RANGE_ONE)
+
+    def record(spec, rule_set, out):
+        return rulesets.record(rule_set, rulesets.locked(spec, rule_set))
+
+    monkeypatch.setattr(rulesets, "fetch", record)
+
+    assert engine.rules(RANGE_ONE, tmp_path / "run") == engine.EXIT_OK
+
+    said = capsys.readouterr().out.splitlines()
+    assert len(said) == len(spec.rule_sets)
+    for rule_set in spec.rule_sets:
+        assert (
+            sum(line.endswith(f"rule files of {rule_set.name}, {rulesets.source(rule_set)}") for line in said)
+            == 1
+        )
+
+
 def test_range_rules_refuses_a_rule_set_of_the_name_of_one_the_run_fetched_itself(
     tmp_path: Path, monkeypatch, served, capsys
 ) -> None:
@@ -1621,7 +1642,7 @@ def test_range_rules_keeps_a_run_owned_rule_set_when_the_spec_has_the_same_lock(
 
 
 def test_range_rules_leaves_in_a_rule_sets_folder_the_files_of_its_lock_and_no_others(
-    tmp_path: Path, monkeypatch, served
+    tmp_path: Path, monkeypatch, served, capsys
 ) -> None:
     folder = small_run(tmp_path / "run")
     rewrite(folder, lambda m: m["spec"].update(text=spec_text("")))
@@ -1636,6 +1657,9 @@ def test_range_rules_leaves_in_a_rule_sets_folder_the_files_of_its_lock_and_no_o
 
     assert engine.rules(other, folder) == engine.EXIT_OK
 
+    assert capsys.readouterr().out == (
+        f"{folder / 'rules/made-up'}: 9 rule files of made-up, example/rules@{'b' * 40}\n"
+    )
     assert not left.exists()
     program = matching(monkeypatch, [("a program the test started", HIGH)])
     assert judged(folder, program, other)["score"]["defenses"][1]["judged"] is True
