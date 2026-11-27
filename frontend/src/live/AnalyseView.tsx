@@ -25,11 +25,13 @@ interface AnalyseViewProps {
   onSelect: (stepId: string | undefined) => void;
   onWatch: (stepId: string) => void;
   onFix?: (stepId: string) => void;
+  /** The named defense whose run is shown. Absent for the legacy view. */
+  judge?: string;
   /** Every defense's verdict on the run, above the chosen defense's lanes. */
   defenses?: ReactNode;
 }
 
-export function AnalyseView({ recording, timeline, facts, colours, select, focusSelected = false, onSelect, onWatch, onFix, defenses }: AnalyseViewProps) {
+export function AnalyseView({ recording, timeline, facts, colours, select, focusSelected = false, onSelect, onWatch, onFix, judge, defenses }: AnalyseViewProps) {
   const rows = useMemo(() => stepRows(recording, timeline), [recording, timeline]);
   const numbers = useMemo(() => testNumbers(recording), [recording]);
   const sensors = recording.network.sensors.filter((sensor) => rows.some((row) => row.bySensor.has(sensor.id)));
@@ -96,7 +98,7 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
               takeFocus={focusDetail}
             />
           ) : (
-            <RunSummary recording={recording} timeline={timeline} facts={facts} onSelect={chooseInTable} />
+            <RunSummary recording={recording} timeline={timeline} facts={facts} judge={judge} onSelect={chooseInTable} />
           )}
         </div>
       </div>

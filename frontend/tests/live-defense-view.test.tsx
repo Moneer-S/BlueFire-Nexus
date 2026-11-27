@@ -111,12 +111,53 @@ describe("one run judged by several defenses", () => {
     unmount();
   });
 
+  it("names the chosen defense in Analyse when it did not see a step", () => {
+    const value = judgedTwice();
+    const defense = value.defenses?.[1];
+    if (!defense) throw new Error("fixture");
+    defense.sensors = [];
+    defense.steps["2"] = { visibility: { answer: "no telemetry", basis: "none of its sensors recorded the step", events: 0 }, outcome: "unseen" };
+    defense.score = { ...defense.score, seen: 1, unseen: 1 };
+    const { container, unmount } = open(value, { mode: "analyse", defense: defense.id });
+    const summary = within(container).getByRole("article", { name: "The whole run" });
+    expect(summary.textContent).toContain("Host sensors with no alerting rule set did not see the step:");
+    expect(summary.textContent).not.toContain("nobody saw");
+    unmount();
+  });
+
   it("keeps the legacy screen when a recording names no defenses", () => {
     const value = recording({ steps: [step("1", 1, 2)] });
     const { container, unmount } = open(value, { step: "1", at: 1.2, paused: true });
     expect(container.querySelector(".lv-score")).toBeTruthy();
     expect(container.querySelector(".lv-outcome")).toBeNull();
     expect(within(container).queryByRole("group", { name: "The defenses that judge this run" })).toBeNull();
+    unmount();
+  });
+
+  it("keeps a valid 200-character defense name whole behind the compact label", () => {
+    const value = judgedTwice();
+    const long = `Defense ${"x".repeat(192)}`;
+    const defense = value.defenses?.[1];
+    if (!defense) throw new Error("fixture");
+    defense.name = long;
+    const { container, unmount } = open(value, { step: "1", at: 1.2, paused: true });
+    const choices = within(container).getByRole("group", { name: "The defenses that judge this run" });
+    const row = within(choices).getAllByRole("button")[1];
+    expect(long).toHaveLength(200);
+    expect(row?.textContent).toContain(long);
+    expect(row?.getAttribute("title")).toContain(long);
+    expect(row?.querySelector(".lv-ds-rname")?.getAttribute("title")).toBe(long);
+    unmount();
+  });
+
+  it("keeps the score header for a test list judged by several defenses", () => {
+    const value = judgedTwice();
+    value.kind = "test list";
+    value.attacker = { ...value.attacker, goal: null };
+    const { container, unmount } = open(value, { step: "1", at: 1.2, paused: true });
+    expect(container.querySelector(".lv-score")).toBeTruthy();
+    expect(container.querySelector(".lv-outcome")).toBeNull();
+    expect(within(container).getByRole("group", { name: "The defenses that judge this run" })).toBeTruthy();
     unmount();
   });
 

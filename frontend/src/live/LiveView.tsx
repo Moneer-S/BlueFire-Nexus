@@ -763,6 +763,7 @@ export function LiveView({ recording: held, origin, originKind, initial, onFix, 
           onSelect={setSelect}
           onWatch={watchStep}
           onFix={onFix}
+          judge={multi && chosen ? chosen.defense.name : undefined}
           defenses={multi && chosen ? <DefenseTable recording={recording} tallies={tallies} chosen={chosen.defense.id} onChoose={chooseDefense} goalTold /> : undefined}
         />
       )}

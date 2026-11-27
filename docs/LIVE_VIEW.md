@@ -8,9 +8,11 @@ places: inside the app, where the Runs screen plays a recorded run (see the
 HTML file that holds the view and one recording, and plays in a browser with
 nothing installed. A recording whose run is still going plays as far as it
 goes, and the view says the run is still running. A recording that holds one
-run judged by several defenses plays as its first defense judged it: with that
-defense's sensors, rule engines, events and alerts (see
-[RECORDING.md](RECORDING.md#defenses)).
+run judged by several defenses stays one run: the reader chooses which named
+defense judges it, and the map, events, rules, verdicts, race and counts all
+become that defense's view (see [RECORDING.md](RECORDING.md#defenses)). The app
+and the single replay page use the same screen and preserve that choice in the
+address.
 
 The app ships a recorded attack path: eleven steps of ten published tests on a
 path through range one, a network of seven containers watched by Wazuh,
@@ -79,6 +81,21 @@ Linux machine shipped with the app is
   those of the canary and control steps, "short: checks and repeats"; its
   tooltip names their roles and says that none of them is a test or in the
   score of tests.
+- **Several defenses judge the same real moment.** On an attack path, the
+  outcome of the run leads the head. The defense side of the map is headed
+  "Judged by" and names the chosen defense, then lists every defense with the
+  current step's verdict and its alerted, seen, unseen and false-alert counts.
+  Keys 1 through 8, or a row, choose a defense. The same step and exact
+  recorded clock remain on screen, including in a quiet gap; playback does not
+  restart. The chosen defense supplies every event, alert, rule engine,
+  verdict, race sentence and count. Sensors used only by another defense keep
+  their place on the map, dimmed, with their full name in a tooltip, so the
+  network does not jump when its judge changes. Analyse mode sets all defenses
+  side by side, with a mark for every step, the final counts, first alert
+  against the goal, and false alerts where ordinary activity was recorded.
+  The query key `defense=<id>` makes the choice shareable in the app and in a
+  replay page. A recording with one defense or none keeps the existing screen;
+  its layout and words do not take on the comparison controls.
 - **The rules' time is said once.** Where the rules ran after the run, an
   alert's time is the time of the event it matched. The race line says so
   beside the first alert's time, "(the time of the event it matched)", and
