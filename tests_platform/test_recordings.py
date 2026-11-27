@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SHIPPED = ROOT / "bluefire" / "data" / "recordings" / "lab-linux-host.json"
 SHIPPED_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895"
 SHIPPED_PATH = ROOT / "bluefire" / "data" / "recordings" / "lab-range-one-path.json"
-SHIPPED_PATH_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688"
+SHIPPED_PATH_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46056792800"
 
 
 def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:

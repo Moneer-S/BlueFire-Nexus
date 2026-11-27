@@ -352,14 +352,14 @@ The home folders they name belong to the runner's lab accounts: `bluefire-lab`, 
 the lab creates, and `art`, which Atomic Red Team's own tests create.
 
 The path through range one shipped with the app,
-`bluefire/data/recordings/lab-range-one-path.json` (1,754,801 bytes, SHA-256
-`9c54de849492da1d0b9ffa10779f90f7d42ace88b4d26f916d30d95d069cfd45`), is the
-`recording.json` of artifact `range-one-run` (artifact 15185245908, 26,604,314-byte
+`bluefire/data/recordings/lab-range-one-path.json` (1,753,758 bytes, SHA-256
+`75718b566bbe7f0cb52eee5146c605053fc33e9ce86785625beccf9ab35862ef`), is the
+`recording.json` of artifact `range-one-run` (artifact 15227791779, 24,343,253-byte
 ZIP, digest
-`sha256:1e0b96286a953cf66b2dec6ab841b6ec4f647f2557e946abe80c35f955a01ab6`).
+`sha256:a46ee3b2f12418140b747671aeeb6cff6c8dd8817254bf1917af8d7a2fbc5245`).
 The range one workflow wrote it on a GitHub-hosted runner in
-https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688 at commit
-`3247a292078471cb6c14cd7cb99a8d471fdf4181`; the file is copied unchanged. It is
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46056792800 at commit
+`d175128967e22e1cc69d00be77e59b2f6f1b2ea2`; the file is copied unchanged. It is
 data, not code: nothing in it is run.
 
 - It quotes the commands and the printed output of ten published Atomic Red Team

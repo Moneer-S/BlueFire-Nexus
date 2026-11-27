@@ -171,7 +171,7 @@ the build server's `/etc` back with its signing secret
 goal, in the recording's words, is "build's signing secret reaches inet".
 Wazuh watches three of the hosts
 and a packet capture on the web server records the range traffic
-([CI run 45968323688](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688)).
+([CI run 46056792800](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46056792800)).
 Select it to watch each step cross the map of the network, with what the
 selected defense recorded and the race between its first alert and the attacker's goal
 (see [The map of a network](LIVE_VIEW.md#the-map-of-a-network)). The same run
@@ -180,7 +180,7 @@ plays without the app in the single page
 at the top of the [front page](../README.md) is made from it. An attack
 path counts steps where a test list counts tests: its card on **Runs** reads
 "1 of 11 steps alerted, 10 seen, 0 unseen" and gives the race in words: the
-first Wazuh alert came after about 1 minute, 9 min 36 s before the attacker
+first Wazuh alert came after about 1 minute, 10 min 53 s before the attacker
 reached the goal. **Judged by** selects one of five views: stock Wazuh, public
 Sigma, ET Open, the combined AI-tool packs or the tuned ordered rule. Each
 view changes the sensors, rules, events and verdicts shown. **Analyse** compares

@@ -1746,15 +1746,15 @@ matches among them), the rule files the run fetched and `replay.html` in its
 artifact, and shows `score.md` in its summary.
 
 The app ships the recording of
-[run 45968323688](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688)
+[run 46056792800](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46056792800)
 as `bluefire/data/recordings/lab-range-one-path.json`. The loop at the top of
 the [front page](../README.md) and the single page
 [`docs/live-view/attack-path.html`](../docs/live-view/attack-path.html) play it
 ([the run on the front page](../docs/LIVE_VIEW.md#the-run-on-the-front-page)).
 
-**What the run shows.** The attacker reached the goal at 635.852 s; none of
+**What the run shows.** The attacker reached the goal at 717.79 s; none of
 the five defenses stopped it. Stock Wazuh alerted on the password guessing at
-60.216 s. The tuned ordered rule alerted at 624.913 s, on `s08`, after joining
+64.404 s. The tuned ordered rule alerted at 706.803 s, on `s08`, after joining
 the credential-search evidence from `s06` and `s07` with the archive command.
 The public Sigma, ET Open and combined AI-tool-pack views raised no counting
 alert. Every defense recorded zero false alerts on the ordinary activity in
@@ -1762,11 +1762,11 @@ this run.
 
 | Defense | Alerted | Seen | Unseen | First alert | Ordinary events | False alerts |
 | --- | ---: | ---: | ---: | --- | ---: | ---: |
-| Wazuh stock | 1 | 10 | 0 | 60.216 s | 547 | 0 |
-| Public Sigma | 0 | 11 | 0 | none | 547 | 0 |
-| ET Open network | 0 | 6 | 5 | none | 150 | 0 |
-| AI-tool packs | 0 | 11 | 0 | none | 697 | 0 |
-| Ordered credential | 1 | 10 | 0 | 624.913 s | 547 | 0 |
+| Wazuh stock | 1 | 10 | 0 | 64.404 s | 629 | 0 |
+| Public Sigma | 0 | 11 | 0 | none | 629 | 0 |
+| ET Open network | 0 | 6 | 5 | none | 170 | 0 |
+| AI-tool packs | 0 | 11 | 0 | none | 799 | 0 |
+| Ordered credential | 1 | 10 | 0 | 706.803 s | 629 | 0 |
 
 This is one sample. Its three Wazuh agents recorded the host logs and watched
 files on `web`, `db` and `build`; the packet capture on `web` recorded the
