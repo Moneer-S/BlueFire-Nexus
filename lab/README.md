@@ -1907,7 +1907,7 @@ to the latest real event that completed it; its ordered evidence event ids are
 retained with the alert. Conversion failures and unsupported sources are
 recorded per rule and are not described as evaluated.
 
-**The ordered comparison.** `lab/rules/linux/process_creation/ordered_credential_access/`
+**The ordered comparison.** `lab/rules/ordered-credential/`
 holds three informational atomics and one high `temporal_ordered` correlation,
 closed by its tracked `SHA256SUMS`. It requires the recursive credential-word
 search, SSH private-key search and remote archive over SSH in order, on the

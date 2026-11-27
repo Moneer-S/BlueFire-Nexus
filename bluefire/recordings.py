@@ -897,6 +897,7 @@ def _check_agreement(
     steps, events, alerts = view.steps, view.events, view.alerts
     sensor_hosts = {sensor["id"]: sensor["host"] for sensor in value["network"]["sensors"]}
     detector_when = {item["id"]: item["when"] for item in value["network"]["detectors"]}
+    step_positions = {step["id"]: position for position, step in enumerate(steps)}
     event_steps = {event["id"]: event["step"] for _, event in events}
     event_hosts = {event["id"]: event["host"] for _, event in events}
     event_times = {event["id"]: (_time(event["time"]), event["time"]) for _, event in events}
@@ -984,6 +985,26 @@ def _check_agreement(
                 check.fail(
                     f"{where}.events",
                     f"names an event at {later[1]} after its terminal event at {terminal[1]}.",
+                )
+            if any(before[0] > after[0] for before, after in zip(named, named[1:], strict=False)):
+                check.fail(
+                    f"{where}.events",
+                    "does not name its evidence in nondecreasing time order.",
+                )
+            alert_position = step_positions[alert["step"]]
+            later_steps = sorted(
+                {
+                    event_steps[event_id]
+                    for event_id in alert["events"]
+                    if event_steps[event_id] != alert["step"]
+                    and step_positions[event_steps[event_id]] >= alert_position
+                },
+                key=step_positions.__getitem__,
+            )
+            if later_steps:
+                check.fail(
+                    f"{where}.events",
+                    f"names evidence from a later step: {', '.join(later_steps)}.",
                 )
             users = sorted(
                 {event_users[event_id] for event_id in alert["events"] if event_users[event_id]}

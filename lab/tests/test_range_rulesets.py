@@ -778,7 +778,7 @@ def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> 
     ordered_lock = rulesets.locked(spec, ordered)
     assert (ordered.kind, ordered.source_file, ordered.sha256, ordered.version) == (
         "sigma",
-        "lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS",
+        "lab/rules/ordered-credential/SHA256SUMS",
         ordered_digest,
         "1",
     )

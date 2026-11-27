@@ -7,6 +7,7 @@ made-up times and addresses. Nothing in it was recorded on a machine.
 
 import gzip
 import hashlib
+import importlib
 import json
 import shutil
 from datetime import datetime, timezone
@@ -846,7 +847,7 @@ TRACKED_SIGMA_SET = """\
 rule_sets:
   ordered-credential:
     kind: sigma
-    source: lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS
+    source: lab/rules/ordered-credential/SHA256SUMS
     sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     version: "1"
 defenses:
@@ -1053,12 +1054,11 @@ def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_public_source(
 
     alert = ecs_lines(folder, "alerts.ordered-credential.ecs.ndjson")[0]
     assert alert["rule"]["reference"] == (
-        "https://github.com/Moneer-S/BlueFire-Nexus/blob/main/"
-        "lab/rules/linux/process_creation/ordered_credential_access/atomic.yml"
+        "https://github.com/Moneer-S/BlueFire-Nexus/blob/main/lab/rules/ordered-credential/atomic.yml"
     )
     found = manifest["score"]["rule sets"]["ordered-credential"]
     assert found["evaluated"] is True
-    assert found["source"] == ("lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS@1")
+    assert found["source"] == ("lab/rules/ordered-credential/SHA256SUMS@1")
 
 
 def test_a_correlation_alerts_on_its_terminal_event_and_keeps_every_evidence_event(
@@ -1283,6 +1283,51 @@ def test_matched_rule_attribution_is_split_without_dropping_author_credits(
     assert len(attribution) > 1 and all(len(note) <= 2_000 for note in attribution)
     said = " ".join(attribution)
     assert all(f"{rule['title']} ({rule['id']}), by {rule['author']}" in said for rule in rules)
+
+
+def test_skipped_sigma_groups_stay_complete_and_fit_the_app_recording_format(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(monkeypatch, [])
+    evaluate_set = sigma.evaluate_set
+    skipped = [
+        {
+            "folder": (f"frameworks/example-{number:02d}/sigma/credential-access-and-remote-archive"),
+            "log source": "none the lab gives",
+            "rules": number + 5,
+            "loaded": 0,
+            "given": 0,
+            "read": 0,
+            "rules that matched": 0,
+            "matches": 0,
+            "not evaluated": (f"the lab gives no source for this complete made-up group {number:02d}"),
+        }
+        for number in range(20)
+    ]
+
+    def with_skipped(*args, **kwargs) -> dict:
+        result = evaluate_set(*args, **kwargs)
+        result["groups"] = [*result["groups"], *skipped]
+        result["rules"] += sum(group["rules"] for group in skipped)
+        return result
+
+    monkeypatch.setattr(sigma, "evaluate_set", with_skipped)
+    judged(folder, program)
+    made = json.loads((folder / recording.FILE).read_text())
+    openings = ("Not evaluated, of sigma: ", "Not evaluated, of sigma, continued: ")
+    bounded = [note for note in made["notes"] if note.startswith(openings)]
+    facts = [f"{group['rules']} rules of {group['folder']} ({group['not evaluated']})" for group in skipped]
+
+    assert len(bounded) > 1
+    assert all(len(note) <= 2_000 for note in bounded)
+    joined = " ".join(bounded)
+    assert all(joined.count(fact) == 1 for fact in facts)
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
+    app_recordings = importlib.import_module("bluefire.recordings")
+    assert app_recordings.validate_recording(made) is made
 
 
 def test_a_defense_with_live_rules_and_a_rule_set_tells_each_alert_and_match_as_its_rules_ran(

@@ -1078,6 +1078,29 @@ def matched_rule_notes(name: str, matched: list[dict]) -> list[str]:
     return notes
 
 
+def skipped_group_notes(name: str, skipped: list[dict]) -> list[str]:
+    """Keep every unevaluated Sigma group as a complete fact in bounded recording notes."""
+
+    opening = f"Not evaluated, of {name}: "
+    continuation = f"Not evaluated, of {name}, continued: "
+    notes, current = [], opening
+    for group in skipped:
+        fact = f"{lab.count(group['rules'], 'rule')} of {group['folder']} ({group['not evaluated']})"
+        separator = "" if current in (opening, continuation) else "; "
+        if len(current + separator + fact + ".") > lab.KEPT_TEXT:
+            if current not in (opening, continuation):
+                notes.append(current + ".")
+                current, separator = continuation, ""
+            if len(current + fact + ".") > lab.KEPT_TEXT:
+                raise ValueError(
+                    f"the unevaluated group {group['folder']} of {name} is too long for one recording note"
+                )
+        current += separator + fact
+    if current not in (opening, continuation):
+        notes.append(current + ".")
+    return notes
+
+
 def defense_notes(manifest: dict) -> list[str]:
     """What a reader must know of the named defenses: which judged the run, and for each rule set that was
     evaluated after the run what its rules were given and what they were not."""
@@ -1189,14 +1212,7 @@ def defense_notes(manifest: dict) -> list[str]:
             )
         skipped = [group for group in entry["groups"] if group.get("not evaluated")]
         if skipped:
-            said.append(
-                f"Not evaluated, of {name}: "
-                + "; ".join(
-                    f"{lab.count(group['rules'], 'rule')} of {group['folder']} ({group['not evaluated']})"
-                    for group in skipped
-                )
-                + "."
-            )
+            said += skipped_group_notes(name, skipped)
         said.append(
             "The file integrity sensor does not know which program wrote a file, and the lab's snoopy line "
             "names no parent program: a rule that needs either cannot match here."
