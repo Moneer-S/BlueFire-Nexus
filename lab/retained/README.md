@@ -35,7 +35,9 @@ closure, classic-PCAP facts, digests, ready tokens and tcpdump counters. It
 refuses any kernel drop and limits the PCAP identity bytes to 8 MiB and the
 whole candidate to 16 MiB. It selects the two live Wazuh JSON streams only
 after their bytes exactly match the chronological, decompressed daily files
-collected from the manager. It also selects the manager startup record, every
+collected from the manager. Expected daily text-alert siblings are permitted
+in that collected directory but are not selected or substituted for JSON. The
+exporter also selects the manager startup record, every
 file of every completed path step, every declared PCAP and its counter record,
 plus only the manifest context needed to score and record them later. Raw bytes
 are streamed unchanged. The known `.log` inputs are stored as `.txt` and mapped
