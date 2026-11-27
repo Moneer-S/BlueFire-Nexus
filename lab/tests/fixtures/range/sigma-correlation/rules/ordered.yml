@@ -1,0 +1,16 @@
+title: Made Up - Three Stages In Order
+name: made_up_three_stages_in_order
+id: 10000000-0000-4000-8000-000000000004
+status: test
+author: The lab's tests
+correlation:
+    type: temporal_ordered
+    rules:
+        - made_up_ordered_first_stage
+        - made_up_ordered_second_stage
+        - made_up_ordered_third_stage
+    group-by:
+        - Computer
+        - User
+    timespan: 1m
+level: high

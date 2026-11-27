@@ -1,0 +1,8 @@
+name: made_up_pipeline
+priority: 10
+vars:
+  approved_sources:
+    - '0.0.0.0/32'
+transformations:
+  - id: made_up_values
+    type: value_placeholders

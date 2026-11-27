@@ -42,7 +42,7 @@ from pathlib import Path
 from .. import recording as lab
 from . import ecs, score, sigma
 from . import path as range_path
-from .spec import PACKET_CAPTURE, WAZUH_AGENT, read
+from .spec import PACKET_CAPTURE, WAZUH_AGENT, executor_commit, read
 
 FILE = "recording.json"
 NETWORK_EVENTS_FILE = score.NETWORK_EVENTS_FILE
@@ -655,6 +655,12 @@ def build(folder: Path) -> dict:
             if labels.get("origin") == score.STEP:
                 on_step[labels["step_id"]].append((detector, document))
 
+    named_evidence = {
+        event_id
+        for documents in on_step.values()
+        for _, document in documents
+        for event_id in ecs.evidence_ids(document)
+    }
     plain = {
         step.get("id"): step.get("plain")
         for step in ((spec.get("path") or {}).get("steps") or [])
@@ -662,13 +668,13 @@ def build(folder: Path) -> dict:
     }
     databases = error_logs(spec)
     steps, kept_events, kept_alerts, cut, late_cut = [], [], [], 0, 0
+    placed_all: dict[str, dict] = {}
     for order, record in enumerate(path.get("steps") or [], start=1):
         step_id = record["id"]
         mine = sorted(
             of_step.get(step_id, []),
             key=lambda d: (d["@timestamp"], sensor_of(d), (d.get("event") or {}).get("id")),
         )
-        named = {(d.get("labels") or {}).get("event_id") for _, d in on_step.get(step_id, [])}
         # The cut of a step with very many events is made for each sensor, so that no defense's sensors
         # are cut out by another's: the first of each sensor's events up to its share, and every event
         # a rule matched.
@@ -676,18 +682,31 @@ def build(folder: Path) -> dict:
         placed: dict[str, dict] = {}
         for number, document in enumerate(mine, start=1):
             sensor = sensor_of(document)
-            if room[sensor] > 0 or (document.get("event") or {}).get("id") in named:
+            if room[sensor] > 0 or (document.get("event") or {}).get("id") in named_evidence:
                 placed[(document.get("event") or {}).get("id")] = event_of(
                     document, step_id, number, databases
                 )
             room[sensor] -= 1
         kept_events += placed.values()
+        placed_all.update(placed)
         cut += len(placed) < len(mine)
         for detector, document in on_step.get(step_id, []):
             rule = rule_of(document)
             event_id = (document.get("labels") or {}).get("event_id")
             linked = placed.get(event_id)
             counts = rule["level"] in COUNTING
+            evidence_ids = ecs.evidence_ids(document)
+            linked_evidence = [placed_all.get(value) for value in evidence_ids]
+            missing_evidence = [
+                value
+                for value, evidence in zip(evidence_ids, linked_evidence, strict=True)
+                if evidence is None
+            ]
+            if linked and missing_evidence:
+                raise ValueError(
+                    f"the alert of rule {rule['id']} at {document['@timestamp']} on {step_id} names "
+                    f"evidence outside the path events kept in the recording: {', '.join(missing_evidence)}"
+                )
             if (counts or packet_document(document)) and not linked:
                 # Counting alerts, and every packet-rule match retained through the cut, name their event.
                 where = (
@@ -716,7 +735,7 @@ def build(folder: Path) -> dict:
                     "rule": {**rule, "origin": "pinned"},
                     "counts": counts,
                     "step": step_id,
-                    "events": [linked["id"]] if linked else [],
+                    "events": [evidence["id"] for evidence in linked_evidence if evidence] if linked else [],
                 }
             )
         to = record.get("to") or []
@@ -964,7 +983,7 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     hand_off = (spec.get("path") or {}).get("hand_off")
     if hand_off:
         said.append(f"Hand-off: {hand_off}.")
-    reference = (spec.get("executor") or {}).get("commit")
+    reference = executor_commit(spec.get("executor"))
     if reference:
         # The engine runs the steps itself; Invoke-AtomicRedTeam is only what its reading is checked against.
         said.append(
@@ -1054,6 +1073,29 @@ def matched_rule_notes(name: str, matched: list[dict]) -> list[str]:
             attribution = attribution[room:]
             current = continuation
         current += attribution
+    if current not in (opening, continuation):
+        notes.append(current + ".")
+    return notes
+
+
+def skipped_group_notes(name: str, skipped: list[dict]) -> list[str]:
+    """Keep every unevaluated Sigma group as a complete fact in bounded recording notes."""
+
+    opening = f"Not evaluated, of {name}: "
+    continuation = f"Not evaluated, of {name}, continued: "
+    notes, current = [], opening
+    for group in skipped:
+        fact = f"{lab.count(group['rules'], 'rule')} of {group['folder']} ({group['not evaluated']})"
+        separator = "" if current in (opening, continuation) else "; "
+        if len(current + separator + fact + ".") > lab.KEPT_TEXT:
+            if current not in (opening, continuation):
+                notes.append(current + ".")
+                current, separator = continuation, ""
+            if len(current + fact + ".") > lab.KEPT_TEXT:
+                raise ValueError(
+                    f"the unevaluated group {group['folder']} of {name} is too long for one recording note"
+                )
+        current += separator + fact
     if current not in (opening, continuation):
         notes.append(current + ".")
     return notes
@@ -1170,14 +1212,7 @@ def defense_notes(manifest: dict) -> list[str]:
             )
         skipped = [group for group in entry["groups"] if group.get("not evaluated")]
         if skipped:
-            said.append(
-                f"Not evaluated, of {name}: "
-                + "; ".join(
-                    f"{lab.count(group['rules'], 'rule')} of {group['folder']} ({group['not evaluated']})"
-                    for group in skipped
-                )
-                + "."
-            )
+            said += skipped_group_notes(name, skipped)
         said.append(
             "The file integrity sensor does not know which program wrote a file, and the lab's snoopy line "
             "names no parent program: a rule that needs either cannot match here."

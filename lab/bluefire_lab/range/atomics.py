@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -39,7 +40,11 @@ Fetch = Callable[[str], bytes]
 
 
 def http_get(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "bluefire-lab"})
+    headers = {"User-Agent": "bluefire-lab"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token and url.startswith("https://api.github.com/"):
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=FETCH_SECONDS) as response:  # noqa: S310 - https only
         return response.read()
 

@@ -1,0 +1,56 @@
+name: recording contract
+
+# The lab writes recordings that the app imports. This small interoperability check runs whenever
+# either product changes, without adding the app's dependencies to the standalone lab package job.
+on:
+  pull_request:
+    paths:
+      - bluefire/**
+      - lab/**
+      - pyproject.toml
+      - setup.py
+      - setup.cfg
+      - .github/workflows/recording-contract.yml
+  push:
+    branches: [main]
+    paths:
+      - bluefire/**
+      - lab/**
+      - pyproject.toml
+      - setup.py
+      - setup.cfg
+      - .github/workflows/recording-contract.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  app-recording-interop:
+    name: app accepts a lab recording
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install both products
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -e "lab[dev]" -e .
+
+      - name: Validate the lab's recording with the app
+        run: |
+          "$RUNNER_TEMP/venv/bin/pytest" --rootdir lab -c lab/pyproject.toml \
+            lab/tests/test_range_score.py::test_app_accepts_recording_with_split_skipped_sigma_groups \
+            --strict-markers -m app_recording_interop

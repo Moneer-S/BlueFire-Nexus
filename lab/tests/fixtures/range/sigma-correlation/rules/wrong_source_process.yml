@@ -1,0 +1,12 @@
+title: Made Up - File Field In A Process Rule
+name: made_up_file_field_in_process_rule
+id: 10000000-0000-4000-8000-000000000005
+status: test
+author: The lab's tests
+logsource:
+    category: process_creation
+detection:
+    selection:
+        TargetFilename: /tmp/made-up-first
+    condition: selection
+level: low

@@ -111,6 +111,27 @@ def attack_path(recording_id: str = "rec-path") -> dict[str, Any]:
     return value
 
 
+def correlated_recording(recording_id: str = "rec-correlation") -> dict[str, Any]:
+    """An after-run match whose earlier evidence belongs to the preceding step."""
+
+    value = small_recording(recording_id)
+    first, terminal = value["steps"]
+    first["visibility"]["answer"] = "telemetry only"
+    first["outcome"] = "seen"
+    first.pop("first_alert")
+    terminal["visibility"]["answer"] = "alert"
+    terminal["outcome"] = "alerted"
+    terminal["first_alert"] = "2026-11-17T17:07:22.100Z"
+    value["events"][1]["user"] = "lab"
+    value["events"][2]["user"] = "lab"
+    value["alerts"][0].update(
+        time="2026-11-17T17:07:22.100Z",
+        step="2",
+        events=["1-1", "1-2", "2-1"],
+    )
+    return value
+
+
 @pytest.fixture
 def service(tmp_path: Path) -> Iterator[BlueFireService]:
     instance = BlueFireService(
@@ -1006,6 +1027,89 @@ def test_what_every_real_recording_holds_is_kept(service: BlueFireService) -> No
     recording["score"].update(false_alerts=1, first_alert_seconds=0.2, goal_seconds=1.5)
 
     assert service.import_recording({"recording": recording})["created"] is True
+
+
+def test_an_after_run_correlation_keeps_earlier_step_evidence_and_ends_on_its_terminal_event(
+    service: BlueFireService,
+) -> None:
+    recording = correlated_recording()
+
+    result = service.import_recording({"recording": recording})
+
+    assert result["created"] is True
+    assert service.recording(recording["id"])["recording"]["alerts"][0] == recording["alerts"][0]
+
+
+def _put_later_step_evidence_at_the_terminal_time(value: dict[str, Any]) -> None:
+    first, second = value["steps"]
+    first.update(ended="2026-11-17T17:07:21.100Z", outcome="alerted")
+    first["visibility"]["answer"] = "alert"
+    first["first_alert"] = "2026-11-17T17:07:21.100Z"
+    second.update(first_event="2026-11-17T17:07:21.100Z", outcome="seen")
+    second["visibility"]["answer"] = "telemetry only"
+    second.pop("first_alert")
+    for event in value["events"]:
+        event["time"] = "2026-11-17T17:07:21.100Z"
+    value["alerts"][0].update(
+        time="2026-11-17T17:07:21.100Z",
+        step="1",
+        events=["2-1", "1-1"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        (
+            lambda value: value["alerts"][0].update(step="1"),
+            "alerts[0].events ends with a terminal event that does not belong to the alert's step.",
+        ),
+        (
+            lambda value: value["alerts"][0].update(time="2026-11-17T17:07:22.050Z"),
+            "alerts[0].time is 2026-11-17T17:07:22.050Z, not the time of its terminal event, "
+            "2026-11-17T17:07:22.100Z.",
+        ),
+        (
+            lambda value: value["alerts"][0].update(
+                step="1", time="2026-11-17T17:07:21.100Z", events=["2-1", "1-1"]
+            ),
+            "alerts[0].events names an event at 2026-11-17T17:07:22.100Z after its terminal event "
+            "at 2026-11-17T17:07:21.100Z.",
+        ),
+        (
+            lambda value: value["alerts"][0].update(events=["1-2", "1-1", "2-1"]),
+            "alerts[0].events does not name its evidence in nondecreasing time order.",
+        ),
+        (
+            _put_later_step_evidence_at_the_terminal_time,
+            "alerts[0].events names evidence from a later step: 2.",
+        ),
+        (
+            lambda value: value["events"][2].update(user="another-user"),
+            "alerts[0].events names events of different observed users: another-user, lab.",
+        ),
+        (
+            lambda value: value["alerts"][0].update(events=["outside-run", "2-1"]),
+            "alerts[0].events names event 'outside-run' that the recording does not have.",
+        ),
+        (
+            lambda value: (
+                value["network"]["detectors"][0].update(when="live"),
+                value["alerts"][0].update(raised="2026-11-17T17:07:22.100Z"),
+            ),
+            "alerts[0].events names an event of another step.",
+        ),
+    ],
+)
+def test_correlation_evidence_is_refused_without_one_real_terminal_actor(
+    service: BlueFireService, change: Any, problem: str
+) -> None:
+    recording = correlated_recording()
+    change(recording)
+
+    _, problems = refusal(service, recording)
+
+    assert problem in problems
 
 
 def test_a_finished_recording_is_not_overwritten_by_an_older_import_from_another_library(

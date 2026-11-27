@@ -10,7 +10,9 @@ mapping can be checked against the line it came from.
 `labels.*` holds keyword values only: `labels.origin` and `labels.job`, and for
 a line tied to a step of the path `labels.step_id` and `labels.tied_by` (see
 `score`); `labels.event_id` on an alert names the `event.id` of its event in
-the archive; and `labels.time_source`, which says where `@timestamp` comes from:
+the archive; `labels.evidence_event_ids` on a multi-event match is a JSON list
+of every contributing archive event id, with that terminal `event_id` last;
+and `labels.time_source`, which says where `@timestamp` comes from:
 
 - `rsyslog`: the time rsyslog wrote on the line, in microseconds, which the
   manager decoded into `predecoder.timestamp`;
@@ -18,7 +20,11 @@ the archive; and `labels.time_source`, which says where `@timestamp` comes from:
   start of the line (nginx, dpkg, MariaDB), taken as written; a time without a
   zone is the container's, which is UTC;
 - `manager`: the manager's own time of the event, for lines with no time of
-  their source, such as file integrity events.
+  their source, such as file integrity events;
+- `pcap`: the captured packet time on a Suricata protocol record;
+- `pcap-flow-end`: the validated last-packet time in a Suricata flow summary.
+  The later offline-engine emission time remains unchanged under
+  `suricata.timestamp`.
 
 `step` writes one line for each step of the path, at the Docker daemon's time
 of its test's start (`daemon`), or the engine's own where the daemon's was not
@@ -372,6 +378,31 @@ def _labels(document: dict, origin: str, job: str | None, time_source: str, **mo
     document["labels"] = labels
 
 
+def evidence_ids(document: dict) -> list[str]:
+    """The archive ids a match rests on, terminal id last; old one-event lines still work."""
+
+    labels = document.get("labels") or {}
+    terminal = labels.get("event_id")
+    encoded = labels.get("evidence_event_ids")
+    if encoded is None:
+        return [terminal] if isinstance(terminal, str) and terminal else []
+    try:
+        found = json.loads(encoded)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ConversionError("labels.evidence_event_ids is not a JSON list of archive event ids") from error
+    if (
+        not isinstance(found, list)
+        or not found
+        or any(not isinstance(value, str) or not value for value in found)
+        or len(set(found)) != len(found)
+        or found[-1] != terminal
+    ):
+        raise ConversionError(
+            "labels.evidence_event_ids must name distinct archive event ids with labels.event_id last"
+        )
+    return found
+
+
 def event(
     raw: dict,
     origin: str,
@@ -429,6 +460,7 @@ def match(
     step: str | None = None,
     tied_by: str | None = None,
     event_id: str | None = None,
+    evidence_event_ids: list[str] | None = None,
 ) -> dict:
     """A match of a rule that was evaluated after the run, as an ECS alert at the time of its event.
 
@@ -436,7 +468,8 @@ def match(
     `title`, `level`, `author` and `reference`. The line holds the event's own
     fields again, without `wazuh.*` and without a rule the manager matched on
     it; `labels.event_id` names the event, `labels.level` gives the rule's own
-    level, and there is no `event.created`: nothing raised this alert while the
+    level, a multi-event match keeps all contributors in
+    `labels.evidence_event_ids`, and there is no `event.created`: nothing raised this alert while the
     run lasted.
     """
 
@@ -454,6 +487,18 @@ def match(
     _put(document, "rule.ruleset", ruleset)
     _put(document, "rule.author", rule.get("author"))
     _put(document, "rule.reference", rule.get("reference"))
+    evidence = evidence_event_ids or ([event_id] if event_id else [])
+    if evidence and (
+        any(not isinstance(value, str) or not value for value in evidence)
+        or len(set(evidence)) != len(evidence)
+        or evidence[-1] != event_id
+    ):
+        raise ConversionError(
+            "a match's evidence must name distinct archive events with its terminal event last"
+        )
+    encoded_evidence = (
+        json.dumps(evidence, separators=(",", ":"), ensure_ascii=False) if len(evidence) > 1 else None
+    )
     _labels(
         document,
         origin,
@@ -462,6 +507,7 @@ def match(
         step_id=step,
         tied_by=tied_by,
         event_id=event_id,
+        evidence_event_ids=encoded_evidence,
         level=rule.get("level"),
     )
     return checked(document)
@@ -573,7 +619,11 @@ def _network_fields(raw: dict, document: dict) -> tuple[str, int | None, str, in
     return source_ip, source_port, destination_ip, destination_port
 
 
-def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, str, int | None]) -> str:
+def _flow_fields(
+    raw: dict,
+    document: dict,
+    endpoints: tuple[str, int | None, str, int | None],
+) -> tuple[str, datetime]:
     flow = raw.get("flow")
     if not isinstance(flow, dict):
         raise ConversionError("a Suricata flow line has no flow object")
@@ -590,18 +640,21 @@ def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, st
     _put(document, "network.packets", sum(packet_parts) if packet_parts else None)
     _put(document, "network.bytes", sum(byte_parts) if byte_parts else None)
 
-    start = _suricata_moment(flow["start"], "flow.start") if "start" in flow else None
-    end = _suricata_moment(flow["end"], "flow.end") if "end" in flow else None
-    _put(document, "event.start", iso(start) if start else None)
-    _put(document, "event.end", iso(end) if end else None)
-    if start is not None and end is not None:
-        elapsed = end - start
-        if elapsed.total_seconds() < 0:
-            raise ConversionError("a Suricata flow ends before it starts")
-        duration = (
-            elapsed.days * 86_400_000_000_000 + elapsed.seconds * 1_000_000_000 + elapsed.microseconds * 1_000
-        )
-        _put(document, "event.duration", duration)
+    if "start" not in flow:
+        raise ConversionError("a Suricata flow line has no flow.start")
+    if "end" not in flow:
+        raise ConversionError("a Suricata flow line has no flow.end")
+    start = _suricata_moment(flow["start"], "flow.start")
+    end = _suricata_moment(flow["end"], "flow.end")
+    _put(document, "event.start", iso(start))
+    _put(document, "event.end", iso(end))
+    elapsed = end - start
+    if elapsed.total_seconds() < 0:
+        raise ConversionError("a Suricata flow ends before it starts")
+    duration = (
+        elapsed.days * 86_400_000_000_000 + elapsed.seconds * 1_000_000_000 + elapsed.microseconds * 1_000
+    )
+    _put(document, "event.duration", duration)
 
     source_ip, source_port, destination_ip, destination_port = endpoints
     transport = document["network"]["transport"].upper()
@@ -615,7 +668,7 @@ def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, st
     summary = (
         f"{transport} {_endpoint(source_ip, source_port)} to {_endpoint(destination_ip, destination_port)}"
     )
-    return summary + (f": {', '.join(details)}" if details else "")
+    return summary + (f": {', '.join(details)}" if details else ""), end
 
 
 def _http_fields(raw: dict, document: dict) -> str:
@@ -791,8 +844,14 @@ def network_event(
     _put(document, "observer.version", _engine_version(engine))
     _put(document, "observer.ingress.interface.name", device)
     endpoints = _network_fields(raw, document)
+    time_source = "pcap"
     if kind == "flow":
-        message = _flow_fields(raw, document, endpoints)
+        message, flow_end = _flow_fields(raw, document, endpoints)
+        # Offline Suricata emits remaining flow summaries when a capture closes. The raw
+        # emission time remains under suricata.timestamp; replay uses the last captured
+        # packet, when the complete flow counters exist.
+        document["@timestamp"] = iso(flow_end)
+        time_source = "pcap-flow-end"
     elif kind == "http":
         message = _http_fields(raw, document)
     elif kind == "tls":
@@ -806,7 +865,7 @@ def network_event(
         document,
         origin,
         job,
-        "pcap",
+        time_source,
         sensor=f"packet-capture-{host}",
         step_id=step,
         tied_by=tied_by,
@@ -904,6 +963,9 @@ def network_alert(
     _put(document, "message", _bounded_message(f"{signature} ({rule_id}) on {transport} {endpoints}"))
     document["labels"] = {
         **copy.deepcopy(parent_labels),
+        # An alert's own Suricata timestamp is its captured packet time even when
+        # its linked full-flow summary uses that flow's intrinsic end.
+        "time_source": "pcap",
         "event_id": event_id,
         "level": level,
     }

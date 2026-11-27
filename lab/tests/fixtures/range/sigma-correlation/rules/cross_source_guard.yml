@@ -1,0 +1,14 @@
+title: Made Up - Cross Source Guard
+name: made_up_cross_source_guard
+id: 10000000-0000-4000-8000-000000000007
+status: test
+author: The lab's tests
+correlation:
+    type: temporal_ordered
+    rules:
+        - made_up_file_field_in_process_rule
+        - made_up_file_stage
+    group-by:
+        - Computer
+    timespan: 1m
+level: high

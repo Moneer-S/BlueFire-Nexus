@@ -1,0 +1,39 @@
+title: Remote Archive Command Over SSH From A Staging Directory
+name: bluefire_remote_archive_over_ssh
+id: b94ef1fd-e5fc-47f8-a58c-8f1658fd8579
+status: experimental
+description: >-
+  An SSH client started a remote archive command while its local working
+  directory was a common temporary staging tree. The atomic rule is an
+  informational input to an ordered correlation rather than an alert alone.
+references:
+  - https://attack.mitre.org/techniques/T1021/004/
+  - https://attack.mitre.org/techniques/T1560/001/
+author: BlueFire lab
+date: 2026-11-26
+tags:
+  - attack.lateral-movement
+  - attack.collection
+  - attack.t1021.004
+  - attack.t1560.001
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_image:
+    Image|endswith: /ssh
+  selection_archive:
+    CommandLine|contains:
+      - ' tar '
+      - ' tar -'
+      - ' cpio '
+      - ' zip '
+  selection_stage:
+    CurrentDirectory|startswith:
+      - /tmp/
+      - /var/tmp/
+      - /dev/shm/
+  condition: all of selection_*
+falsepositives:
+  - A release, backup, or recovery task collecting a remote archive from a temporary staging tree
+level: informational

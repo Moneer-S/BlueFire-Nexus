@@ -897,9 +897,11 @@ def _check_agreement(
     steps, events, alerts = view.steps, view.events, view.alerts
     sensor_hosts = {sensor["id"]: sensor["host"] for sensor in value["network"]["sensors"]}
     detector_when = {item["id"]: item["when"] for item in value["network"]["detectors"]}
+    step_positions = {step["id"]: position for position, step in enumerate(steps)}
     event_steps = {event["id"]: event["step"] for _, event in events}
     event_hosts = {event["id"]: event["host"] for _, event in events}
     event_times = {event["id"]: (_time(event["time"]), event["time"]) for _, event in events}
+    event_users = {event["id"]: event.get("user") for _, event in events}
     held = Counter(event["step"] for _, event in events)
     # The earliest time of each kind on each step, as (time, the recording's own text).
     # An alert counts from its moment: when it was raised, for a live detector, and
@@ -960,14 +962,63 @@ def _check_agreement(
             check.fail(f"{where}.events", "must be empty for a launcher_only match.")
         if alert["counts"] and not alert["events"]:
             check.fail(f"{where}.events", "is empty, but an alert that counts matched an event.")
-        if any(event_steps[event_id] != alert["step"] for event_id in alert["events"]):
-            check.fail(f"{where}.events", "names an event of another step.")
         if any(event_hosts[event_id] != alert["host"] for event_id in alert["events"]):
             check.fail(f"{where}.host", "is not the host of the events the alert matched.")
+        named = [event_times[event_id] for event_id in alert["events"]]
+        cross_step = any(event_steps[event_id] != alert["step"] for event_id in alert["events"])
+        correlation = detector_when.get(detector) == "after the run" and cross_step
+        if correlation:
+            terminal_id = alert["events"][-1]
+            terminal = event_times[terminal_id]
+            if event_steps[terminal_id] != alert["step"]:
+                check.fail(
+                    f"{where}.events",
+                    "ends with a terminal event that does not belong to the alert's step.",
+                )
+            if _time(alert["time"]) != terminal[0]:
+                check.fail(
+                    f"{where}.time",
+                    f"is {alert['time']}, not the time of its terminal event, {terminal[1]}.",
+                )
+            later = max(named)
+            if later[0] > terminal[0]:
+                check.fail(
+                    f"{where}.events",
+                    f"names an event at {later[1]} after its terminal event at {terminal[1]}.",
+                )
+            if any(before[0] > after[0] for before, after in zip(named, named[1:], strict=False)):
+                check.fail(
+                    f"{where}.events",
+                    "does not name its evidence in nondecreasing time order.",
+                )
+            alert_position = step_positions[alert["step"]]
+            later_steps = sorted(
+                {
+                    event_steps[event_id]
+                    for event_id in alert["events"]
+                    if event_steps[event_id] != alert["step"]
+                    and step_positions[event_steps[event_id]] >= alert_position
+                },
+                key=step_positions.__getitem__,
+            )
+            if later_steps:
+                check.fail(
+                    f"{where}.events",
+                    f"names evidence from a later step: {', '.join(later_steps)}.",
+                )
+            users = sorted(
+                {event_users[event_id] for event_id in alert["events"] if event_users[event_id]}
+            )
+            if len(users) > 1:
+                check.fail(
+                    f"{where}.events",
+                    f"names events of different observed users: {', '.join(users)}.",
+                )
+        elif cross_step:
+            check.fail(f"{where}.events", "names an event of another step.")
         # An alert's moment: when it was raised, for a live detector, else its time.
         live = detector_when.get(detector) == "live" and "raised" in alert
         moment = alert["raised"] if live else alert["time"]
-        named = [event_times[event_id] for event_id in alert["events"]]
         if named and _time(moment) < min(named)[0]:
             check.fail(
                 f"{where}.{'raised' if live else 'time'}",
