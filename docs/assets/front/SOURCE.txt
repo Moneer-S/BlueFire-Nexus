@@ -2,10 +2,10 @@ The pictures of the README in this folder are files of the artifact
 live-view-pictures, which the job "screens in a browser" of the app workflow
 (.github/workflows/app.yml) makes with frontend/tests/pictures/live-view.ts.
 
-CI run: https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45986289599
-Artifact: 15191424422; ZIP SHA-256 c7cf9da42cc5a8fbc9400596f20df27128670b0da1f234e5602f9148bfac5c4b
-Workflow commit: b4b018fd568b4ea4c77538742d7107798d169398, the GitHub merge
-of pull-request head 7cc38d9ab3b9653f8b9b2ce269b3d36c26510985 into its base
+CI run: https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46063911883
+Artifact: 15229729107; ZIP SHA-256 66ee32b9c966d9b46428fc22692abd5e2cdc9a887015e9e5b3beefcaccac53a0
+Workflow commit: aa7e74fb32cf7b4963a7169d25fd29c6070d11d0, the GitHub merge
+of pull-request head e022bd7637de34cef653347f8eef3036534eb2a1 into its base
 
 Each file here and the artifact file it is:
 live-view-loop.gif     live-view-loop.gif     the attack path, its loop
