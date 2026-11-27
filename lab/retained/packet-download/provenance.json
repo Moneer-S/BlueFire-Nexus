@@ -1,0 +1,112 @@
+{
+  "schema": "bluefire.range-run/1",
+  "source": {
+    "repository": "Moneer-S/BlueFire-Nexus",
+    "workflow": ".github/workflows/retained-packet.yml",
+    "run_id": 46022496042,
+    "run_attempt": 1,
+    "job": "make-fixture",
+    "head": "0874cc27cde7",
+    "run_url": "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46022496042",
+    "artifact": "retained-packet-run-1"
+  },
+  "run": {
+    "id": "20261127T151119Z-7dd098",
+    "spec": "retained-packet.yaml",
+    "result": "sealed",
+    "exit_code": 0
+  },
+  "files": [
+    {
+      "stored_path": "files/manifest.json",
+      "run_path": "manifest.json",
+      "artifact_path": "lab/retained/packet-download/files/manifest.json",
+      "role": "minimal truthful run context",
+      "bytes": 6978
+    },
+    {
+      "stored_path": "files/raw/hosts/manager/var/ossec/logs/alerts/alerts.json",
+      "run_path": "raw/hosts/manager/var/ossec/logs/alerts/alerts.json",
+      "artifact_path": "lab/retained/packet-download/files/raw/hosts/manager/var/ossec/logs/alerts/alerts.json",
+      "role": "complete raw Wazuh alerts",
+      "bytes": 6367
+    },
+    {
+      "stored_path": "files/raw/hosts/manager/var/ossec/logs/archives/archives.json",
+      "run_path": "raw/hosts/manager/var/ossec/logs/archives/archives.json",
+      "artifact_path": "lab/retained/packet-download/files/raw/hosts/manager/var/ossec/logs/archives/archives.json",
+      "role": "complete raw Wazuh archive",
+      "bytes": 50873
+    },
+    {
+      "stored_path": "files/raw/hosts/manager/var/ossec/logs/ossec.txt",
+      "run_path": "raw/hosts/manager/var/ossec/logs/ossec.log",
+      "artifact_path": "lab/retained/packet-download/files/raw/hosts/manager/var/ossec/logs/ossec.txt",
+      "role": "raw Wazuh manager startup record",
+      "bytes": 7935
+    },
+    {
+      "stored_path": "files/raw/hosts/web/var/log/bluefire/packets/eth0.pcap",
+      "run_path": "raw/hosts/web/var/log/bluefire/packets/eth0.pcap",
+      "artifact_path": "lab/retained/packet-download/files/raw/hosts/web/var/log/bluefire/packets/eth0.pcap",
+      "role": "raw packet capture",
+      "bytes": 10922
+    },
+    {
+      "stored_path": "files/raw/hosts/web/var/log/bluefire/packets/eth0.txt",
+      "run_path": "raw/hosts/web/var/log/bluefire/packets/eth0.log",
+      "artifact_path": "lab/retained/packet-download/files/raw/hosts/web/var/log/bluefire/packets/eth0.txt",
+      "role": "raw tcpdump delivery counters",
+      "bytes": 164
+    },
+    {
+      "stored_path": "files/raw/steps/s01/check.txt",
+      "run_path": "raw/steps/s01/check.txt",
+      "artifact_path": "lab/retained/packet-download/files/raw/steps/s01/check.txt",
+      "role": "raw path step evidence",
+      "bytes": 398
+    },
+    {
+      "stored_path": "files/raw/steps/s01/cleanup.txt",
+      "run_path": "raw/steps/s01/cleanup.txt",
+      "artifact_path": "lab/retained/packet-download/files/raw/steps/s01/cleanup.txt",
+      "role": "raw path step evidence",
+      "bytes": 267
+    },
+    {
+      "stored_path": "files/raw/steps/s01/command",
+      "run_path": "raw/steps/s01/command",
+      "artifact_path": "lab/retained/packet-download/files/raw/steps/s01/command",
+      "role": "raw path step evidence",
+      "bytes": 278
+    },
+    {
+      "stored_path": "files/raw/steps/s01/prereq.txt",
+      "run_path": "raw/steps/s01/prereq.txt",
+      "artifact_path": "lab/retained/packet-download/files/raw/steps/s01/prereq.txt",
+      "role": "raw path step evidence",
+      "bytes": 46
+    },
+    {
+      "stored_path": "files/raw/steps/s01/stderr",
+      "run_path": "raw/steps/s01/stderr",
+      "artifact_path": "lab/retained/packet-download/files/raw/steps/s01/stderr",
+      "role": "raw path step evidence",
+      "bytes": 0
+    },
+    {
+      "stored_path": "files/raw/steps/s01/stdout",
+      "run_path": "raw/steps/s01/stdout",
+      "artifact_path": "lab/retained/packet-download/files/raw/steps/s01/stdout",
+      "role": "raw path step evidence",
+      "bytes": 27
+    },
+    {
+      "stored_path": "files/retained-packet.yaml",
+      "run_path": "retained-packet.yaml",
+      "artifact_path": "lab/retained/packet-download/files/retained-packet.yaml",
+      "role": "exact tracked run spec",
+      "bytes": 3024
+    }
+  ]
+}

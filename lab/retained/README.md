@@ -3,12 +3,27 @@
 A retained range run is real raw sensor data made by the hosted range
 workflow, small enough to keep in the repository and judge again after the
 rules change. It is not a recording or a score. Those are derived from it.
-No retained run is committed yet; this document defines the required shape
-for a future fixture made by a separate hosted CI run.
+The committed `packet-download` run is the exact screened
+`retained-packet-run-1` artifact from
+[hosted run 46022496042](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46022496042),
+artifact id `15209860144`.
 
 Only the hosted workflow adds a run below this folder. Files produced on a
 developer machine are never retained. A candidate is committed only after the
 repository's unchanged privacy and secret scans pass on its exact bytes.
+
+After installing the lab and pinned evaluators, and exporting the workflow's
+`SURICATA_IMAGE` value from `.github/workflows/retained-packet.yml`, a fresh
+clone can judge this run with:
+
+```bash
+bluefire-lab range rejudge lab/retained/packet-download \
+  --defenses lab/range/range-one.yaml \
+  --engine "$PWD/.bluefire-runs/tools/Zircolite-4.7.1/Zircolite" \
+  --suricata-image "$SURICATA_IMAGE" \
+  --template bluefire/ui/replay.html \
+  --out .bluefire-runs/rejudged/packet-download
+```
 
 The hosted, manually dispatched fixture workflow exports a completed run with:
 
@@ -83,7 +98,7 @@ file's:
 the declared values' shape and internal consistency; it does not contact
 GitHub, establish that the run, job, head or artifact exists, or prove that the
 artifact supplied these bytes. Authenticity is established separately by the
-future fixture's hosted CI run and artifact link. The repository commit then
+fixture's hosted CI run and artifact link above. The repository commit then
 binds the checked-in bytes. The small provenance file does not duplicate
 artifact or file digests: those secret-like opaque values are unrelated to
 rejudgment and fail the repository's secret gate. The verifier can
