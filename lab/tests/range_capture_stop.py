@@ -1,4 +1,4 @@
-"""Exercise the production packet-capture stop path against a real Linux veth."""
+"""Exercise production packet-capture capacity and stopping against a real Linux veth."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from bluefire_lab.range import spec as range_spec
 
 RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
 LABEL = "bluefire.lab.range"
+BURST_PACKETS = 32
+BURST_PAYLOAD_BYTES = 1_400
 
 
 def command(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -53,8 +55,39 @@ def wait_for_capture(container: str) -> str:
     raise RuntimeError(last)
 
 
+def stress_capture(watched: str, peer: str, interface: str, token: str) -> bool:
+    """Hold the real tcpdump reader across a bounded kernel-delivered burst, then wait for its tail."""
+
+    pid_file = f"{build.CAPTURE_RUN}/{interface}{build.CAPTURE_ARMED_SUFFIX}"
+    signal = f'pid=$(cat {shlex.quote(pid_file)}); kill -STOP "$pid"; kill -0 "$pid"'
+    command("docker", "exec", watched, "bash", "-c", signal)
+    payload = (
+        "$socket=socket_create(AF_INET, SOCK_DGRAM, SOL_UDP); "
+        f'$body=str_repeat("x", {BURST_PAYLOAD_BYTES}); '
+        f'$tail=str_pad("{token}", {BURST_PAYLOAD_BYTES}, "x"); '
+        f"for ($i=0; $i<{BURST_PACKETS}; $i++) {{ "
+        f"$data=($i=={BURST_PACKETS - 1}) ? $tail : $body; "
+        'if (socket_sendto($socket, $data, strlen($data), 0, "web", 62043) !== strlen($data)) '
+        "{ exit(91); } }"
+    )
+    try:
+        command("docker", "exec", peer, "php", "-r", payload)
+    finally:
+        resume = f'pid=$(cat {shlex.quote(pid_file)}); kill -CONT "$pid"; kill -0 "$pid"'
+        command("docker", "exec", watched, "bash", "-c", resume)
+
+    pcap = f"{build.CAPTURE_DIR}/{interface}.pcap"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        found = command("docker", "exec", watched, "grep", "-aFq", "--", token, pcap, check=False)
+        if found.returncode == 0:
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def exercise(image: str, out: Path) -> dict:
-    """Send one tail packet, then stop, copy and validate the real capture."""
+    """Hold a bounded burst, send one tail packet, then stop, copy and validate the real capture."""
 
     suffix = secrets.token_hex(4)
     network = f"bluefire-lab-capture-stop-{suffix}"
@@ -116,6 +149,9 @@ def exercise(image: str, out: Path) -> dict:
         created.append(peer)
         command("docker", "start", peer)
 
+        burst_token = f"bluefire-capture-burst-tail-{suffix}"
+        burst_tail_seen = stress_capture(watched_id, peer, interface, burst_token)
+
         out.mkdir(parents=True, exist_ok=False)
         run = engine.Run(range_spec.load(RANGE_ONE), RANGE_ONE.name, out, None, 0)
         run.containers = {"web": watched_id}
@@ -164,6 +200,8 @@ def exercise(image: str, out: Path) -> dict:
             "copied": entry["collected"].get("copied") is True,
             "analysed": capture["analysed"] is True,
             "complete delivery": capture["delivery_gap"] is False,
+            "burst tail retained": burst_tail_seen and packets.contains(pcap_path, burst_token),
+            "burst packet floor": record.get("packets", 0) >= BURST_PACKETS,
             "tail token retained": pcap_path.is_file() and packets.contains(pcap_path, token),
             "PCAP equals captured": record.get("packets") == counts.get("captured"),
             "received equals captured plus dropped": counts.get("received by filter")
@@ -183,6 +221,7 @@ def exercise(image: str, out: Path) -> dict:
         return {
             "interface": interface,
             "packets": record["packets"],
+            "burst packets sent": BURST_PACKETS,
             "received by filter": counts["received by filter"],
             "dropped by kernel": counts["dropped by kernel"],
         }
