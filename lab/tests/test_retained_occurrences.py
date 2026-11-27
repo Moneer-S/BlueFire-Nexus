@@ -171,7 +171,7 @@ def test_duplicate_key_in_a_later_ndjson_record_is_refused_without_echoing_it() 
     assert "sensitive-field" not in str(raised.value)
 
 
-def test_a_parent_symlink_cannot_redirect_a_json_source(tmp_path: Path) -> None:
+def test_read_regular_bytes_refuses_a_parent_symlink(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "manifest.json").write_text(
@@ -184,12 +184,43 @@ def test_a_parent_symlink_cannot_redirect_a_json_source(tmp_path: Path) -> None:
         retained_occurrences.RetainedOccurrenceError,
         match="cannot be opened safely",
     ):
-        retained_occurrences.audit_json_occurrences(
-            tmp_path,
-            sources={PurePosixPath("linked/manifest.json"): "document"},
-            certified=[
-                retained_occurrences.CertifiedOccurrence(
-                    PurePosixPath("linked/manifest.json"), "/capture/sha256", CERTIFIED
-                )
-            ],
+        retained_occurrences.read_regular_bytes(
+            tmp_path, PurePosixPath("linked/manifest.json"), "candidate manifest"
+        )
+
+
+def test_read_regular_bytes_returns_the_exact_file(tmp_path: Path) -> None:
+    payload = b'{"plain":"fixture"}\n'
+    (tmp_path / "candidate.json").write_bytes(payload)
+
+    assert (
+        retained_occurrences.read_regular_bytes(
+            tmp_path, PurePosixPath("candidate.json"), "candidate manifest"
+        )
+        == payload
+    )
+
+
+def test_read_regular_bytes_refuses_a_named_file_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "candidate.json"
+    source.write_bytes(b'{"plain":"original"}\n')
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(b'{"plain":"replacement"}\n')
+    original_read = retained_occurrences.os.read
+    replaced = False
+
+    def replace_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(descriptor, size)
+        if not replaced:
+            replacement.replace(source)
+            replaced = True
+        return chunk
+
+    monkeypatch.setattr(retained_occurrences.os, "read", replace_after_read)
+    with pytest.raises(retained_occurrences.RetainedOccurrenceError, match="changed while it was read"):
+        retained_occurrences.read_regular_bytes(
+            tmp_path, PurePosixPath("candidate.json"), "candidate manifest"
         )

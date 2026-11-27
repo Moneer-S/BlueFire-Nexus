@@ -216,21 +216,21 @@ def _signature(status: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _root_descriptor(root: Path) -> int:
+def _root_descriptor(root: Path, what: str) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(root, flags)
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             os.close(descriptor)
-            raise RetainedOccurrenceError("the retained JSON root must be a real directory")
+            raise RetainedOccurrenceError(f"{what}'s root must be a real directory")
         return descriptor
     except RetainedOccurrenceError:
         raise
     except OSError as error:
-        raise RetainedOccurrenceError("the retained JSON root cannot be anchored safely") from error
+        raise RetainedOccurrenceError(f"{what}'s root cannot be anchored safely") from error
 
 
-def _read_source(root_descriptor: int, relative: PurePosixPath) -> bytes:
+def _read_source(root_descriptor: int, relative: PurePosixPath, what: str) -> bytes:
     directory = os.dup(root_descriptor)
     source = None
     directory_flags = (
@@ -242,7 +242,7 @@ def _read_source(root_descriptor: int, relative: PurePosixPath) -> bytes:
             child = os.open(part, directory_flags, dir_fd=directory)
             if not stat.S_ISDIR(os.fstat(child).st_mode):
                 os.close(child)
-                raise RetainedOccurrenceError("a retained JSON source parent is not a real directory")
+                raise RetainedOccurrenceError(f"{what} has a parent that is not a real directory")
             os.close(directory)
             directory = child
 
@@ -254,7 +254,7 @@ def _read_source(root_descriptor: int, relative: PurePosixPath) -> bytes:
             or before.st_nlink != 1
             or _signature(before) != _signature(named)
         ):
-            raise RetainedOccurrenceError("a retained JSON source is not a single-link regular file")
+            raise RetainedOccurrenceError(f"{what} is not a single-link regular file")
 
         chunks = []
         while chunk := os.read(source, 64 * 1024):
@@ -262,16 +262,31 @@ def _read_source(root_descriptor: int, relative: PurePosixPath) -> bytes:
         after = os.fstat(source)
         named_after = os.stat(relative.name, dir_fd=directory, follow_symlinks=False)
         if _signature(after) != _signature(before) or _signature(named_after) != _signature(before):
-            raise RetainedOccurrenceError("a retained JSON source changed while it was read")
+            raise RetainedOccurrenceError(f"{what} changed while it was read")
         return b"".join(chunks)
     except RetainedOccurrenceError:
         raise
     except OSError as error:
-        raise RetainedOccurrenceError("a retained JSON source cannot be opened safely") from error
+        raise RetainedOccurrenceError(f"{what} cannot be opened safely") from error
     finally:
         if source is not None:
             os.close(source)
         os.close(directory)
+
+
+def read_regular_bytes(
+    root: Path,
+    relative: PurePosixPath | str,
+    what: str,
+) -> bytes:
+    """Read one unchanged single-link regular file below an anchored root."""
+
+    checked = _relative(relative, f"{what}'s path")
+    root_descriptor = _root_descriptor(root, what)
+    try:
+        return _read_source(root_descriptor, checked, what)
+    finally:
+        os.close(root_descriptor)
 
 
 def _mismatch_message(
@@ -332,11 +347,11 @@ def audit_json_occurrences(
         values.add(approved.value)
 
     decoded: dict[PurePosixPath, dict[str, object] | tuple[dict[str, object], ...]] = {}
-    root_descriptor = _root_descriptor(root)
+    root_descriptor = _root_descriptor(root, "the retained JSON source set")
     try:
         for relative, form in checked_sources.items():
-            data = _read_source(root_descriptor, relative)
             what = f"retained JSON source {relative}"
+            data = _read_source(root_descriptor, relative, what)
             if form == "document":
                 decoded[relative] = loads_object(data, what)
             else:
