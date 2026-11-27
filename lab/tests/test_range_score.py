@@ -1179,6 +1179,34 @@ def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_pat
     assert f"{HIGH['title']} ({HIGH['id']}), by The lab's tests" in said
 
 
+def test_matched_rule_attribution_is_split_without_dropping_author_credits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    rules = [
+        {
+            **HIGH,
+            "id": f"made-up-{number:02d}",
+            "title": f"Made Up - Matched Rule {number:02d} With A Descriptive Title",
+            "author": f"The lab's test author {number:02d} with a full attribution",
+        }
+        for number in range(25)
+    ]
+
+    judged(folder, matching(monkeypatch, [("a program the test started", rule) for rule in rules]))
+
+    made = json.loads((folder / recording.FILE).read_text())
+    attribution = [
+        note
+        for note in made["notes"]
+        if note.startswith(("The rules of sigma that matched", "The matched rules of sigma, continued"))
+    ]
+    assert len(attribution) > 1 and all(len(note) <= 2_000 for note in attribution)
+    said = " ".join(attribution)
+    assert all(f"{rule['title']} ({rule['id']}), by {rule['author']}" in said for rule in rules)
+
+
 def test_a_defense_with_live_rules_and_a_rule_set_tells_each_alert_and_match_as_its_rules_ran(
     tmp_path: Path, monkeypatch
 ) -> None:

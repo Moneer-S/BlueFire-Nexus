@@ -1648,7 +1648,18 @@ defenses:
     assert stored_without["created"] is True and stored_without["another_evaluation"] is True
 
     # Adding the post-run evaluator changes detector metadata and notes, never source-run identity.
-    program = small_range.matching(monkeypatch, [("a program the test started", small_range.HIGH)])
+    rules = [
+        {
+            **small_range.HIGH,
+            "id": f"made-up-{number:02d}",
+            "title": f"Made Up - Matched Rule {number:02d} With A Descriptive Title",
+            "author": f"The platform test author {number:02d} with a full attribution",
+        }
+        for number in range(25)
+    ]
+    program = small_range.matching(
+        monkeypatch, [("a program the test started", rule) for rule in rules]
+    )
     assert range_engine.rescore(folder, program, alternate) == 0
     with_engine = recordings.parse_recording_bytes((folder / "recording.json").read_bytes())
     assert with_engine["source"] == source
