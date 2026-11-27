@@ -641,7 +641,7 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await expectWholeMoment(page, copy, path);
   const told = page.getByRole("region", { name: "The step", exact: true });
   await expect(told.getByRole("button", { name: "Fix this", exact: true }), `${NO_ALERT_PICTURE}: the step it shows has no Fix this`).toBeVisible();
-  await expect(told, `${NO_ALERT_PICTURE}: the step it shows is not told as seen with two rules matched for review`).toContainText(/2 rules matched for review, none at alert level/);
+  await expect(told, `${NO_ALERT_PICTURE}: the step it shows is not told as seen with one rule matched for review`).toContainText(/1 rule matched for review, none at alert level/);
   await expect(told, `${NO_ALERT_PICTURE}: the step's hint does not start from a rule that matched it`).toContainText(/start from the rule/);
   await expectWholeRaceLine(page, "path-no-alert.png");
   await picture(page, folder, "path-no-alert.png");
