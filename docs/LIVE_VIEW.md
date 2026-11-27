@@ -837,7 +837,7 @@ with it, copied files back with the build's signing secret among them, and
 uploaded them to the stand-in internet: the goal, "build's signing secret
 reaches inet", was reached 10:35.9 into the run, 9 min 36 s after Wazuh's
 first alert. The tuned ordered rule also alerted, at 10:24.9, after joining
-evidence from steps 6, 7 and 8. Public Sigma, ET Open and the combined AI-tool
+evidence from s06, s07 and s08. Public Sigma, ET Open and the combined AI-tool
 packs raised no counting alert. None of the five defenses stopped the path,
 and none raised a false alert on the ordinary work beside it
 ([CI run 45968323688](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688)).
