@@ -876,7 +876,11 @@ def with_rules(folder: Path) -> None:
     rewrite(folder, lambda m: m.update(rule_sets={"sigma": {"lock": lock}}))
 
 
-def matching(monkeypatch, matches: list[tuple[str, dict]]) -> Path:
+def matching(
+    monkeypatch,
+    matches: list[tuple[str, dict]],
+    evidence: dict[str, list[str]] | None = None,
+) -> Path:
     """Stand in for the rule engine: it "matches" the given rules on the named lines of the small run.
 
     Returns a file to pass as the engine's program, which is never started.
@@ -906,7 +910,18 @@ def matching(monkeypatch, matches: list[tuple[str, dict]]) -> Path:
             "loaded": 2,
             # In the order of the archive, as the lab's reading of the engine's matches gives them.
             "matches": sorted(
-                ({"rule": rule, "event": PLACE[name]} for name, rule in matches),
+                (
+                    {
+                        "rule": rule,
+                        "event": PLACE[name],
+                        **(
+                            {"evidence": [PLACE[item] for item in evidence[name]]}
+                            if evidence and name in evidence
+                            else {}
+                        ),
+                    }
+                    for name, rule in matches
+                ),
                 key=lambda match: (match["event"], match["rule"]["id"]),
             ),
         }
@@ -981,6 +996,37 @@ def test_a_match_of_a_rule_set_is_tied_as_its_event_is(tmp_path: Path, monkeypat
     ]
     # The manager's own alerts are written as before, one line for each raw line.
     assert manifest["ecs"]["files"]["alerts.ecs.ndjson"]["ECS lines"] == 4
+
+
+def test_a_correlation_alerts_on_its_terminal_event_and_keeps_every_evidence_event(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    with_rules(folder)
+    program = matching(
+        monkeypatch,
+        [("a program the test started", HIGH)],
+        {
+            "a program the test started": [
+                "webadmin's login",
+                "a program the test started",
+            ]
+        },
+    )
+
+    manifest = judged(folder, program)
+
+    [match] = ecs_lines(folder, "alerts.sigma.ecs.ndjson")
+    assert match["labels"]["event_id"] == "archive-3"
+    assert json.loads(match["labels"]["evidence_event_ids"]) == ["archive-2", "archive-3"]
+    assert match["@timestamp"] == ecs_lines(folder, score.EVENTS_FILE)[2]["@timestamp"]
+    public = manifest["score"]["defenses"][1]
+    assert public["steps"][0]["outcome"] == "seen"
+    assert public["steps"][1]["outcome"] == "alerted"
+    made = json.loads((folder / recording.FILE).read_text())
+    alert = next(item for item in made["alerts"] if item["detector"] == "sigma")
+    assert alert["step"] == "s03" and alert["time"] == match["@timestamp"]
+    assert alert["events"] == ["s01-2", "s03-1"]
 
 
 def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monkeypatch) -> None:

@@ -918,7 +918,28 @@ def after_the_run(
     matches, documents = [], []
     for match in made.pop("matches"):
         index, rule = match["event"], match["rule"]
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(events):
+            raise sigma.EngineError(
+                f"the rule engine returned a terminal event outside the {len(events)} archived events"
+            )
+        raw_evidence = match.get("evidence")
+        if raw_evidence is None:
+            raw_evidence = [index]
+        if (
+            not isinstance(raw_evidence, list)
+            or not raw_evidence
+            or any(
+                not isinstance(place, int) or isinstance(place, bool) or not 0 <= place < len(events)
+                for place in raw_evidence
+            )
+        ):
+            raise sigma.EngineError(
+                f"the rule engine returned evidence outside the {len(events)} archived events"
+            )
+        evidence = list(dict.fromkeys(raw_evidence))
+        evidence = [place for place in evidence if place != index] + [index]
         origin, job, step, tied_by = ties[index]
+        evidence_event_ids = [ids[place] for place in evidence]
         reference = f"https://github.com/{rule_set.repo}/blob/{rule_set.commit}/{rule['file']}"
         documents.append(
             ecs.match(
@@ -930,6 +951,7 @@ def after_the_run(
                 step,
                 tied_by,
                 ids[index],
+                evidence_event_ids,
             )
         )
         matches.append(
@@ -948,6 +970,8 @@ def after_the_run(
                 "job": job,
                 "step": step,
                 "tied_by": tied_by,
+                "evidence": evidence,
+                "evidence event ids": evidence_event_ids,
             }
         )
     found.update(made)

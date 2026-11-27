@@ -412,6 +412,12 @@ def build(folder: Path) -> dict:
             if labels.get("origin") == score.STEP:
                 on_step[labels["step_id"]].append((detector, document))
 
+    named_evidence = {
+        event_id
+        for documents in on_step.values()
+        for _, document in documents
+        for event_id in ecs.evidence_ids(document)
+    }
     plain = {
         step.get("id"): step.get("plain")
         for step in ((spec.get("path") or {}).get("steps") or [])
@@ -419,10 +425,10 @@ def build(folder: Path) -> dict:
     }
     databases = error_logs(spec)
     steps, kept_events, kept_alerts, cut, late_cut = [], [], [], 0, 0
+    placed_all: dict[str, dict] = {}
     for order, record in enumerate(path.get("steps") or [], start=1):
         step_id = record["id"]
         mine = sorted(of_step.get(step_id, []), key=lambda d: d["@timestamp"])
-        named = {(d.get("labels") or {}).get("event_id") for _, d in on_step.get(step_id, [])}
         # The cut of a step with very many events is made for each sensor, so that no defense's sensors
         # are cut out by another's: the first of each sensor's events up to its share, and every event
         # a rule matched.
@@ -430,17 +436,30 @@ def build(folder: Path) -> dict:
         placed: dict[str, dict] = {}
         for number, document in enumerate(mine, start=1):
             sensor = sensor_of(document)
-            if room[sensor] > 0 or (document.get("event") or {}).get("id") in named:
+            if room[sensor] > 0 or (document.get("event") or {}).get("id") in named_evidence:
                 placed[(document.get("event") or {}).get("id")] = event_of(
                     document, step_id, number, databases
                 )
             room[sensor] -= 1
         kept_events += placed.values()
+        placed_all.update(placed)
         cut += len(placed) < len(mine)
         for detector, document in on_step.get(step_id, []):
             rule = rule_of(document)
             event_id = (document.get("labels") or {}).get("event_id")
             linked = placed.get(event_id)
+            evidence_ids = ecs.evidence_ids(document)
+            linked_evidence = [placed_all.get(value) for value in evidence_ids]
+            missing_evidence = [
+                value
+                for value, evidence in zip(evidence_ids, linked_evidence, strict=True)
+                if evidence is None
+            ]
+            if linked and missing_evidence:
+                raise ValueError(
+                    f"the alert of rule {rule['id']} at {document['@timestamp']} on {step_id} names "
+                    f"evidence outside the path events kept in the recording: {', '.join(missing_evidence)}"
+                )
             if rule["level"] in COUNTING and not linked:
                 # The format needs a counting alert to name the event it was raised on.
                 where = (
@@ -467,7 +486,7 @@ def build(folder: Path) -> dict:
                     "rule": {**rule, "origin": "pinned"},
                     "counts": rule["level"] in COUNTING,
                     "step": step_id,
-                    "events": [linked["id"]] if linked else [],
+                    "events": [evidence["id"] for evidence in linked_evidence if evidence] if linked else [],
                 }
             )
         to = record.get("to") or []
