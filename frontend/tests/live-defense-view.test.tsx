@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { momentFromSearch, momentSearch } from "../src/lib/recorded-runs";
 import { LiveView } from "../src/live/LiveView";
 import type { LiveMoment, LiveViewProps } from "../src/live/LiveView";
+import { judgeAll, sameMoment, tallyOf } from "../src/live/defenses";
+import { screenToReal } from "../src/live/playback";
 import type { Defense, Recording, Step, StepVerdict } from "../src/live/recording";
 import { alert, at, event, recording, step } from "./live-fixture";
 
@@ -97,6 +99,71 @@ describe("one run judged by several defenses", () => {
     expect(container.textContent).toContain("Host sensors with no alerting rule set has not alerted yet.");
     await waitFor(() => expect(onMoment.mock.calls.at(-1)?.[0].defense).toBe("quiet"));
     unmount();
+  });
+
+  it("keeps the recorded clock while switching during a late-alert hold", () => {
+    const value = judgedTwice();
+    const first = value.steps[0];
+    const second = value.steps[1];
+    const stock = value.defenses?.[0];
+    const quiet = value.defenses?.[1];
+    if (!first || !second || !stock || !quiet) throw new Error("fixture");
+
+    first.ended = at(2);
+    second.started = at(20);
+    second.ended = at(21);
+    value.events = [event("e1", "1", 1.1), event("e2", "2", 20.1)];
+    value.alerts = [alert("a1", "1", 1.1, ["e1"], { raised: at(8) })];
+    stock.steps["1"] = { ...stock.steps["1"]!, first_event: at(1.1), first_alert: at(1.1) };
+    stock.steps["2"] = { ...stock.steps["2"]!, first_event: at(20.1) };
+    quiet.steps["1"] = { ...quiet.steps["1"]!, first_event: at(1.1) };
+    quiet.steps["2"] = { ...quiet.steps["2"]!, first_event: at(20.1) };
+
+    const [withLateAlert, withoutLateAlert] = judgeAll(value);
+    if (!withLateAlert || !withoutLateAlert) throw new Error("fixture");
+    const gap = withLateAlert.timeline.gaps.find((item) => item.after === 0);
+    if (!gap) throw new Error("fixture");
+    expect(gap.holdEnd).toBeGreaterThan(gap.holdStart);
+
+    const duringHold = (gap.holdStart + gap.holdEnd) / 2;
+    const recordedClock = screenToReal(withLateAlert.timeline, duringHold);
+    const switched = sameMoment(withLateAlert.timeline, withoutLateAlert.timeline, duringHold);
+
+    expect(recordedClock).toBe(Date.parse(at(8)));
+    expect(screenToReal(withoutLateAlert.timeline, switched)).toBeCloseTo(recordedClock, 3);
+  });
+
+  it("keeps Analyse totals to scored tests while marking diagnostic steps", () => {
+    const value = judgedTwice();
+    const canary = step("3", 5, 6, {
+      role: "canary",
+      outcome: "alerted",
+      visibility: { answer: "alert", basis: "the canary rule matched", events: 1 },
+      first_event: at(5.1),
+      first_alert: at(5.2),
+    });
+    const stock = value.defenses?.[0];
+    const quiet = value.defenses?.[1];
+    if (!stock || !quiet) throw new Error("fixture");
+
+    value.steps.push(canary);
+    value.events.push(event("e3", "3", 5.1));
+    value.alerts.push(alert("a3", "3", 5.2, ["e3"]));
+    stock.steps["3"] = verdictOf(canary);
+    quiet.steps["3"] = {
+      visibility: { answer: "no telemetry", basis: "the diagnostic step was not recorded", events: 0 },
+      outcome: "unseen",
+    };
+
+    const [stockView, quietView] = judgeAll(value);
+    if (!stockView || !quietView) throw new Error("fixture");
+    const stockTally = tallyOf(stockView, stockView.timeline.duration, true);
+    const quietTally = tallyOf(quietView, quietView.timeline.duration, true);
+
+    expect(stockTally).toMatchObject({ alerted: 1, seen: 1, unseen: 0 });
+    expect(stockTally.steps).toEqual(["alerted", "seen", "alerted"]);
+    expect(quietTally).toMatchObject({ alerted: 0, seen: 2, unseen: 0 });
+    expect(quietTally.steps).toEqual(["seen", "seen", "unseen"]);
   });
 
   it("shows every defense's recounted run in Analyse and a row chooses the judge", () => {

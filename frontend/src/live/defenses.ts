@@ -4,7 +4,7 @@
 
 import type { Defense, Network, Outcome, Recording } from "./recording";
 import { defensesOf, judgedBy } from "./recording";
-import { buildTimeline, frameAt, outcomeAt } from "./playback";
+import { buildTimeline, frameAt, outcomeAt, realToScreen } from "./playback";
 import type { Timeline } from "./playback";
 import { firstAlertClock, firstAlertOnScreen, momentOf, runFacts, scoreOnScreen, stepMatches } from "./moment";
 import type { RunFacts } from "./moment";
@@ -67,7 +67,7 @@ export function sameMoment(from: Timeline, to: Timeline, time: number): number {
   const sourceGap = frame.gap;
   const targetGap = to.gaps.find((gap) => gap.after === source.index);
   if (!sourceGap || !targetGap) return target.end;
-  return targetGap.start + (targetGap.end - targetGap.start) * Math.min(0.999, share(frame.time, sourceGap.start, sourceGap.end));
+  return realToScreen(to, frame.real);
 }
 
 export interface Tally {
@@ -118,12 +118,13 @@ export function tallyOf(judged: Judged, time: number, analyse: boolean): Tally {
   });
   if (analyse) {
     const outcomes = view.steps.map((step) => step.outcome);
+    const score = scoreOnScreen(timeline, frameAt(timeline, timeline.duration), null);
     const first = timeline.firstAlert;
     return {
       ...base,
-      alerted: outcomes.filter((outcome) => outcome === "alerted").length,
-      seen: outcomes.filter((outcome) => outcome === "seen").length,
-      unseen: outcomes.filter((outcome) => outcome === "unseen").length,
+      alerted: score.alerted,
+      seen: score.seen,
+      unseen: score.unseen,
       steps: outcomes,
       firstAlert: first ? clock(first) : null,
       falseAlerts: counted ? view.score.false_alerts : undefined,
