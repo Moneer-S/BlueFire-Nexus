@@ -52,7 +52,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     found = {}
     for key, value in pairs:
         if key in found:
-            raise RetainedError(f"the JSON document repeats the key {key!r}")
+            raise RetainedError("the JSON document repeats a key")
         found[key] = value
     return found
 
@@ -73,9 +73,9 @@ def _keys(value: dict, expected: set[str], what: str) -> None:
     if missing or extra:
         parts = []
         if missing:
-            parts.append("missing " + ", ".join(missing))
+            parts.append(f"{len(missing)} required field(s) missing")
         if extra:
-            parts.append("unknown " + ", ".join(extra))
+            parts.append(f"{len(extra)} unknown field(s)")
         raise RetainedError(f"{what} has " + "; ".join(parts))
 
 

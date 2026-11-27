@@ -705,6 +705,48 @@ def _containers(manifest: dict, spec: Spec) -> dict:
     return projected
 
 
+def _fim_marks(defense: dict, spec: Spec) -> list[dict]:
+    expected = [
+        {"host": host, "folder": folder, "event": event, "made": True, "archived": True}
+        for host in spec.agents
+        for folder in spec.watch_for(host).fim_realtime
+        for event in ("added", "modified")
+    ]
+    marks = defense.get("marks")
+    if not isinstance(marks, list):
+        raise RetainError("the source Wazuh defense has no delivery marks")
+    found = []
+    for row in marks:
+        if not isinstance(row, dict) or row.get("source") != "syscheck":
+            continue
+        host = row.get("host")
+        mark = row.get("mark")
+        matched = None
+        for expected_row in expected:
+            what = "file created" if expected_row["event"] == "added" else "file changed"
+            if host == expected_row["host"] and mark == f"{what} in {expected_row['folder']}":
+                matched = expected_row
+                break
+        delay = row.get("delay_seconds")
+        if (
+            matched is None
+            or row.get("made") is not True
+            or row.get("archived") is not True
+            or not isinstance(delay, int | float)
+            or isinstance(delay, bool)
+            or delay < 0
+        ):
+            raise RetainError("a source Wazuh FIM delivery mark is incomplete or outside the tracked spec")
+        found.append(matched)
+
+    def key(row: dict) -> tuple:
+        return row["host"], row["folder"], row["event"]
+
+    if sorted(found, key=key) != sorted(expected, key=key):
+        raise RetainError("the source Wazuh FIM delivery marks do not exactly cover the tracked spec")
+    return sorted(expected, key=key)
+
+
 def _defense(manifest: dict, spec: Spec) -> dict:
     if spec.wazuh is None or spec.manager is None:
         raise RetainError("the tracked spec has no Wazuh defense to rejudge")
@@ -755,6 +797,7 @@ def _defense(manifest: dict, spec: Spec) -> dict:
         "delivery_findings": [],
         "drops": defense.get("drops") or {},
         "wazuh_counted_drops": False,
+        "fim_marks": _fim_marks(defense, spec),
     }
 
 
