@@ -1,10 +1,10 @@
 """Run Suricata over retained web PCAPs without a network, then read its evidence.
 
 The adapter accepts one already-held rule-set folder. It gives that folder and
-the retained captures to a pinned container read-only, gives the container one
-writable output folder, and does not pull an image or join a network. EVE
-records stay raw: validation and alert-to-event linking never invent or rewrite
-network evidence.
+one retained capture at a time to a pinned container read-only, gives each
+invocation one writable output folder, and does not pull an image or join a
+network. EVE records stay raw: validation and alert-to-event linking never
+invent or rewrite network evidence.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -285,6 +286,7 @@ def _addresses(values: Sequence[str]) -> list[str]:
 def _docker_command(
     image: str,
     captures: Path,
+    capture: str,
     home_net: Sequence[str],
     output: Path,
     container_name: str,
@@ -339,8 +341,7 @@ def _docker_command(
             "--include",
             EVE_CONFIG_TARGET,
             "-r",
-            "/captures",
-            "--pcap-file-recursive",
+            f"/captures/{capture}",
             "--runmode",
             "single",
             "-l",
@@ -675,6 +676,18 @@ def link_alert(alert: dict, records: Sequence[dict]) -> dict:
     if picked is not None:
         return picked
 
+    # A packet alert can fire before Suricata identifies the application, so
+    # the alert itself then has no app_proto.  A sole later application record
+    # on the same capture, flow, community ID and tuple is still exact evidence
+    # of that occurrence.  Multiple candidates remain ambiguous and fall
+    # through to the flow record (or fail closed when there is none).
+    if "app_proto" not in alert:
+        untyped = [record for record in same_flow if record["event_type"] in APP_TYPES]
+        if "tx_id" in alert:
+            untyped = [record for record in untyped if record.get("tx_id") == alert["tx_id"]]
+        if len(untyped) == 1:
+            return untyped[0]
+
     flows = [record for record in same_flow if record["event_type"] == "flow"]
     flows = [record for record in flows if _flow_contains(alert, record) is not False]
     picked = _pick_occurrence(alert, flows, "flow record")
@@ -856,77 +869,140 @@ def _evaluate(
     addresses = _addresses(home_net)
     output_root = _prepare_output(Path(output), capture_root, rule_root)
     expected_packets = sum(facts["packets"] for facts in capture_facts.values())
-    with tempfile.TemporaryDirectory(prefix="bluefire-suricata-pcaps-") as staged_text:
-        staged = Path(staged_text)
-        try:
-            _stage_captures(pcaps, capture_facts, staged)
-            with tempfile.TemporaryDirectory(prefix="bluefire-suricata-supervisor-") as supervisor_text:
-                supervisor = Path(supervisor_text)
-                container_name = CONTAINER_PREFIX + secrets.token_hex(12)
-                cidfile = supervisor / "container.cid"
-                eve_config = _stage_eve_config(supervisor)
-                command = _docker_command(
-                    image,
-                    staged,
-                    addresses,
-                    output_root,
-                    container_name,
-                    cidfile,
-                    eve_config,
-                    rule_root,
-                    rule_files,
-                    classification,
-                )
+    records: list[dict] = []
+    alerts: list[dict] = []
+    alert_keys: list[EventKey] = []
+    runs: list[dict] = []
+    engine_facts: tuple[str, int, int, tuple[str, ...]] | None = None
+    total_read = 0
+    total_bytes = 0
+    every_run_reported_bytes = True
+    with tempfile.TemporaryDirectory(prefix="bluefire-suricata-supervisor-") as supervisor_text:
+        supervisor = Path(supervisor_text)
+        eve_config = _stage_eve_config(supervisor)
+        deadline = time.monotonic() + float(timeout)
+        for number, pcap in enumerate(pcaps, start=1):
+            folder_name = f"pcap-{number:04d}"
+            capture_output = _prepare_output(output_root / folder_name, capture_root, rule_root)
+            with tempfile.TemporaryDirectory(prefix="bluefire-suricata-pcap-") as staged_text:
+                staged = Path(staged_text)
                 try:
-                    completed = _run_container(
-                        command,
-                        output_root,
+                    _stage_captures((pcap,), capture_facts, staged)
+                    container_name = CONTAINER_PREFIX + secrets.token_hex(12)
+                    cidfile = supervisor / f"container-{number:04d}.cid"
+                    command = _docker_command(
+                        image,
+                        staged,
+                        pcap.name,
+                        addresses,
+                        capture_output,
                         container_name,
                         cidfile,
-                        runner,
-                        float(timeout),
+                        eve_config,
+                        rule_root,
+                        rule_files,
+                        classification,
                     )
-                except subprocess.TimeoutExpired as error:
-                    raise SuricataError(f"offline Suricata took longer than {timeout:g} seconds") from error
-                except OSError as error:
-                    raise SuricataError(f"offline Suricata could not be started: {error}") from error
-        finally:
-            try:
-                staged.chmod(0o700)
-            except OSError:
-                pass
-    if completed.returncode != 0:
-        detail = (
-            (_completed_text(completed.stderr) or _completed_text(completed.stdout)).strip().splitlines()[-1:]
-        )
-        raise SuricataError(
-            f"offline Suricata failed with exit code {completed.returncode}: {' '.join(detail)[:300]}"
-        )
+                    remaining = float(timeout) if number == 1 else deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SuricataError(f"offline Suricata took longer than {timeout:g} seconds")
+                    try:
+                        completed = _run_container(
+                            command,
+                            capture_output,
+                            container_name,
+                            cidfile,
+                            runner,
+                            remaining,
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        raise SuricataError(
+                            f"offline Suricata took longer than {timeout:g} seconds"
+                        ) from error
+                    except OSError as error:
+                        raise SuricataError(f"offline Suricata could not be started: {error}") from error
+                finally:
+                    try:
+                        staged.chmod(0o700)
+                    except OSError:
+                        pass
+            if completed.returncode != 0:
+                detail = (
+                    (_completed_text(completed.stderr) or _completed_text(completed.stdout))
+                    .strip()
+                    .splitlines()[-1:]
+                )
+                raise SuricataError(
+                    f"offline Suricata failed on {pcap.name} with exit code {completed.returncode}: "
+                    f"{' '.join(detail)[:300]}"
+                )
 
-    allowed = {f"/captures/{path.name}" for path in pcaps}
-    records, alerts = read_eve(_regular_output(output_root, "eve.json"), allowed)
+            allowed = {f"/captures/{pcap.name}"}
+            made_records, made_alerts = read_eve(_regular_output(capture_output, "eve.json"), allowed)
+            record_index(made_records)
+            made_alert_keys = [alert_event_key(alert, made_records) for alert in made_alerts]
+            if rules is None and made_alerts:
+                raise SuricataError("the rule-independent telemetry pass produced an alert")
+            version, loaded, failed, load_errors = _engine_result(capture_output, rules is not None)
+            facts = (version, loaded, failed, tuple(load_errors))
+            if engine_facts is not None and facts != engine_facts:
+                raise SuricataError(
+                    "Suricata did not report the same engine and rule loading for every capture"
+                )
+            engine_facts = facts
+            capture_stats = read_stats(capture_output)
+            read = capture_stats["decoder.pkts"]
+            independently_counted = capture_facts[pcap.name]["packets"]
+            if read != independently_counted:
+                raise SuricataError(
+                    f"Suricata decoded {read} packets from {pcap.name}, but the retained PCAP parser "
+                    f"counted {independently_counted}"
+                )
+            if not made_records:
+                raise SuricataError(f"Suricata wrote no canonical network event for {pcap.name}")
+
+            run_counts = {
+                "packets": read,
+                "independently counted packets": independently_counted,
+                "eve records": len(made_records) + len(made_alerts),
+                "network records": len(made_records),
+                "alerts": len(made_alerts),
+            }
+            if "decoder.bytes" in capture_stats:
+                run_counts["bytes"] = capture_stats["decoder.bytes"]
+                total_bytes += capture_stats["decoder.bytes"]
+            else:
+                every_run_reported_bytes = False
+            runs.append(
+                {
+                    "capture": pcap.name,
+                    "folder": folder_name,
+                    "read": read,
+                    "read counts": run_counts,
+                    "stats": capture_stats,
+                }
+            )
+            total_read += read
+            records.extend(made_records)
+            alerts.extend(made_alerts)
+            alert_keys.extend(made_alert_keys)
+
     record_index(records)
-    alert_keys = [alert_event_key(alert, records) for alert in alerts]
-    if rules is None and alerts:
-        raise SuricataError("the rule-independent telemetry pass produced an alert")
-    version, loaded, failed, load_errors = _engine_result(output_root, rules is not None)
-    stats = read_stats(output_root)
-    read = stats["decoder.pkts"]
-    if read != expected_packets:
+    if engine_facts is None:
+        raise SuricataError("Suricata evaluated no capture")
+    version, loaded, failed, reasons = engine_facts
+    load_errors = list(reasons)
+    stats = {"decoder.pkts": total_read}
+    if every_run_reported_bytes:
+        stats["decoder.bytes"] = total_bytes
+    if total_read != expected_packets:
         raise SuricataError(
-            f"Suricata decoded {read} packets, but the retained PCAP parser counted {expected_packets}"
-        )
-    covered = {record["pcap_filename"] for record in records}
-    missing = sorted(allowed - covered)
-    if missing:
-        raise SuricataError(
-            "Suricata wrote no canonical network event for "
-            + ", ".join(PurePosixPath(name).name for name in missing)
+            f"Suricata decoded {total_read} packets, but the retained PCAP parser counted {expected_packets}"
         )
     relative_rules = [relative for _, relative in rule_files]
     read_counts = {
         "capture files": len(pcaps),
-        "packets": read,
+        "packets": total_read,
         "independently counted packets": expected_packets,
         "eve records": len(records) + len(alerts),
         "network records": len(records),
@@ -942,9 +1018,10 @@ def _evaluate(
         "loaded": loaded,
         "failed": failed,
         "load errors": load_errors,
-        "read": read,
+        "read": total_read,
         "read counts": read_counts,
         "stats": stats,
+        "runs": runs,
         "home_net": addresses,
         "records": records,
         "alerts": alerts,
