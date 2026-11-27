@@ -88,7 +88,7 @@ export function DefenseTable({ recording, tallies, chosen, onChoose, goalTold }:
               {tally.firstAlert ? <i aria-hidden="true" /> : null}{first.when}{first.against ? <small>{first.against}</small> : null}
             </span>
             <span className={`lv-dtab-n is-false${tally.falseAlerts === 0 || tally.falseAlerts === null ? " is-zero" : ""}`}>
-              {tally.falseAlerts === undefined ? "not counted" : tally.falseAlerts === null ? "–" : tally.falseAlerts}
+              {tally.falseAlerts === undefined ? "not scored" : tally.falseAlerts === null ? "–" : tally.falseAlerts}
             </span>
           </button>
         );
@@ -100,6 +100,6 @@ export function DefenseTable({ recording, tallies, chosen, onChoose, goalTold }:
 export function tallySaid(tally: Tally, goalTold: boolean): string {
   const first = firstAlertWords(tally, elapsed, goalTold);
   const counts = `${tally.alerted} alerted, ${tally.seen} seen with no alert, ${tally.unseen} unseen${tally.final ? "" : " so far"}`;
-  const falseAlerts = tally.falseAlerts === null || tally.falseAlerts === undefined ? "" : `; ${plural(tally.falseAlerts, "false alert")} on ordinary activity`;
+  const falseAlerts = tally.falseAlerts === undefined ? "; false alerts not scored" : tally.falseAlerts === null ? "" : `; ${plural(tally.falseAlerts, "false alert")} on ordinary activity`;
   return `${tally.name}: ${counts}; ${tally.firstAlert ? "first alert " : ""}${first.when}${first.against ? `, ${first.against}` : ""}${falseAlerts}. ${tally.when}. ${tally.made}`;
 }

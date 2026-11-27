@@ -102,6 +102,43 @@ describe("one run judged by several defenses", () => {
     unmount();
   });
 
+  it("distinguishes false alerts that are pending, measured at zero, and not scored", () => {
+    const value = judgedTwice();
+    const unscored = value.defenses?.[1];
+    if (!unscored) throw new Error("fixture");
+    delete unscored.score.false_alerts;
+
+    const pendingView = open(value, { step: "1", at: 1.2, paused: true });
+    const pendingRows = within(pendingView.container).getByRole("group", { name: "The defenses that judge this run" });
+    const pending = within(pendingRows).getByRole("button", { name: /Wazuh with its stock rules/ });
+    const pendingUnscored = within(pendingRows).getByRole("button", { name: /Host sensors with no alerting rule set/ });
+    expect(pending.querySelector(".is-false")?.textContent).toBe("–");
+    expect(pending).not.toHaveAccessibleName(/not scored/);
+    expect(pendingUnscored.querySelector(".is-false")?.textContent).toBe("not scored");
+    expect(pendingUnscored).toHaveAccessibleName(/false alerts not scored/);
+    pendingView.unmount();
+
+    const finishedView = open(value, { step: "2", at: 2, paused: true });
+    const finishedRows = within(finishedView.container).getByRole("group", { name: "The defenses that judge this run" });
+    const measured = within(finishedRows).getByRole("button", { name: /Wazuh with its stock rules/ });
+    const finishedUnscored = within(finishedRows).getByRole("button", { name: /Host sensors with no alerting rule set/ });
+    expect(measured.querySelector(".is-false")?.textContent).toBe("0");
+    expect(measured).toHaveAccessibleName(/0 false alerts on ordinary activity/);
+    expect(finishedUnscored.querySelector(".is-false")?.textContent).toBe("not scored");
+    expect(finishedUnscored).toHaveAccessibleName(/false alerts not scored/);
+    finishedView.unmount();
+
+    const analyseView = open(value, { mode: "analyse", defense: "quiet" });
+    const analyseRows = within(analyseView.container).getByRole("group", { name: "The defenses side by side" });
+    const analysed = within(analyseRows).getByRole("button", { name: /Wazuh with its stock rules/ });
+    const analysedUnscored = within(analyseRows).getByRole("button", { name: /Host sensors with no alerting rule set/ });
+    expect(analysed.querySelector(".is-false")?.textContent).toBe("0");
+    expect(analysed).toHaveAccessibleName(/0 false alerts on ordinary activity/);
+    expect(analysedUnscored.querySelector(".is-false")?.textContent).toBe("not scored");
+    expect(analysedUnscored).toHaveAccessibleName(/false alerts not scored/);
+    analyseView.unmount();
+  });
+
   it("keeps the recorded clock while switching during a late-alert hold", () => {
     const value = judgedTwice();
     const first = value.steps[0];
