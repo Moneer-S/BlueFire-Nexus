@@ -343,7 +343,7 @@ function matchChip(match: RuleMatch): { words: string; className: string; title?
 
 function RuleCard({ match, noted }: { match: RuleMatch; noted: boolean }) {
   const chip = matchChip(match);
-  const events = new Set(match.alerts.flatMap((alert) => alert.events)).size;
+  const events = match.events;
   const verdict = match.verdict;
   return <article className="fx-rule" aria-label={match.rule.title}>
     <p className="fx-rule-line">
