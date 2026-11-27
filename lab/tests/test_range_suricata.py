@@ -193,7 +193,9 @@ def test_eve_config_is_an_exact_yaml_sequence_of_supported_outputs() -> None:
     assert names == suricata.EVE_TYPES
 
 
-def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_path: Path) -> None:
+def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     rules = tmp_path / "held"
     held_rules(rules)
     captures = tmp_path / "captures"
@@ -206,6 +208,15 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
     staged: list[tuple[Path, list[str]]] = []
     cidfiles: list[Path] = []
     configs: list[Path] = []
+    parsed_eve: list[Path] = []
+    read_eve = suricata.read_eve
+
+    def observed_read_eve(path: Path, allowed: set[str] | None = None):
+        assert path.is_file()
+        parsed_eve.append(path)
+        return read_eve(path, allowed)
+
+    monkeypatch.setattr(suricata, "read_eve", observed_read_eve)
 
     def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append((arguments, timeout))
@@ -299,6 +310,10 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
     assert modes == [0o733]
     assert output.stat().st_mode & 0o777 == 0o700
     assert (output / "pcap-0001").stat().st_mode & 0o777 == 0o700
+    assert parsed_eve == [output / "pcap-0001" / "eve.json"]
+    assert not (output / "pcap-0001" / "eve.json").exists()
+    assert (output / "pcap-0001" / "suricata.log").is_file()
+    assert (output / "pcap-0001" / "stats.log").is_file()
     assert [folder for folder, _ in staged] == [staged_folder] and not staged_folder.exists()
     assert cidfiles == [cidfile] and not cidfile.parent.exists()
     assert configs == [config_file] and not config_file.exists()
@@ -367,6 +382,9 @@ def test_telemetry_is_a_rule_independent_canonical_pass(tmp_path: Path) -> None:
         suricata.event_key(found["records"][0]),
         suricata.event_key(found["records"][1]),
     ]
+    assert not (tmp_path / "telemetry" / "pcap-0001" / "eve.json").exists()
+    assert (tmp_path / "telemetry" / "pcap-0001" / "suricata.log").is_file()
+    assert (tmp_path / "telemetry" / "pcap-0001" / "stats.log").is_file()
 
 
 def test_each_capture_has_its_own_process_output_and_aggregated_result(tmp_path: Path) -> None:
@@ -420,6 +438,10 @@ def test_each_capture_has_its_own_process_output_and_aggregated_result(tmp_path:
     assert found["stats"] == {"decoder.pkts": 2, "decoder.bytes": 1800}
     assert [run["capture"] for run in found["runs"]] == ["eth0.pcap", "eth1.pcap"]
     assert [run["folder"] for run in found["runs"]] == ["pcap-0001", "pcap-0002"]
+    assert not (tmp_path / "engine" / "pcap-0001" / "eve.json").exists()
+    assert not (tmp_path / "engine" / "pcap-0002" / "eve.json").exists()
+    assert (tmp_path / "engine" / "pcap-0001" / "suricata.log").is_file()
+    assert (tmp_path / "engine" / "pcap-0002" / "stats.log").is_file()
     assert [record["pcap_filename"] for record in found["records"]] == [
         "/captures/eth0.pcap",
         "/captures/eth1.pcap",
@@ -446,15 +468,18 @@ def test_rule_loading_must_be_identical_for_every_capture(tmp_path: Path) -> Non
         )
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
+    output = tmp_path / "engine"
     with pytest.raises(suricata.SuricataError, match="same engine and rule loading"):
         suricata.evaluate(
             suricata.IMAGE,
             rules,
             captures,
             ["10.9.0.3"],
-            tmp_path / "engine",
+            output,
             runner=runner,
         )
+    assert (output / "pcap-0001" / "eve.json").is_file()
+    assert (output / "pcap-0002" / "eve.json").is_file()
 
 
 def test_multiple_captures_share_one_overall_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -496,6 +521,34 @@ def test_decoder_packet_count_must_equal_the_independent_pcap_count(tmp_path: Pa
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     with pytest.raises(suricata.SuricataError, match="decoded 2 packets.*counted 1"):
+        suricata.telemetry(
+            suricata.IMAGE,
+            captures,
+            ["10.9.0.3"],
+            tmp_path / "telemetry",
+            runner=runner,
+        )
+    assert (tmp_path / "telemetry" / "pcap-0001" / "eve.json").is_file()
+
+
+def test_validated_eve_must_be_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    write_pcap(captures / "eth0.pcap")
+
+    def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        successful_output(arguments, [network("flow", tx_id=None)], loaded=0)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    unlink = Path.unlink
+
+    def refuse_eve(self: Path, *args, **kwargs) -> None:
+        if self.name == "eve.json":
+            raise PermissionError("refused for test")
+        unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_eve)
+    with pytest.raises(suricata.SuricataError, match="validated eve.json cannot be removed"):
         suricata.telemetry(
             suricata.IMAGE,
             captures,
@@ -576,6 +629,7 @@ def test_stock_eve_outputs_outside_the_declared_sequence_are_refused(
 
     with pytest.raises(suricata.SuricataError, match=rf"event_type {kind!r}, which was not configured"):
         suricata.read_eve(path)
+    assert path.is_file()
 
 
 @pytest.mark.parametrize(

@@ -123,7 +123,8 @@ REVIEW_FROM = 7
 SHOWN_LINES = 3
 LINE_CHARACTERS = 240
 EVENTS_FILE = "events.ecs.ndjson"
-NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
+NETWORK_EVENTS_FILE = "events.network.ecs.ndjson.gz"
+LEGACY_NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
 ALERTS_FILE = "alerts.ecs.ndjson"
 # The matches of a rule set that was evaluated after the run, by the set's name.
 MATCHES_FILE = "alerts.{}.ecs.ndjson"
@@ -1501,7 +1502,8 @@ def network_telemetry(
     if not documents:
         raise suricata.SuricataError("Suricata produced no canonical network event")
     ties = network_attributed(documents, jobs, addresses, go, stop, steps, capture, home_net)
-    count = ecs.write(out / NETWORK_EVENTS_FILE, documents)
+    network_file = out / NETWORK_EVENTS_FILE
+    count = ecs.write(network_file, documents)
     if count != len(documents):
         raise suricata.SuricataError(
             f"{NETWORK_EVENTS_FILE} has {count} lines for {len(documents)} canonical network events"
@@ -1513,6 +1515,8 @@ def network_telemetry(
         "home_net source": home_net_source,
         "file": NETWORK_EVENTS_FILE,
         "lines": count,
+        "bytes": network_file.stat().st_size,
+        "sha256": _sha256(network_file),
         "captures": retained,
         "runs": runs,
     }
@@ -1903,7 +1907,11 @@ def record(
     try:
         # A rescore is one current judgment of the run. Remove matches and private engine work from
         # an earlier judgment before naming the files written by this one.
-        for stale in (*out.glob("alerts.*.ecs.ndjson"), out / NETWORK_EVENTS_FILE):
+        for stale in (
+            *out.glob("alerts.*.ecs.ndjson"),
+            out / NETWORK_EVENTS_FILE,
+            out / LEGACY_NETWORK_EVENTS_FILE,
+        ):
             if stale.is_symlink() or stale.is_file():
                 stale.unlink()
             elif stale.exists():

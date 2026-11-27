@@ -470,13 +470,15 @@ jobs:
             and (.ecs.files | keys) == [
               "alerts.ecs.ndjson",
               "events.ecs.ndjson",
-              "events.network.ecs.ndjson",
+              "events.network.ecs.ndjson.gz",
               "steps.ecs.ndjson"
             ]
             and (.ecs.files | all(."raw lines" == ."ECS lines" and ."raw lines" > 0))
             and .ecs.network.evaluated == true
-            and .ecs.network.file == "events.network.ecs.ndjson"
+            and .ecs.network.file == "events.network.ecs.ndjson.gz"
             and (.ecs.network.lines | type == "number" and . > 0)
+            and (.ecs.network.bytes | type == "number" and . > 0)
+            and (.ecs.network.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
             and .ecs.network.engine.image == $image
             and (.packet_capture.home_net | type == "array" and length > 0)
             and (.ecs.network.home_net | type == "array" and length > 0)
@@ -489,18 +491,32 @@ jobs:
           for file in events.ecs.ndjson alerts.ecs.ndjson steps.ecs.ndjson; do
             echo "$file: $(wc -l < "$OUT/run/$file") lines"
           done
-          network_file="$OUT/run/events.network.ecs.ndjson"
+          network_file="$OUT/run/events.network.ecs.ndjson.gz"
           if [ ! -s "$network_file" ]; then
-            echo "events.network.ecs.ndjson is missing or empty"
+            echo "events.network.ecs.ndjson.gz is missing or empty"
             exit 1
           fi
-          network_lines=$(wc -l < "$network_file")
+          gzip -t -- "$network_file"
+          network_bytes=$(stat -c '%s' -- "$network_file")
+          declared_network_bytes=$(jq -r '.ecs.network.bytes' "$OUT/run/manifest.json")
+          if [ "$network_bytes" -ne "$declared_network_bytes" ]; then
+            echo "events.network.ecs.ndjson.gz is $network_bytes bytes, while manifest.json records $declared_network_bytes"
+            exit 1
+          fi
+          network_sha=$(sha256sum -- "$network_file")
+          network_sha=${network_sha%% *}
+          declared_network_sha=$(jq -r '.ecs.network.sha256' "$OUT/run/manifest.json")
+          if [ "$network_sha" != "$declared_network_sha" ]; then
+            echo "events.network.ecs.ndjson.gz has SHA-256 $network_sha, while manifest.json records $declared_network_sha"
+            exit 1
+          fi
+          network_lines=$(gzip -cd -- "$network_file" | wc -l)
           declared_network_lines=$(jq -r '.ecs.network.lines' "$OUT/run/manifest.json")
           if [ "$network_lines" -ne "$declared_network_lines" ]; then
-            echo "events.network.ecs.ndjson has $network_lines lines, while manifest.json records $declared_network_lines"
+            echo "events.network.ecs.ndjson.gz has $network_lines lines, while manifest.json records $declared_network_lines"
             exit 1
           fi
-          echo "events.network.ecs.ndjson: $network_lines lines"
+          echo "events.network.ecs.ndjson.gz: $network_lines lines, $network_bytes bytes, SHA-256 $network_sha"
 
       # What the defense made of each step is scored, and recording.json, the run in the format the
       # app's live view plays, was written; the single replay page is made from it, and says this run

@@ -3,8 +3,9 @@
 The adapter accepts one already-held rule-set folder. It gives that folder and
 one retained capture at a time to a pinned container read-only, gives each
 invocation one writable output folder, and does not pull an image or join a
-network. EVE records stay raw: validation and alert-to-event linking never
-invent or rewrite network evidence.
+network. Each temporary EVE file is parsed and validated without rewriting its
+records, then removed only after the entire multi-capture pass succeeds. The
+retained PCAPs remain the raw packet evidence.
 """
 
 from __future__ import annotations
@@ -725,6 +726,15 @@ def _regular_output(path: Path, name: str) -> Path:
     return target
 
 
+def _discard_eve(path: Path) -> None:
+    """Remove validated derived EVE; retained PCAPs remain the raw evidence."""
+
+    try:
+        path.unlink()
+    except OSError as error:
+        raise SuricataError(f"validated eve.json cannot be removed: {error}") from error
+
+
 def _engine_result(path: Path, rules_enabled: bool) -> tuple[str, int, int, list[str]]:
     log_path = _regular_output(path, "suricata.log")
     try:
@@ -873,6 +883,7 @@ def _evaluate(
     alerts: list[dict] = []
     alert_keys: list[EventKey] = []
     runs: list[dict] = []
+    eve_paths: list[Path] = []
     engine_facts: tuple[str, int, int, tuple[str, ...]] | None = None
     total_read = 0
     total_bytes = 0
@@ -938,7 +949,8 @@ def _evaluate(
                 )
 
             allowed = {f"/captures/{pcap.name}"}
-            made_records, made_alerts = read_eve(_regular_output(capture_output, "eve.json"), allowed)
+            eve_path = _regular_output(capture_output, "eve.json")
+            made_records, made_alerts = read_eve(eve_path, allowed)
             record_index(made_records)
             made_alert_keys = [alert_event_key(alert, made_records) for alert in made_alerts]
             if rules is None and made_alerts:
@@ -960,6 +972,7 @@ def _evaluate(
                 )
             if not made_records:
                 raise SuricataError(f"Suricata wrote no canonical network event for {pcap.name}")
+            eve_paths.append(eve_path)
 
             run_counts = {
                 "packets": read,
@@ -1010,6 +1023,8 @@ def _evaluate(
     }
     if "decoder.bytes" in stats:
         read_counts["bytes"] = stats["decoder.bytes"]
+    for eve_path in eve_paths:
+        _discard_eve(eve_path)
     return {
         "engine": {"name": ENGINE, "version": version, "image": image},
         "rules": loaded + failed,

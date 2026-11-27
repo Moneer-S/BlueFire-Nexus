@@ -32,6 +32,7 @@ the level the format's words count from.
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 from collections import Counter, defaultdict
@@ -44,7 +45,7 @@ from . import path as range_path
 from .spec import PACKET_CAPTURE, WAZUH_AGENT, read
 
 FILE = "recording.json"
-NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
+NETWORK_EVENTS_FILE = score.NETWORK_EVENTS_FILE
 # Wazuh's levels in the words of the format: informational, low, medium, high and critical.
 WORDS = ((0, 3, "informational"), (4, 6, "low"), (7, 11, "medium"), (12, 14, "high"), (15, 15, "critical"))
 COUNTING = ("high", "critical")
@@ -65,7 +66,9 @@ def level_word(level: object) -> str:
 def lines(path: Path) -> list[dict]:
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", newline="\n") as source:
+        return [json.loads(line) for line in source if line.rstrip("\r\n")]
 
 
 def nanoseconds(value: int) -> str:
