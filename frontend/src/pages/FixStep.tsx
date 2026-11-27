@@ -272,7 +272,7 @@ function WhereToStart({ recording, row, start, home }: { recording: Recording; r
       </> : <p className="fx-lead"><b>A sensor recorded this {what}, but no rule raised an alert. Start with a rule</b> that matches what the sensor recorded.</p>}
       <RuleHome home={home} />
     </> : start.kind === "lab alerted" ? <>
-      <p className="fx-lead"><b>One of the lab's own rules alerted on it, which the score does not count.</b> The score counts rules in this defense only, and none of those alerted.</p>
+      <p className="fx-lead"><b>An ad hoc lab rule alerted on it, which the score does not count.</b> The score counts rules in this defense only, and none of those alerted.</p>
       <p className="fx-why">The lab's own rules are the files under <code>lab/rules/linux/</code> in the repository.</p>
     </> : start.kind === "alerted" ? <>
       <p className="fx-lead"><b>A rule in this defense raised an alert on it.</b> There is nothing to fix here.</p>

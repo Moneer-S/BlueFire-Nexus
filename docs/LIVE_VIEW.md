@@ -54,15 +54,15 @@ Linux machine shipped with the app is
   of file names written right to left makes one). Each such character is shown
   as its code in a small tag, "U+202E", and is not applied; in a tooltip or the
   page's title it is written "[U+202E]".
-- **Rules a recording marks as lab rules are drawn apart and not scored.** Their
+- **Rules a recording marks as lab rules are ad hoc local work, drawn apart and not scored.** Their
   engine says "not counted in the score" under its name, a match of one of
   them at alert level is a "lab alert" on every screen ("LAB ALERT · HIGH" on
   a chip), and the score never counts them. In a step's detail, the other runs
-  of its technique say "lab alert" beside their outcome where one of the lab's
-  own rules alerted on them. A step that the score counts as seen and one of
-  the lab's own rules alerted on says so, and the hint under it reads "The
-  score counts published rules only, and none of those alerted.": it names no
-  published rule to start from and does not say that no rule matched.
+  of its technique say "lab alert" beside their outcome where an ad hoc lab
+  rule alerted on them. A step that the score counts as seen and an ad hoc lab
+  rule alerted on says so, and the hint under it reads "The score counts rules
+  in this defense only, and none of those alerted.": it names no counted rule
+  to start from and does not say that no rule matched.
 - **The head says what the run is, in one quiet line.** Under the title one
   line says what the run is and when it was recorded: "A real run, recorded 23
   Nov 2026 on a GitHub-hosted runner" for a run shipped with BlueFire or
@@ -779,7 +779,7 @@ run" (the five named views, their completed outcomes, which two alerted and
 their zero false-alert results), "Change a defense, see before and
 after" (the new auditd settings took "Clear Bash history (echo)" from unseen
 to seen; the one new rule then took 4 steps from seen to alerted with the
-lab's rules, and the score, which counts published rules only, still marks
+ad hoc lab rules, and the score, which excludes those rules, still marks
 them seen), and "Find what nobody saw" (the run on one Linux machine has one
 unseen test, "Clear Bash history (echo)", and pressing Analyse in the app lists
 it first, with "Fix this" in its detail), and "See what hardening stopped"

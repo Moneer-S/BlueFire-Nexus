@@ -87,6 +87,7 @@ describe("the rules that matched, in the detail of analyse mode", () => {
 
   it("groups the ordered rule by scoring without calling its repository-authored matches published", () => {
     const view = open("lab-range-one-path", { mode: "analyse", defense: "ordered-credential", select: "s08" });
+    expect(view.container.querySelector('tr[data-step="s08"] td.is-rules')?.textContent).toBe("1 alert 1 info");
     const detail = view.container.querySelector("article.lv-dt");
     const text = detail?.textContent ?? "";
     expect(text).toContain("Rules in this defense at alert level: in the score");

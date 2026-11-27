@@ -352,7 +352,7 @@ describe("the page for fixing a step", () => {
   it("for a step a rule of the lab's own alerted on, shows that rule with how the run judged it and its text, and offers no draft", async () => {
     mount("3");
     const start = await screen.findByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("One of the lab's own rules alerted on it, which the score does not count. The score counts rules in this defense only, and none of those alerted.");
+    expect(start).toHaveTextContent("An ad hoc lab rule alerted on it, which the score does not count. The score counts rules in this defense only, and none of those alerted.");
     const matched = screen.getByRole("region", { name: "Rules that matched it" });
     expect(matched).toHaveTextContent("The rule that raised the lab alert");
     // Where the run loaded the rule from, as the recording says; not a claim about the repository today.

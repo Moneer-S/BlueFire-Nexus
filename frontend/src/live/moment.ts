@@ -46,12 +46,12 @@ export interface StepMoment {
    */
   heard: readonly Alert[];
   /**
-   * The step's first counting match of a published rule in playback's firing
+   * The step's first counting match of a rule in the defense in playback's firing
    * order, once it has fired: the alert the step's sentence names, the same
    * one the score and the first alert's flag count from. Null before then.
    */
   named: Alert | null;
-  /** The same for a rule written in this repository at alert level, which is never in the score. */
+  /** The same for an ad hoc local rule at alert level, which is never in the score. */
   namedLab: Alert | null;
   /** The fired matches whose light has reached its rule engine, with that moment. */
   landed: { alert: Alert; at: number }[];

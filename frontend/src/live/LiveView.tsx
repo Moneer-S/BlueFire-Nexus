@@ -518,7 +518,7 @@ export function LiveView({ recording: held, origin, originKind, initial, onFix, 
   const firstClock = firstTold ? firstAlertClock(recording, facts, firstTold) : null;
   const mapFirst = firstTold && firstClock ? { id: firstTold.alert.id, time: elapsed(firstClock.seconds) } : null;
   const goalTime = recording.score.goal_seconds === undefined || recording.score.goal_seconds === null ? null : elapsed(recording.score.goal_seconds);
-  // The published rules' alerts raised so far, as the score counts them: earlier steps' by their time, the step's own once fired.
+  // The defense's counted alerts raised so far: earlier steps' by their time, the step's own once fired.
   const alertsOfRun = useMemo(() => (network ? recording.alerts.filter((alert) => matchKind(alert) === "alert").sort((a, b) => alertMoment(a) - alertMoment(b)) : []), [recording, network]);
   const heard = moment?.heard;
   const raised = useMemo(() => alertsOfRun.filter((alert) => (alert.step === stepId ? (heard ?? []).includes(alert) : alertMoment(alert) <= frame.real)), [alertsOfRun, stepId, heard, frame.real]);
@@ -630,7 +630,7 @@ export function LiveView({ recording: held, origin, originKind, initial, onFix, 
                 {/* While the run plays the counts go up: the head says so, so two moments of one run do not read as two runs. */}
                 <span className="lv-score-label">{mode === "watch" && !frame.ended ? `${units} alerted so far` : `${units} alerted`}</span>
               </div>
-              <div className={`lv-score-item is-seen${score.seen === 0 ? " is-zero" : ""}`} title={`${capital(units)} a sensor recorded, and no published rule at alert level matched`}>
+              <div className={`lv-score-item is-seen${score.seen === 0 ? " is-zero" : ""}`} title={`${capital(units)} a sensor recorded, and no rule in this defense at alert level matched`}>
                 <b>{score.seen}</b>
                 <span>seen, no alert</span>
               </div>
@@ -641,14 +641,14 @@ export function LiveView({ recording: held, origin, originKind, initial, onFix, 
               {falseAlerts !== undefined ? (
                 <div
                   className={`lv-score-item lv-score-false${falseAlerts === 0 ? " is-zero" : ""}`}
-                  title={`Published rules that alerted on ordinary activity, outside every step${recording.ordinary ? ` (${plural(recording.ordinary.events, "event")} in all)` : ""}. Each rule counts once.`}
+                  title={`Rules in this defense that alerted on ordinary activity, outside every step${recording.ordinary ? ` (${plural(recording.ordinary.events, "event")} in all)` : ""}. Each rule counts once.`}
                 >
                   <b>{falseAlerts}</b>
                   <span>{falseAlerts === 1 ? "false alert" : "false alerts"}</span>
                 </div>
               ) : network && recording.ordinary && recording.score.false_alerts !== undefined ? (
                 // On a network the counters keep their places from the first moment: this one is told at the end.
-                <div className="lv-score-item lv-score-false is-zero is-later" title="Published rules that alerted on ordinary activity, outside every step. Ordinary activity has no times in a recording, so this count is told at the end of the run.">
+                <div className="lv-score-item lv-score-false is-zero is-later" title="Rules in this defense that alerted on ordinary activity, outside every step. Ordinary activity has no times in a recording, so this count is told at the end of the run.">
                   <b>&ndash;</b>
                   <span>false alerts</span>
                 </div>

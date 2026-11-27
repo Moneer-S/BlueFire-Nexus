@@ -3371,7 +3371,7 @@
   --ow: var(--lv-green);
 }
 
-/* Beside a step's outcome by the published rules: one of the lab's own rules alerted on it. */
+/* Beside a step's outcome by the defense's rules: an ad hoc lab rule alerted on it. */
 .lv-ow.is-lab {
   --ow: var(--lv-violet);
   margin-left: 10px;

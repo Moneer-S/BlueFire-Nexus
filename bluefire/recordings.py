@@ -1068,7 +1068,7 @@ def _check_agreement(
         first_time(step, where, "first_event", first_event.get(step_id), "sensor event")
         first_time(
             step, where, "first_alert", first_pinned.get(step_id),
-            "counting alert of a published rule",
+            "counting alert of a pinned rule in the defense",
         )  # fmt: skip
         if "outcome_with_lab_rules" in step:
             first_time(
@@ -1084,9 +1084,9 @@ def _check_agreement(
         if (answer == "alert") != (step_id in first_pinned):
             check.fail(
                 f"{where}.visibility.answer",
-                "is alert, but no published rule's alert counts for the step."
+                "is alert, but no alert of a pinned rule in the defense counts for the step."
                 if answer == "alert"
-                else "must be alert: a published rule's alert counts for the step.",
+                else "must be alert: an alert of a pinned rule in the defense counts for the step.",
             )
         expected = _outcome(happened, answer)
         if step["outcome"] != expected:
@@ -1285,7 +1285,7 @@ def _check_race(
 
     An attack path begins with a step of role ``test`` that has a ``started``, and the
     race counts from that one moment: ``first_alert_seconds`` to the first counting
-    alert of a published rule on a test, at its moment (``first_raised``, each step's
+    alert of a pinned rule in the defense on a test, at its moment (``first_raised``, each step's
     ``first_alert``: its ``raised`` time for a live detector, else its ``time``), and
     ``goal_seconds`` to the end of one of the steps. The format does not say which step
     reached the goal, so that is not checked.
@@ -1327,7 +1327,7 @@ def _check_race(
         if not test_alerts:
             check.fail(
                 f"{at}.first_alert_seconds",
-                "is set, but no step of role test has a counting alert of a published rule.",
+                "is set, but no step of role test has a counting alert of a pinned rule in the defense.",
             )
         elif origin is not None:
             # A sensor can stamp the alert a few milliseconds before the step's start.

@@ -129,7 +129,7 @@ describe("a step with two live alerts raised out of the order of their events", 
       return text;
     };
     expect(note(first.end - 0.05)).toBeNull();
-    expect(note(fire + 0.05)).toBe("One of the lab's own rules alerted, which the score does not count: Lab rule.");
+    expect(note(fire + 0.05)).toBe("An ad hoc lab rule alerted, which the score does not count: Lab rule.");
   });
 
   it("names rule B in analyse mode too, and times the first alert from it", () => {

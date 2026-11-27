@@ -109,7 +109,7 @@ describe("a step's neighbours and its gap", () => {
     const seen = run.steps.find((item) => item.id === "2");
     if (!seen) throw new Error("fixture");
     const ours = alert("lab-2", "2", 3.2, ["e2"], { detector: "lab", rule: { id: "r-lab", title: "Ours", level: "high", origin: "lab" } });
-    const said = "The score counts published rules only, and none of those alerted.";
+    const said = "The score counts rules in this defense only, and none of those alerted.";
     // With a published rule matched for review beside the lab's alert, and with the lab's alert alone.
     expect(fixHint(run, seen, groupMatches([...run.alerts.filter((item) => item.step === "2"), ours]))).toBe(said);
     expect(fixHint(run, seen, groupMatches([ours]))).toBe(said);

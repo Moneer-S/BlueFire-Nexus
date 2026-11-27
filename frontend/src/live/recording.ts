@@ -89,13 +89,13 @@ export interface Detector {
   name: string;
   rules: number;
   when: DetectorWhen;
-  /** The commit of the repository the lab's own rules came from, when the detector `lab` names it. */
+  /** The commit of the repository this detector's rules came from, when recorded. */
   commit?: string;
-  /** For the detector `lab`: how the run judged each rule written in the repository, and the rule itself where it is given. */
+  /** For the detector `lab`: how the run judged each ad hoc local rule, and the rule itself where it is given. */
   verdicts?: RuleVerdict[];
 }
 
-/** How a run judged one rule of the lab's own, and, optionally, the rule's file and its text line by line. */
+/** How a run judged one ad hoc lab rule and, optionally, the rule's file and its text line by line. */
 export interface RuleVerdict {
   rule: string;
   title: string;
@@ -983,7 +983,7 @@ export function countsAsAlert(alert: Alert): boolean {
   return alert.counts && alert.launcher_only !== true;
 }
 
-/** True when the match counts toward `outcome` and `first_alert`: a counting match of a published rule. */
+/** True when the match counts toward `outcome` and `first_alert`: a counting match from a pinned rule set in the defense. */
 export function countsForScore(alert: Alert): boolean {
   return countsAsAlert(alert) && alert.rule.origin === "pinned";
 }

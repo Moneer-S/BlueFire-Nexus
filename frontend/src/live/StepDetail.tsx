@@ -49,7 +49,7 @@ function afterStart(what: string, ms: number): string {
 
 function chip(alert: Alert): { words: string; className: string; title?: string } {
   if (alert.launcher_only === true) return { words: "launcher line", className: "is-launcher" };
-  if (alert.counts && alert.rule.origin === "lab") return { words: `lab alert · ${alert.rule.level}`, className: "is-lab", title: "One of the lab's own rules alerted. The score does not count it." };
+  if (alert.counts && alert.rule.origin === "lab") return { words: `lab alert · ${alert.rule.level}`, className: "is-lab", title: "An ad hoc lab rule alerted. The score does not count it." };
   if (alert.counts) return { words: `alert · ${alert.rule.level}`, className: "is-alert" };
   if (alert.rule.origin === "lab") return { words: `lab · ${alert.rule.level}`, className: "is-lab" };
   if (alert.rule.level === "informational") return { words: "informational", className: "is-review", title: "An informational match: nobody reviews it." };
@@ -336,9 +336,9 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
               <span className="lv-dt-on">{stepShortName(recording, other)}</span>
               <span className="lv-dt-ot">{other.title}</span>
               <span className={`lv-ow is-${outcomeClass(other.outcome)}`}>{outcomeWords(other.outcome)}</span>
-              {/* The outcome counts the published rules; where the lab's own rules alerted, the list says that too, as the step's own line does. */}
+              {/* The outcome counts this defense's rules; where an ad hoc lab rule alerted, the list says that too, as the step's own line does. */}
               {other.outcome_with_lab_rules === "alerted" && other.outcome !== "alerted" ? (
-                <span className="lv-ow is-lab" title="One of the lab's own rules alerted on it, which the score does not count">
+                <span className="lv-ow is-lab" title="An ad hoc lab rule alerted on it, which the score does not count">
                   lab alert
                 </span>
               ) : null}
@@ -399,11 +399,11 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
               {" "}
               {m.labAlert[0] ? (
                 <>
-                  One of the lab&apos;s own rules alerted, which the score does not count: <b>{titleInSentence(m.labAlert[0].rule.title)}</b>.
+                  An ad hoc lab rule alerted, which the score does not count: <b>{titleInSentence(m.labAlert[0].rule.title)}</b>.
                 </>
               ) : (
                 <>
-                  With the lab&apos;s own rules, which the score does not count: <b>{outcomeWords(labWord)}</b>.
+                  With ad hoc lab rules, which the score does not count: <b>{outcomeWords(labWord)}</b>.
                 </>
               )}
             </span>
@@ -530,10 +530,10 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
         {anyMatch ? (
           <>
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Rules in this defense at alert level: in the score" alerts={m.alert} ended={row.end} />
-            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Lab alerts: the lab's own rules at alert level, not in the score" alerts={m.labAlert} ended={row.end} />
-            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Lab alerts: ad hoc local rules at alert level, not in the score" alerts={m.labAlert} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Rules in this defense below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Rules in this defense at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
-            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="The lab's own rules below alert level" alerts={m.labReview} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Ad hoc lab rules below alert level" alerts={m.labReview} ended={row.end} />
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
           </>
         ) : (

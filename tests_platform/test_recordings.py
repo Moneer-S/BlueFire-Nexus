@@ -248,6 +248,18 @@ def test_the_shipped_path_through_range_one_is_listed_and_served_as_its_ci_run_w
         ("agentic-suricata", "after the run"),
         ("ordered-credential", "after the run"),
     ]
+    detectors = {detector["id"]: detector for detector in whole["network"]["detectors"]}
+    assert detectors["ordered-credential"]["name"].startswith("Repository-authored Sigma rules")
+    assert detectors["sigma"]["name"].startswith("Published Sigma rules (SigmaHQ/sigma at ")
+    counted_ordered = [
+        alert
+        for alert in whole["alerts"]
+        if alert["detector"] == "ordered-credential" and alert["counts"]
+    ]
+    assert [
+        (alert["step"], alert["rule"]["origin"], alert["rule"]["title"])
+        for alert in counted_ordered
+    ] == [("s08", "pinned", "Credential Search Followed By Remote Archive Collection")]
     expected = [
         ("wazuh-stock", ["pinned"], (1, 10, 0, 0)),
         ("sigma-public", ["sigma"], (0, 11, 0, 0)),
@@ -638,7 +650,7 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
         "1999-01-01T00:00:00Z.",
         "steps[0].visibility.kept is more than visibility.events (2).",
         "steps[0].visibility counts events the recording does not hold (2).",
-        "steps[1].first_alert is set, but the step has no counting alert of a published rule.",
+        "steps[1].first_alert is set, but the step has no counting alert of a pinned rule in the defense.",
         "steps[1].outcome is unseen, but happened 'took effect' and visibility 'telemetry only' "
         "give seen.",
         "steps[1].visibility counts events the recording does not hold (1).",

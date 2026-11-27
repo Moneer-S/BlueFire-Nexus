@@ -79,13 +79,13 @@ describe("a seen test whose only published match is on the line that started it,
 
   it("keeps the words of a step one of the lab's own rules alerted on, beside a launcher match", () => {
     // Test 11 (step 14): a lab alert, a published rule for review, and a published match on its launcher line.
-    const sentence = `${events("14")} events recorded, 1 rule matched for review, none of the published rules at alert level.`;
-    const hint = "The score counts published rules only, and none of those alerted.";
+    const sentence = `${events("14")} events recorded, 1 rule matched for review, none of the rules in this defense at alert level.`;
+    const hint = "The score counts rules in this defense only, and none of those alerted.";
     const seen = told("14");
     expect(seen.sentence).toBe(sentence);
     expect(seen.hint).toBe(hint);
     // The detail names the lab's rule after the same sentence.
-    expect(seen.detail.sentence).toBe(`${sentence} One of the lab's own rules alerted, which the score does not count: Systemd Unit File Written By A Shell.`);
+    expect(seen.detail.sentence).toBe(`${sentence} An ad hoc lab rule alerted, which the score does not count: Systemd Unit File Written By A Shell.`);
     expect(seen.detail.hint).toBe(hint);
   }, 60_000);
 });
@@ -103,7 +103,7 @@ describe("the words of a launcher match beside a lab alert", () => {
     });
     const only = run.steps[0];
     if (!only) throw new Error("fixture");
-    expect(seenWords(1, run.alerts)).toBe("1 event recorded, 1 published rule matched only the launcher line, which never counts.");
-    expect(fixHint(run, only, groupMatches(run.alerts))).toBe("The score counts published rules only, and none of those alerted.");
+    expect(seenWords(1, run.alerts)).toBe("1 event recorded, 1 rule in this defense matched only the launcher line, which never counts.");
+    expect(fixHint(run, only, groupMatches(run.alerts))).toBe("The score counts rules in this defense only, and none of those alerted.");
   });
 });
