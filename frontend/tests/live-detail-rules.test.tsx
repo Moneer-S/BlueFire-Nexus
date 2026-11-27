@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { clockTime } from "../src/live/format";
 import { LiveView } from "../src/live/LiveView";
 import type { LiveViewProps } from "../src/live/LiveView";
-import { readRecording, timeOf } from "../src/live/recording";
+import { firstView, readRecording, timeOf } from "../src/live/recording";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -31,7 +31,7 @@ interface RawAlert {
 
 /** Each rule that matched a step, recounted from the recording's file: the different events it matched and when its first match came. */
 function recount(name: string, stepId: string): Map<string, { events: number; first: number }> {
-  const alerts = (file(name) as { alerts: RawAlert[] }).alerts.filter((alert) => alert.step === stepId);
+  const alerts = firstView(readRecording(file(name))).alerts.filter((alert) => alert.step === stepId);
   const rules = new Map<string, { events: Set<string>; first: number }>();
   for (const alert of alerts) {
     const moment = timeOf(alert.raised ?? alert.time);
@@ -74,15 +74,27 @@ describe("the rules that matched, in the detail of analyse mode", () => {
   it("says when the first match of a rule that matched many times came, and how many of its matches were raised after the step ended", () => {
     const rows = ruleRows(open("lab-range-one-path", { mode: "analyse", select: "s01" }).container);
     const many = rows.find((row) => row.title === "sshd: Attempt to login using a non-existent user");
-    expect(many?.counts).toBe("796 events · first at 05:44:50.877 · none in ordinary activity");
-    expect(many?.notes).toEqual(["18 of its 796 matches were raised after the step ended."]);
+    expect(many?.counts).toBe("796 events · first at 19:31:48.185 · none in ordinary activity");
+    expect(many?.notes).toEqual(["14 of its 796 matches were raised after the step ended."]);
     // A rule that matched many times with no match raised late has no such note.
     expect(rows.find((row) => row.title === "sshd: brute force trying to get access to the system. Non existent user.")?.notes).toEqual([]);
   }, 60_000);
 
-  it("keeps the line of a rule that matched once as it was: its event, its time, and a match raised late said in time", () => {
+  it("keeps the line of a rule that matched once: its event and time, and says when it fired after the step ended", () => {
     const rows = ruleRows(open("lab-range-one-path", { mode: "analyse", select: "s01" }).container);
-    expect(rows[0]).toEqual({ title: "Multiple authentication failures followed by a success.", counts: "1 event · 05:46:06.940", notes: ["Raised 280 ms after the step ended."] });
+    expect(rows[0]).toEqual({ title: "Multiple authentication failures followed by a success.", counts: "1 event · 19:32:52.192", notes: ["Raised 908 ms after the step ended."] });
+  }, 60_000);
+
+  it("groups the ordered rule by scoring without calling its repository-authored matches published", () => {
+    const view = open("lab-range-one-path", { mode: "analyse", defense: "ordered-credential", select: "s08" });
+    expect(view.container.querySelector('tr[data-step="s08"] td.is-rules')?.textContent).toBe("1 alert 1 info");
+    const detail = view.container.querySelector("article.lv-dt");
+    const text = detail?.textContent ?? "";
+    expect(text).toContain("Rules in this defense at alert level: in the score");
+    expect(text).toContain("Rules in this defense at informational level: nobody reviews them");
+    expect(text).toContain("the groups describe scoring, detector provenance names authorship");
+    expect(text).not.toContain("Published rules at alert level");
+    expect(text).not.toContain("Published rules at informational level");
   }, 60_000);
 
   it("counts an event once where a match names it twice, as the step's fix page does", () => {

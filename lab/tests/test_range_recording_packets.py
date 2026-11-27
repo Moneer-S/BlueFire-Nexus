@@ -315,6 +315,8 @@ def manifest() -> dict:
                 "et-open": {
                     "kind": "suricata",
                     "source": "lab/rules/et-open/SHA256SUMS@11342",
+                    "source type": "tracked",
+                    "repository authored": False,
                     "when": score.AFTER,
                     "evaluated": True,
                     "engine": {"name": "Suricata", "version": "7.0.3"},
@@ -391,6 +393,9 @@ def test_packet_cut_keeps_each_sensor_share_and_every_rule_match(tmp_path: Path)
     assert detector["name"] == (
         "Published packet rules (lab/rules/et-open/SHA256SUMS at 11342) with Suricata 7.0.3"
     )
+    assert (
+        "The detector et-open is the published rule set lab/rules/et-open/SHA256SUMS at version 11342"
+    ) in " ".join(made["notes"])
     held = {
         event["fields"]["ecs_event_id"] for event in made["events"] if event["sensor"] == "packet-capture-web"
     }

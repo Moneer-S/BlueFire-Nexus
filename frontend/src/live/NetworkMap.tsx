@@ -29,7 +29,7 @@ interface NetworkMapProps {
   /** The host an attack path reaches its goal on, once the screen tells that it has: marked on the map from then on. Null before, and without a goal. */
   goalHost?: string | null;
   /**
-   * The published rules' alerts raised so far, the screen's own count of them: on a network, the host each was raised
+   * The defense's counted alerts raised so far, the screen's own count of them: on a network, the host each was raised
    * on keeps a mark from then on, and the engine names the latest of an earlier step under the step's own matches.
    */
   raised?: readonly Alert[];
@@ -160,7 +160,7 @@ const LEVEL_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, lo
 
 function MatchChip({ kind, level }: { kind: MatchKind; level: string }) {
   if (kind === "launcher") return <span className="lv-chip lv-chip--launcher">launcher line</span>;
-  if (kind === "lab") return <span className="lv-chip lv-chip--lab" title="One of the lab's own rules alerted. The score does not count it.">lab alert &middot; {level}</span>;
+  if (kind === "lab") return <span className="lv-chip lv-chip--lab" title="An ad hoc lab rule alerted. The score does not count it.">lab alert &middot; {level}</span>;
   if (kind === "alert") return <span className="lv-chip lv-chip--alert">alert &middot; {level}</span>;
   if (level === "informational") return <span className="lv-chip lv-chip--review" title="An informational match: nobody reviews it.">informational</span>;
   return <span className="lv-chip lv-chip--review">review &middot; {level}</span>;
@@ -767,7 +767,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
               <div className="lv-engine-name" title={node.detector.name}>
                 <span className="lv-cut">{parts.main}</span>
               </div>
-              <div className="lv-engine-sub" title={lab ? "Not scored: our own rules, shown apart from the published ones and never counted in the score" : parts.engine ? `Run by ${parts.engine}` : undefined}>
+              <div className="lv-engine-sub" title={lab ? "Not scored: ad hoc local rules, shown apart from the rules in this defense and never counted in the score" : parts.engine ? `Run by ${parts.engine}` : undefined}>
                 {node.detector.rules > 0 ? plural(node.detector.rules, "rule") : parts.engine}
                 {lab ? " · not counted in the score" : null}
                 {/* When the engines did not all run at the same time, each says when it ran, and so how its alerts' times read. */}

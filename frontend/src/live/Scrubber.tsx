@@ -109,7 +109,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, ended, onS
     const events = timeline.arrivals.map(({ at }) => evenPosition(timeline, at));
     const alerts = timeline.fires.filter(({ alert }) => countsForScore(alert)).map(({ at }) => evenPosition(timeline, at));
     if (events.length > 0) rows.push({ key: "events", label: `events recorded by ${[...new Set(sensorNames)].join(" and ")}`, className: "is-events", positions: events });
-    if (alerts.length > 0) rows.push({ key: "alert", label: "alerts of published rules", className: "is-alert", positions: alerts });
+    if (alerts.length > 0) rows.push({ key: "alert", label: "alerts from rules in this defense", className: "is-alert", positions: alerts });
     return rows.map((row, index) => ({ key: row.key, label: row.label, className: row.className, path: lanePath(row.positions, index * (ROW + GAP), ROW) }));
   }, [recording, timeline]);
 

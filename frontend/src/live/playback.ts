@@ -131,7 +131,7 @@ export interface StepPlay {
    * nothing is named before it fires and no two parts pick different ones.
    */
   matches: Fire[];
-  /** The step's first counting match of a published rule, if any, a late arrival too. */
+  /** The step's first counting match of a rule in the defense, if any, a late arrival too. */
   firstCounting: Fire | null;
   /** The step's first counting match of either origin, if any. */
   firstCountingWithLabRules: Fire | null;
@@ -159,9 +159,9 @@ export interface Timeline {
   tests: Segment[];
   /** True when any step carries `outcome_with_lab_rules`. */
   withLabRules: boolean;
-  /** The first counting match of a published rule on a step of role `test`, if any. */
+  /** The first counting match of a rule in the defense on a step of role `test`, if any. */
   firstAlert: FirstAlert | null;
-  /** The same when the accepted rules written in this repository count too. */
+  /** The same when ad hoc local rules count too. */
   firstAlertWithLabRules: FirstAlert | null;
 }
 
@@ -746,11 +746,11 @@ export function evenTime(timeline: Timeline, position: number): number {
 export interface ScoreSoFar {
   /** Steps of role `test` whose segment has ended. */
   testsDone: number;
-  /** Of steps of role `test` that took effect: alerted from the first counting alert of a published rule, seen and unseen once the step has ended. */
+  /** Of steps of role `test` that took effect: alerted from the first counting alert of a rule in the defense, seen and unseen once the step has ended. */
   alerted: number;
   seen: number;
   unseen: number;
-  /** The same count of alerted tests when the accepted rules written in this repository count too. Null when the run did not evaluate such rules. */
+  /** The same count of alerted tests when ad hoc local rules count too. Null when the run did not evaluate such rules. */
   alertedWithLabRules: number | null;
   /** Steps of any role with outcome `stopped` that have ended. */
   stopped: number;

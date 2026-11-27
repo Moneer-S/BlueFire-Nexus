@@ -145,6 +145,58 @@ def records(spec: dict, host: str) -> str:
     )
 
 
+def rule_set_source(entry: dict) -> tuple[str, str, str]:
+    """A scored rule set's source, pin and source type, without guessing from its text."""
+
+    source = str(entry.get("source") or "")
+    source_type = entry.get("source type")
+    if source_type == "tracked":
+        name, mark, pin = source.rpartition("@")
+        return (name if mark else source, pin if mark else "", source_type)
+    if source_type == "repository":
+        name, mark, pin = source.partition("@")
+        return (name if mark else source, pin if mark else "", source_type)
+    return source, "", ""
+
+
+def rule_set_name(entry: dict, noun: str) -> str:
+    """A detector name whose authorship is explicit, or neutral when an older spec did not say."""
+
+    source, pin, source_type = rule_set_source(entry)
+    authored = entry.get("repository authored")
+    if source_type == "tracked":
+        lead = "Repository-authored" if authored is True else "Published" if authored is False else ""
+        at = f" at {pin}" if pin else ""
+    elif source_type == "repository":
+        lead = "Published"
+        at = f" at {pin[:12]}" if pin else ""
+    else:
+        lead = ""
+        at = ""
+    kind = f"{lead} {noun}" if lead else noun[0].upper() + noun[1:]
+    return f"{kind} ({source}{at})"
+
+
+def rule_set_description(entry: dict) -> str:
+    """The rule set's provenance for a recording note, neutral if old metadata omitted authorship."""
+
+    source, pin, source_type = rule_set_source(entry)
+    if source_type == "tracked":
+        authored = entry.get("repository authored")
+        relation = (
+            "repository-authored rule set"
+            if authored is True
+            else "published rule set"
+            if authored is False
+            else "rule set"
+        )
+        return f"{relation} {source}" + (f" at version {pin}" if pin else "")
+    if source_type == "repository":
+        relation = "public packet rule set" if entry.get("kind") == "suricata" else "public rule set"
+        return f"{relation} {source}" + (f" at commit {pin}" if pin else "")
+    return f"rule set {source}"
+
+
 def detectors(folder: Path, manifest: dict, judged: list[dict]) -> list[dict]:
     """The detectors of the defenses that judged the run: the manager's stock rules, which ran live, and each
     rule set that was evaluated after the run, with the rules its engine loaded and the digest of its files."""
@@ -168,14 +220,11 @@ def detectors(folder: Path, manifest: dict, judged: list[dict]) -> list[dict]:
         entry = sets[identifier]
         engine = entry["engine"]
         if entry.get("kind") == "suricata":
-            source, mark, version = str(entry["source"]).rpartition("@")
-            source = source if mark else str(entry["source"])
-            version = version if mark else str(entry.get("version") or "")
-            at = f" at {version}" if version else ""
             found.append(
                 {
                     "id": identifier,
-                    "name": f"Published packet rules ({source}{at}) with "
+                    "name": rule_set_name(entry, "packet rules")
+                    + " with "
                     + lab.named(engine["name"], engine.get("version")),
                     "rules": entry["loaded"],
                     "when": score.AFTER,
@@ -183,11 +232,11 @@ def detectors(folder: Path, manifest: dict, judged: list[dict]) -> list[dict]:
                 }
             )
             continue
-        repo, _, commit = entry["source"].partition("@")
         found.append(
             {
                 "id": identifier,
-                "name": f"Published Sigma rules ({repo} at {commit[:12]}) with "
+                "name": rule_set_name(entry, "Sigma rules")
+                + " with "
                 + lab.named(engine["name"], engine.get("version")),
                 "rules": entry["loaded"],
                 "when": score.AFTER,
@@ -961,7 +1010,8 @@ def view(
         end = next((step.get("ended") for step in steps if step["id"] == goal.get("after")), None)
         if goal.get("passed") and end:
             totals["goal_seconds"] = score.seconds_between(start, end)
-    totals["false_alerts"] = sum(1 for match in ordinary["matches"] if match["level"] in COUNTING)
+    if judged["ordinary"].get("scored") is True:
+        totals["false_alerts"] = sum(1 for match in ordinary["matches"] if match["level"] in COUNTING)
     return {
         "id": judged["id"],
         "name": judged["name"],
@@ -1138,7 +1188,7 @@ def defense_notes(manifest: dict) -> list[str]:
         if entry.get("kind") == "suricata":
             engine = lab.named(entry["engine"]["name"], entry["engine"].get("version"))
             said.append(
-                f"The detector {name} is the pinned packet rule set {entry['source']}, evaluated after the run "
+                f"The detector {name} is the {rule_set_description(entry)}, evaluated after the run "
                 f"by {engine} over the retained packet captures. Its alerts have the time of their packet event "
                 f"and no raised time, and count from that time. Of its {entry['rules']} rules the engine loaded "
                 f"{entry['loaded']}; a rule it did not load was not evaluated."
@@ -1159,10 +1209,9 @@ def defense_notes(manifest: dict) -> list[str]:
                     f"{lab.count(captures, 'capture') if isinstance(captures, int) else 'the retained captures'}."
                 )
             continue
-        repo, _, commit = entry["source"].partition("@")
         engine = lab.named(entry["engine"]["name"], entry["engine"].get("version"))
         said.append(
-            f"The detector {name} is the public rule set {repo} at commit {commit}, evaluated after the run by "
+            f"The detector {name} is the {rule_set_description(entry)}, evaluated after the run by "
             f"{engine} over the events the sensors recorded. Its alerts have the time of their event and no "
             f"raised time, and count from that time. Of its {entry['rules']} rules the engine loaded "
             f"{entry['loaded']}; a rule it did not load was not evaluated."

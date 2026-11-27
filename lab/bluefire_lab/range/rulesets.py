@@ -1,4 +1,4 @@
-"""The pinned public rule sets a range's defenses run.
+"""The pinned rule sets a range's defenses run.
 
 Repository sets are fetched file by file at a commit and checked against the
 lock beside the spec. They may select only executable rule formats below
@@ -424,7 +424,7 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
     """What a run's manifest holds of a rule set."""
 
     if local(rule_set):
-        return {
+        found = {
             "kind": rule_set.kind,
             "source": rule_set.source_file,
             "version": rule_set.version,
@@ -438,6 +438,9 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
                 "the repository after their SHA-256 matched; SOURCE names the manifest and version"
             ),
         }
+        if rule_set.repository_authored is not None:
+            found["repository authored"] = rule_set.repository_authored
+        return found
     left_out = dict(getattr(hashes, "left_out", {}))
     selection = {
         "include": rule_set.include,

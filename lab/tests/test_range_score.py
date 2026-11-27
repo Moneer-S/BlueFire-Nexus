@@ -258,7 +258,10 @@ def small_run(folder: Path, lines: list[dict] | None = None, alerts: list[dict] 
             "stop": {host: T0 + 600 for host in ("client", "web", "build", "db")},
             "started": iso(T0 - 60),
             "minutes": 11.0,
-            "jobs": {},
+            "jobs": {
+                name: {"runs": 1, "archived runs": 1}
+                for name in ("browse", "admin", "cache", "build", "backup")
+            },
         },
         "path": {
             "planned": ["s01", "s03"],
@@ -443,6 +446,7 @@ def test_the_recording_holds_the_network_the_steps_their_events_and_the_race(tmp
     made = json.loads((tmp_path / recording.FILE).read_text())
 
     assert manifest["recording"]["error"] is None
+    assert manifest["score"]["scored"] is True
     assert made["kind"] == "attack path" and made["attacker"]["goal"] == "the system's name is written down"
     assert [host["id"] for host in made["network"]["hosts"]] == list(ADDRESSES)
     assert {(link["from"], link["to"]) for link in made["network"]["links"]} >= {
@@ -483,6 +487,25 @@ def rewrite(folder: Path, change) -> None:
     manifest = json.loads((folder / "manifest.json").read_text())
     change(manifest)
     (folder / "manifest.json").write_text(json.dumps(manifest))
+
+
+def test_an_unscored_ordinary_day_keeps_its_evidence_without_inventing_zero(tmp_path: Path) -> None:
+    folder = small_run(tmp_path)
+    rewrite(folder, lambda manifest: manifest.update(activity=None))
+
+    manifest = scored(folder)
+    made = json.loads((folder / recording.FILE).read_text())
+
+    assert manifest["score"]["scored"] is False
+    judged_views = [defense for defense in manifest["score"]["defenses"] if defense["judged"]]
+    assert judged_views
+    assert all(defense["ordinary"]["scored"] is False for defense in judged_views)
+    for view in [made, *made["defenses"]]:
+        assert view["ordinary"]["events"] == 1
+        assert view["ordinary"]["matches"] == [
+            {"rule": "A stand-in rule on the cache job.", "id": "100", "level": "informational", "count": 1}
+        ]
+        assert "false_alerts" not in view["score"]
 
 
 @pytest.mark.parametrize(
@@ -850,6 +873,7 @@ rule_sets:
     source: lab/rules/ordered-credential/SHA256SUMS
     sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     version: "1"
+    repository_authored: true
 defenses:
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
   - {id: ordered-credential, name: Ordered credential activity, sensors: [wazuh-agent],
@@ -1012,7 +1036,30 @@ def test_a_match_of_a_rule_set_is_tied_as_its_event_is(tmp_path: Path, monkeypat
     assert manifest["ecs"]["files"]["alerts.ecs.ndjson"]["ECS lines"] == 4
 
 
-def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_public_source(
+def test_an_older_tracked_set_without_authorship_is_described_neutrally() -> None:
+    entry = {
+        "kind": "sigma",
+        "source": "lab/rules/older/SHA256SUMS@1",
+        "source type": "tracked",
+    }
+
+    assert recording.rule_set_name(entry, "Sigma rules") == ("Sigma rules (lab/rules/older/SHA256SUMS at 1)")
+    assert recording.rule_set_description(entry) == "rule set lab/rules/older/SHA256SUMS at version 1"
+
+
+def test_a_repository_packet_set_is_public_and_names_its_commit() -> None:
+    entry = {
+        "kind": "suricata",
+        "source": "theori-io/aipt-detections@9e4653db4d9c9aaa6438354348953dbe89322848",
+        "source type": "repository",
+    }
+
+    assert recording.rule_set_description(entry) == (
+        "public packet rule set theori-io/aipt-detections at commit 9e4653db4d9c9aaa6438354348953dbe89322848"
+    )
+
+
+def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_repository_source(
     tmp_path: Path, monkeypatch
 ) -> None:
     folder = small_run(tmp_path)
@@ -1059,6 +1106,18 @@ def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_public_source(
     found = manifest["score"]["rule sets"]["ordered-credential"]
     assert found["evaluated"] is True
     assert found["source"] == ("lab/rules/ordered-credential/SHA256SUMS@1")
+    assert found["source type"] == "tracked" and found["repository authored"] is True
+    made = json.loads((folder / recording.FILE).read_text())
+    detector = next(entry for entry in made["network"]["detectors"] if entry["id"] == "ordered-credential")
+    assert detector["name"] == (
+        "Repository-authored Sigma rules (lab/rules/ordered-credential/SHA256SUMS at 1) with Zircolite 4.7.1"
+    )
+    said = " ".join(made["notes"])
+    assert (
+        "The detector ordered-credential is the repository-authored rule set "
+        "lab/rules/ordered-credential/SHA256SUMS at version 1, evaluated after the run"
+    ) in said
+    assert "The detector ordered-credential is the public rule set" not in said
 
 
 def test_a_correlation_alerts_on_its_terminal_event_and_keeps_every_evidence_event(
@@ -1193,6 +1252,9 @@ def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_pat
     sigma_detector = made["network"]["detectors"][1]
     assert (
         sigma_detector["name"] == "Published Sigma rules (SigmaHQ/sigma at 552f3fee420e) with Zircolite 4.7.1"
+    )
+    assert ("The detector sigma is the public rule set SigmaHQ/sigma at commit 552f3fee") in " ".join(
+        made["notes"]
     )
     assert len(sigma_detector["digest"]) == 64
     # Post-run evaluation is not part of the immutable source of the run. Its commit, engine

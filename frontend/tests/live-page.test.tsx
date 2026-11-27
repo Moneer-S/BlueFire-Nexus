@@ -4,7 +4,7 @@ import { LiveView } from "../src/live/LiveView";
 import type { LiveViewProps } from "../src/live/LiveView";
 import { buildTimeline } from "../src/live/playback";
 import type { Timeline } from "../src/live/playback";
-import type { Recording } from "../src/live/recording";
+import { countsForScore, type Recording } from "../src/live/recording";
 import { Scrubber } from "../src/live/Scrubber";
 import { alert, at, event, recording, step } from "./live-fixture";
 
@@ -259,6 +259,34 @@ describe("the attacker's goal", () => {
     const unknown = open({ ...value, score: base.score }, { mode: "analyse" });
     expect(within(unknown.container).getByText("Goal").nextElementSibling?.textContent).toBe("Read the domain admin's password.The recording does not say it was reached.");
     unknown.unmount();
+  });
+});
+
+describe("the timeline's alert lane", () => {
+  it("keeps an ordered pinned alert in the score lane without calling its rule published", () => {
+    const title = "Ordered credential search and remote archive";
+    const value = recording({
+      steps: [step("6", 10, 11), step("7", 20, 21), step("8", 30, 31, { outcome: "alerted", visibility: { answer: "alert", basis: "rules", events: 1 } })],
+      events: [event("s06-1", "6", 10.5), event("s07-1", "7", 20.5), event("s08-1", "8", 30.5)],
+      alerts: [
+        alert("sequence", "8", 30.5, ["s06-1", "s07-1", "s08-1"], {
+          rule: { id: "ordered-credential", title, level: "high", origin: "pinned" },
+        }),
+      ],
+    });
+    const scored = value.alerts[0];
+    if (!scored) throw new Error("fixture");
+    expect(countsForScore(scored)).toBe(true);
+
+    const timeline = buildTimeline(value);
+    const { container, unmount } = render(
+      <Scrubber recording={value} timeline={timeline} time={timeline.duration} real={0} revealed ended onSeek={() => undefined} />,
+    );
+    expect(container.querySelector(".lv-lane.is-alert")).not.toBeNull();
+    const hint = container.querySelector(".lv-lanes-hint")?.getAttribute("title") ?? "";
+    expect(hint).toContain("Lower row: alerts from rules in this defense");
+    expect(hint).not.toContain("published");
+    unmount();
   });
 });
 

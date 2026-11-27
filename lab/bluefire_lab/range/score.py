@@ -1329,9 +1329,12 @@ def after_the_run(
     found: dict = {
         "kind": rule_set.kind,
         "source": rulesets.source(rule_set),
+        "source type": "tracked" if rulesets.local(rule_set) else "repository",
         "when": AFTER,
         "evaluated": False,
     }
+    if rule_set.repository_authored is not None:
+        found["repository authored"] = rule_set.repository_authored
     try:
         if engine is None:
             raise SpecError("no rule engine was given (--engine <path to Zircolite>)")
@@ -1576,9 +1579,12 @@ def after_suricata(
     found: dict = {
         "kind": rule_set.kind,
         "source": rulesets.source(rule_set),
+        "source type": "tracked" if rulesets.local(rule_set) else "repository",
         "when": AFTER,
         "evaluated": False,
     }
+    if rule_set.repository_authored is not None:
+        found["repository authored"] = rule_set.repository_authored
     try:
         if unavailable:
             raise suricata.SuricataError(unavailable)

@@ -4,7 +4,6 @@ import base64
 import copy
 import hashlib
 import json
-import re
 import threading
 from pathlib import Path
 from typing import Any, Iterator
@@ -22,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SHIPPED = ROOT / "bluefire" / "data" / "recordings" / "lab-linux-host.json"
 SHIPPED_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45227119895"
 SHIPPED_PATH = ROOT / "bluefire" / "data" / "recordings" / "lab-range-one-path.json"
-SHIPPED_PATH_RUN = r"https://github\.com/Moneer-S/BlueFire-Nexus/actions/runs/[0-9]+"
+SHIPPED_PATH_RUN = "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46056792800"
 
 
 def small_recording(recording_id: str = "rec-small") -> dict[str, Any]:
@@ -215,7 +214,7 @@ def test_the_shipped_path_through_range_one_is_listed_and_served_as_its_ci_run_w
     assert entry["kind"] == "attack path"
     assert entry["origin"]["kind"] == "shipped"
     # Shipped as a CI run of this repository wrote it, named by the run the file itself names.
-    assert re.fullmatch(SHIPPED_PATH_RUN, entry["origin"]["run_url"])
+    assert entry["origin"]["run_url"] == SHIPPED_PATH_RUN
     assert entry["origin"]["run_url"] == whole["source"]["run_url"]
     assert entry["source"]["environment"] == "GitHub-hosted runner"
     assert entry["running"] is False
@@ -229,11 +228,59 @@ def test_the_shipped_path_through_range_one_is_listed_and_served_as_its_ci_run_w
     assert detail["summary"] == entry
     assert detail["recording"] == whole
     assert detail["sha256"] == hashlib.sha256(payload).hexdigest()
-    # The network the live view draws: seven hosts, three of them watched by an agent.
+    # The network and the complete set of sensors the five defense views draw.
     assert [host["name"] for host in detail["recording"]["network"]["hosts"]] == [
         "attacker", "inet", "client", "web", "db", "build", "manager",
     ]  # fmt: skip
-    assert [sensor["host"] for sensor in detail["recording"]["network"]["sensors"]] == ["web", "db", "build"]
+    assert [(sensor["id"], sensor["host"]) for sensor in whole["network"]["sensors"]] == [
+        ("wazuh-agent-web", "web"),
+        ("wazuh-agent-db", "db"),
+        ("wazuh-agent-build", "build"),
+        ("packet-capture-web", "web"),
+    ]
+    assert [(detector["id"], detector["when"]) for detector in whole["network"]["detectors"]] == [
+        ("pinned", "live"),
+        ("sigma", "after the run"),
+        ("et-open", "after the run"),
+        ("aipt-sigma", "after the run"),
+        ("aipt-suricata", "after the run"),
+        ("agentic-sigma", "after the run"),
+        ("agentic-suricata", "after the run"),
+        ("ordered-credential", "after the run"),
+    ]
+    detectors = {detector["id"]: detector for detector in whole["network"]["detectors"]}
+    assert detectors["ordered-credential"]["name"].startswith("Repository-authored Sigma rules")
+    assert detectors["sigma"]["name"].startswith("Published Sigma rules (SigmaHQ/sigma at ")
+    counted_ordered = [
+        alert
+        for alert in whole["alerts"]
+        if alert["detector"] == "ordered-credential" and alert["counts"]
+    ]
+    assert [
+        (alert["step"], alert["rule"]["origin"], alert["rule"]["title"])
+        for alert in counted_ordered
+    ] == [("s08", "pinned", "Credential Search Followed By Remote Archive Collection")]
+    expected = [
+        ("wazuh-stock", ["pinned"], (1, 10, 0, 0)),
+        ("sigma-public", ["sigma"], (0, 11, 0, 0)),
+        ("packets-et-open", ["et-open"], (0, 6, 5, 0)),
+        (
+            "ai-tool-packs",
+            ["aipt-sigma", "aipt-suricata", "agentic-sigma", "agentic-suricata"],
+            (0, 11, 0, 0),
+        ),
+        ("ordered-credential", ["ordered-credential"], (1, 10, 0, 0)),
+    ]
+    assert [
+        (
+            defense["id"],
+            defense["detectors"],
+            tuple(defense["score"][key] for key in ("alerted", "seen", "unseen", "stopped")),
+        )
+        for defense in whole["defenses"]
+    ] == expected
+    assert all(defense["score"]["false_alerts"] == 0 for defense in whole["defenses"])
+    assert all(defense["ordinary"]["events"] > 0 for defense in whole["defenses"])
 
 
 def test_a_recording_is_imported_listed_and_read_back_whole(
@@ -603,7 +650,7 @@ def test_a_recording_whose_parts_disagree_is_refused(service: BlueFireService) -
         "1999-01-01T00:00:00Z.",
         "steps[0].visibility.kept is more than visibility.events (2).",
         "steps[0].visibility counts events the recording does not hold (2).",
-        "steps[1].first_alert is set, but the step has no counting alert of a published rule.",
+        "steps[1].first_alert is set, but the step has no counting alert of a pinned rule in the defense.",
         "steps[1].outcome is unseen, but happened 'took effect' and visibility 'telemetry only' "
         "give seen.",
         "steps[1].visibility counts events the recording does not hold (1).",
@@ -702,8 +749,8 @@ def test_a_steps_first_alert_counts_a_live_alert_from_when_it_was_raised(
     ]
     # The alert whose event came first is not the step's first alert: the one raised first is.
     assert from_the_latest == [
-        "steps[0].first_alert is 2026-11-17T17:07:36.000Z, but the step's first counting alert of "
-        "a published rule is at 2026-11-17T17:07:22.000Z.",
+        "steps[0].first_alert is 2026-11-17T17:07:36.000Z, but the step's first counting alert of a "
+        "pinned rule in the defense is at 2026-11-17T17:07:22.000Z.",
         "steps[0].first_alert_with_lab_rules is 2026-11-17T17:07:36.000Z, but the step's first "
         "counting alert is at 2026-11-17T17:07:22.000Z.",
     ]

@@ -35,7 +35,7 @@ export function RunSummary({ recording, timeline, facts, judge, onSelect }: RunS
   const matches = ordinary ? [...ordinary.matches].sort((a, b) => Number(ALERT_LEVELS.has(b.level)) - Number(ALERT_LEVELS.has(a.level)) || b.count - a.count) : [];
   const runUrl = runLink(source);
   const lab = score.alerted_with_lab_rules;
-  // The rule of the flagged alert itself: the counting published match that fires first.
+  // The rule of the flagged alert itself: the first counting match from the rules in this defense.
   const firstRule = first?.alert.rule.title;
   const firstClock = first ? firstAlertClock(recording, facts, first) : null;
   const firstFalse = firstRule ? ordinaryAlertEvents(recording, firstRule) : 0;
@@ -89,15 +89,15 @@ export function RunSummary({ recording, timeline, facts, judge, onSelect }: RunS
           <>
             <dt>Seen, no alert</dt>
             <dd>
-              {[seen.review > 0 ? `${seen.review} with a published rule for review` : "", seen.info > 0 ? `${seen.info} with only informational matches` : "", seen.launcher > 0 ? `${seen.launcher} matched on the launcher line only` : "", seen.none > 0 ? `${seen.none} matched by no published rule` : ""].filter(Boolean).join(", ")}
+              {[seen.review > 0 ? `${seen.review} with a rule in this defense for review` : "", seen.info > 0 ? `${seen.info} with only informational matches` : "", seen.launcher > 0 ? `${seen.launcher} matched on the launcher line only` : "", seen.none > 0 ? `${seen.none} matched by no rule in this defense` : ""].filter(Boolean).join(", ")}
             </dd>
           </>
         ) : null}
         {lab !== undefined ? (
           <>
             <dt>Lab rules</dt>
-            <dd className="lv-sum-lab" title="Rules written in this repository. They are shown apart and never counted in the score.">
-              with the lab&apos;s own rules too, {lab} of {score.steps} {unit}s alerted <small>not&nbsp;scored</small>
+            <dd className="lv-sum-lab" title="Ad hoc local rules. They are shown apart and never counted in the score.">
+              with ad hoc lab rules too, {lab} of {score.steps} {unit}s alerted <small>not&nbsp;scored</small>
             </dd>
           </>
         ) : null}
@@ -181,7 +181,7 @@ export function RunSummary({ recording, timeline, facts, judge, onSelect }: RunS
               {score.false_alerts !== undefined ? `, ${plural(score.false_alerts, "false alert")}` : ""}
             </span>
           </h4>
-          <p className="lv-sum-quiet">What the published rules said about the run&apos;s own administration and the host&apos;s background work, outside every step.</p>
+          <p className="lv-sum-quiet">What the rules in this defense said about the run&apos;s own administration and the host&apos;s background work, outside every step.</p>
           {matches.length > 0 ? (
             <div className="lv-sum-ord">
               {matches.map((match, index) => {
@@ -198,7 +198,7 @@ export function RunSummary({ recording, timeline, facts, judge, onSelect }: RunS
               })}
             </div>
           ) : (
-            <p className="lv-dt-empty">No published rule matched it.</p>
+            <p className="lv-dt-empty">No rule in this defense matched it.</p>
           )}
         </section>
       ) : null}

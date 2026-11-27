@@ -266,7 +266,7 @@ function StepCaptionView({ recording, moment, total, onFix, quiet, onLoseFocus, 
           ) : null}
           {labAlert ? (
             <div className="lv-labnote">
-              One of the lab&apos;s own rules alerted, which the score does not count: <b>{titleInSentence(labAlert.rule.title)}</b>.
+              An ad hoc lab rule alerted, which the score does not count: <b>{titleInSentence(labAlert.rule.title)}</b>.
             </div>
           ) : null}
           {/* What the step did, beside the run it repeats, is said once the step has ended, by its clock. */}

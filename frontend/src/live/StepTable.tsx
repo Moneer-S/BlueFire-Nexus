@@ -1,6 +1,6 @@
 // The table of every step in analyse mode: filters by role and by outcome,
 // the step nobody saw first, the events each sensor recorded, and the rules
-// that matched, published and lab apart.
+// that matched, scored-defense and ad hoc lab rules apart.
 
 import { useEffect, useMemo, useRef } from "react";
 import type { KeyboardEvent } from "react";
@@ -69,12 +69,12 @@ function MatchCell({ row }: { row: StepRow }) {
       </span>
     ) : null,
     labAlert > 0 ? (
-      <span key="l" className="is-lab" title="The lab's own rules at alert level, which the score does not count">
+      <span key="l" className="is-lab" title="Ad hoc lab rules at alert level, which the score does not count">
         {labAlert} lab alert{labAlert === 1 ? "" : "s"}
       </span>
     ) : null,
     review > 0 ? (
-      <span key="r" className="is-review" title="Published rules at low or medium level">
+      <span key="r" className="is-review" title="Rules in this defense at low or medium level">
         {count(review)} review
       </span>
     ) : null,
@@ -287,7 +287,7 @@ export function StepTable({ recording, rows, sensors, colours, state, onState, s
                   <td className="is-n" title={stepLabel(recording, step)}>
                     {numbered ? (numbers.get(step.id) ?? "") : stepShortName(recording, step)}
                   </td>
-                  <td className="is-outcome" title={lab ? `With the lab's own rules, which the score does not count: ${outcomeWords(lab)}` : undefined}>
+                  <td className="is-outcome" title={lab ? `With ad hoc lab rules, which the score does not count: ${outcomeWords(lab)}` : undefined}>
                     <span className={`lv-ow is-${outcomeClass(step.outcome)}`}>{outcomeWords(step.outcome)}</span>
                     {/* On a line of its own under the outcome, so the cell is never cut; read as one phrase. */}
                     {notStopped(step) ? <span className="lv-ow-note"><span className="lv-sr"> &middot; </span>not stopped</span> : null}

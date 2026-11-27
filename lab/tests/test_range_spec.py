@@ -533,6 +533,7 @@ def manifest_defended(change=None) -> dict:
             "source": "lab/rules/published/SHA256SUMS",
             "sha256": "a" * 64,
             "version": "7",
+            "repository_authored": False,
         }
     }
     document["defenses"] = [
@@ -620,6 +621,7 @@ def test_a_tracked_manifest_rule_set_keeps_the_repository_sets_positional_fields
         source_file="lab/rules/published/SHA256SUMS",
         sha256="a" * 64,
         version="7",
+        repository_authored=False,
     )
 
 
@@ -636,6 +638,7 @@ def test_a_tracked_manifest_can_publish_sigma_rules() -> None:
         source_file="lab/rules/published/SHA256SUMS",
         sha256="a" * 64,
         version="7",
+        repository_authored=False,
     )
 
 
@@ -657,12 +660,27 @@ def test_a_tracked_manifest_sha256_can_be_written_as_eight_short_chunks() -> Non
         ({"sha256": ["01234567"] * 7 + ["ABCDEFGH"]}, "sha256 must be 64 lower-case hex digits"),
         ({"version": "two\nlines"}, "version must be one short line"),
         ({"version": 7}, "version must be one short line"),
+        ({"repository_authored": "yes"}, "repository_authored must be true or false"),
     ],
 )
 def test_a_tracked_manifest_pin_is_strict(values: dict, message: str) -> None:
     document = manifest_defended(lambda d: d["rule_sets"]["published"].update(values))
 
     with pytest.raises(range_spec.SpecError, match=message):
+        range_spec.parse(document)
+
+
+def test_an_older_tracked_manifest_without_authorship_is_neutral() -> None:
+    document = manifest_defended()
+    del document["rule_sets"]["published"]["repository_authored"]
+
+    assert range_spec.parse(document).rule_sets[0].repository_authored is None
+
+
+def test_a_repository_rule_set_cannot_claim_tracked_authorship() -> None:
+    document = defended(change_set(repository_authored=True))
+
+    with pytest.raises(range_spec.SpecError, match="unknown keys: repository_authored"):
         range_spec.parse(document)
 
 

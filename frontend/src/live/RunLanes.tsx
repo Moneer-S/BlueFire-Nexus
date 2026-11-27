@@ -93,13 +93,13 @@ export function RunLanes({ recording, timeline, facts, colours, selected, onSele
     });
     y += SENSOR;
   }
-  rows.push({ key: "review", label: "Matches for review", sub: "below alert level", title: "Higher dots are higher levels. Violet dots are rules written in this repository. A hollow ring matched only the launcher line, which never counts.", y, h: REVIEW, className: "is-review" });
+  rows.push({ key: "review", label: "Matches for review", sub: "below alert level", title: "Higher dots are higher levels. Violet dots are ad hoc lab rules. A hollow ring matched only the launcher line, which never counts.", y, h: REVIEW, className: "is-review" });
   y += REVIEW;
-  rows.push({ key: "alert", label: "Alerts", sub: "high or critical", title: "Published rules at high or critical: they make the score", y, h: MARK, className: "is-alert" });
+  rows.push({ key: "alert", label: "Alerts", sub: "high or critical", title: "Rules in this defense at high or critical: they make the score", y, h: MARK, className: "is-alert" });
   y += MARK;
   const hasLab = recording.network.detectors.some((detector) => detector.id === "lab") || recording.alerts.some((alert) => alert.rule.origin === "lab");
   if (hasLab) {
-    rows.push({ key: "lab", label: "Lab rules", sub: "written here, not in the score", y, h: MARK, className: "is-lab" });
+    rows.push({ key: "lab", label: "Lab rules", sub: "ad hoc, not in the score", y, h: MARK, className: "is-lab" });
     y += MARK;
   }
   const bottom = y;

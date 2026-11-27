@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
+import { stepShortName } from "../../src/live/format";
+import { defensesOf, firstView, judgedBy, readRecording } from "../../src/live/recording";
 import { loopFrames, placeAfterFirstAlert, takeFrames, writeLoop } from "./loop";
 import type { LoopPlan, Place } from "./loop";
 
@@ -57,18 +59,15 @@ interface Shipped {
   alerts: ShippedAlert[];
 }
 
-interface ShippedPath extends Shipped {
-  kind: string;
-  network: { hosts: { id: string; role: string; kind: string }[] };
-  attacker: { goal?: string };
-  score: { first_alert_seconds: number | null; goal_seconds: number | null };
-}
-
 const repository = resolve(process.cwd(), "..");
 const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
 const PATH_RECORDING = "bluefire/data/recordings/lab-range-one-path.json";
-const path: ShippedPath = JSON.parse(readFileSync(join(repository, PATH_RECORDING), "utf-8"));
+// A recording judged by several defenses holds their events and alerts together.
+// README claims and pictures describe the default, first defense exactly as the
+// app and the standalone replay page initially show it.
+const pathRecording = readRecording(JSON.parse(readFileSync(join(repository, PATH_RECORDING), "utf-8")));
+const path = firstView(pathRecording);
 /** A step's marks on one side of a comparison: by the published rules, and with the lab's own rules too. */
 interface Marks {
   outcome: string;
@@ -161,12 +160,12 @@ const stopped = first("hardened rerun that was stopped", (step) => step.role ===
 // The attack path, and what the README says of it. Each sentence is checked here, so a later recording that no
 // longer bears it out fails with the sentence to change.
 const CAPTION =
-  'The caption under the loop in README.md ("Wazuh, an open-source security monitor, alerted on the password guessing on the web server a minute in. ' +
-  "About eleven minutes later the build server's signing secret was copied to inet, the stand-in internet, with no alert.\")";
-const NO_ALERT_SECTION =
-  'The section "Read what no rule alerted on" of README.md ("Every step after the password guessing was recorded, and no rule alerted on any of them. ' +
-  'In the recording, drag the timeline to step 9, pictured: every stock rule that matched it was below alert level, and the screen names the one to start from.")';
-const NO_ALERT_PICTURE = 'The words of the picture under "Read what no rule alerted on" in README.md ("the step told seen with two rules matched for review and none at alert level")';
+  'The caption under the loop in README.md ("Stock Wazuh alerted on the password guessing; a tuned correlation alerted near the goal. ' +
+  "Public Sigma, ET Open and the combined AI-tool packs raised no counting alert. Every defense let the signing secret reach inet.\")";
+const DEFENSE_SECTION =
+  'The section "Compare 5 defenses on the same run" of README.md ("Wazuh and the tuned rule alerted; the other 3 did not. ' +
+  'None stopped the attacker, and none raised a false alert on the ordinary activity in this run.")';
+const NO_ALERT_PICTURE = "path-no-alert.png: the default Wazuh view late in step 9";
 const CHANGE_SECTION =
   'The section "Change a defense, see before and after" of README.md ("new auditd settings took "Clear Bash history (echo)" from unseen to seen, ' +
   'then a rule written by hand from its event alerted on 4 steps that were seen. The score counts published rules only, so it still marks those 4 steps seen.")';
@@ -199,23 +198,54 @@ if (!path.alerts.some((alert) => alert.step === pathFirst.id && stock(alert) && 
 if (!(path.source.tools ?? []).some((tool) => tool.role === "rules" && tool.name.startsWith("Wazuh"))) untrue(CAPTION, "its published rules are not Wazuh's");
 const firstAlertSeconds = path.score.first_alert_seconds;
 const goalSeconds = path.score.goal_seconds;
-if (firstAlertSeconds === null || Math.round(firstAlertSeconds / 60) !== 1) untrue(CAPTION, `its first alert came ${firstAlertSeconds ?? "never"} s in, not a minute in`);
-if (goalSeconds === null) untrue(CAPTION, "the attacker did not reach its goal");
-if (Math.round((goalSeconds - firstAlertSeconds) / 60) !== 11) untrue(CAPTION, `the goal was reached ${Math.round(goalSeconds - firstAlertSeconds)} s after the first alert, not about eleven minutes`);
+if (firstAlertSeconds === undefined || Math.round(firstAlertSeconds / 60) !== 1) untrue(CAPTION, `its first alert came ${firstAlertSeconds ?? "never"} s in, not a minute in`);
+if (goalSeconds === undefined) untrue(CAPTION, "the attacker did not reach its goal");
 if (!buildServer || !/signing secret/i.test(path.attacker.goal ?? "") || !(path.attacker.goal ?? "").startsWith(`${buildServer.id}'s`)) untrue(CAPTION, `its goal is "${path.attacker.goal ?? ""}", not the build server's signing secret`);
 if (!internet || pathLast.host !== internet.id || !(path.attacker.goal ?? "").endsWith(internet.id)) untrue(CAPTION, `its last step ran on ${pathLast.host ?? "no host"}, not the stand-in internet the goal names`);
 if (internet.id !== "inet") untrue(CAPTION, `its stand-in internet is called "${internet.id}", not inet`);
+const defenses = defensesOf(pathRecording);
+const expectedDefenses = ["wazuh-stock", "sigma-public", "packets-et-open", "ai-tool-packs", "ordered-credential"];
+if (defenses.map((defense) => defense.id).join("|") !== expectedDefenses.join("|"))
+  untrue(DEFENSE_SECTION, `its defenses are ${defenses.map((defense) => defense.id).join(", ") || "none"}`);
+const [defaultDefense] = defenses;
+if (!defaultDefense) untrue(DEFENSE_SECTION, "it has no default defense");
+const expectedScores = [
+  [1, 10, 0, 0],
+  [0, 11, 0, 0],
+  [0, 6, 5, 0],
+  [0, 11, 0, 0],
+  [1, 10, 0, 0],
+];
+for (const [index, defense] of defenses.entries()) {
+  const score = [defense.score.alerted, defense.score.seen, defense.score.unseen, defense.score.stopped];
+  if (score.join("|") !== expectedScores[index]?.join("|")) untrue(DEFENSE_SECTION, `${defense.id} scored ${score.join("/")}`);
+  if (defense.score.false_alerts !== 0) untrue(DEFENSE_SECTION, `${defense.id} had ${defense.score.false_alerts ?? "no recorded"} false alerts`);
+}
+const liveDetectors = pathRecording.network.detectors.filter((detector) => detector.when === "live").map((detector) => detector.id);
+const afterRunDetectors = pathRecording.network.detectors.filter((detector) => detector.when === "after the run").map((detector) => detector.id);
+if (liveDetectors.join("|") !== "pinned" || afterRunDetectors.length !== 7)
+  untrue(DEFENSE_SECTION, `it has ${afterRunDetectors.length} after-run rule sets and live detectors ${liveDetectors.join(", ") || "none"}`);
+const orderedPath = judgedBy(pathRecording, "ordered-credential");
+const orderedAlert = orderedPath.alerts.find((alert) => alert.counts && alert.rule.title === "Credential Search Followed By Remote Archive Collection");
+const orderedEvidenceIds = ["s06-1", "s07-1", "s08-1"];
+if (!orderedAlert || orderedAlert.step !== "s08" || orderedAlert.events.join("|") !== orderedEvidenceIds.join("|"))
+  untrue(DEFENSE_SECTION, "the tuned rule does not keep the ordered s06, s07 and s08 evidence on its terminal s08 alert");
+const orderedEvidence = orderedEvidenceIds.map((id) => {
+  const event = orderedPath.events.find((candidate) => candidate.id === id);
+  if (!event) untrue(DEFENSE_SECTION, `the tuned rule names evidence ${id}, which the recording does not keep`);
+  return event;
+});
 const afterGuessing = pathSteps.slice(1).filter((step) => step.outcome !== "seen");
-if (afterGuessing.length > 0) untrue(NO_ALERT_SECTION, `these steps after the first are not seen with no alert: ${afterGuessing.map((step) => `"${step.title}" (${step.outcome})`).join(", ")}`);
+if (afterGuessing.length > 0) untrue(NO_ALERT_PICTURE, `these default-view steps after the first are not seen with no alert: ${afterGuessing.map((step) => `"${step.title}" (${step.outcome})`).join(", ")}`);
 // The step that logs in to the build server from the web server and copies files back: of the steps from the web server
 // to the build server, the last that a published rule matched below alert level, which "Fix this" starts from.
 const copies = pathSteps.filter((step) => step.from === webServer.id && step.host === buildServer.id && path.alerts.some((alert) => alert.step === step.id && stock(alert) && BELOW_ALERT.has(alert.rule.level ?? "")));
 const copy = copies[copies.length - 1];
-if (!copy) untrue(NO_ALERT_SECTION, `no step from ${webServer.id} to ${buildServer.id} was matched by a published rule below alert level`);
-if (pathSteps.indexOf(copy) !== 8) untrue(NO_ALERT_SECTION, `the login to ${buildServer.id} that copies files back is step ${pathSteps.indexOf(copy) + 1}, not step 9`);
+if (!copy) untrue(NO_ALERT_PICTURE, `no step from ${webServer.id} to ${buildServer.id} was matched by a published rule below alert level`);
+if (pathSteps.indexOf(copy) !== 8) untrue(NO_ALERT_PICTURE, `the login to ${buildServer.id} that copies files back is step ${pathSteps.indexOf(copy) + 1}, not step 9`);
 // Every published rule that matched step 9, at any level, was below alert level (high or critical).
 const copyAtAlert = path.alerts.filter((alert) => alert.step === copy.id && stock(alert) && (alert.rule.level === "high" || alert.rule.level === "critical"));
-if (copyAtAlert.length > 0) untrue(NO_ALERT_SECTION, `published rules matched step 9 at alert level: ${copyAtAlert.map((alert) => `"${alert.rule.title}" (${alert.rule.level ?? "no level"})`).join(", ")}`);
+if (copyAtAlert.length > 0) untrue(NO_ALERT_PICTURE, `published rules matched step 9 at alert level: ${copyAtAlert.map((alert) => `"${alert.rule.title}" (${alert.rule.level ?? "no level"})`).join(", ")}`);
 
 // The run on one Linux machine: its one unseen test, which "Find what nobody saw" names.
 const unseenTests = every("unseen test", (step) => step.role === "test" && step.outcome === "unseen");
@@ -474,7 +504,9 @@ async function expectLabelledAxis(page: Page): Promise<void> {
 async function expectGoal(page: Page, name: string): Promise<void> {
   await expectMoment(page, pathLast, path);
   await expect(page.getByText(/goal reached/i).filter({ visible: true }).first(),`${name}: the goal is not marked reached`).toBeVisible();
-  await expect(page.getByText(/The attacker reached its goal/), `${name}: the race line does not say the attacker reached its goal`).toBeVisible();
+  const raceLine = page.locator(".lv-winning");
+  await expect(raceLine, `${name}: the race line is not visible`).toBeVisible();
+  await expect(raceLine, `${name}: the race line does not say the attacker reached its goal`).toContainText("The attacker reached its goal");
   await expectWholeRaceLine(page, name);
 }
 
@@ -586,23 +618,50 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await expectWholeMoment(page, firstAlert);
   await picture(page, folder, "wide-first-alert.png");
 
-  // The attack path in its own page. "Read what no rule alerted on" in the README: late in the step that logs in to
-  // the build server and copies files back, seen, the published rules that matched it below alert level whole,
-  // "Fix this" beside it and the hint that says which rule to start from.
+  // The ordered rule keeps its earlier evidence inspectable in Analyse without moving those events into s08's log.
   reachable = pathOwn;
   await page.setViewportSize({ width: 1440, height: 900 });
+  await openPath("mode=analyse&defense=ordered-credential&select=s08");
+  const evidence = page.getByRole("region", { name: `Correlation evidence for ${orderedAlert.rule.title}` });
+  const evidenceItems = evidence.getByRole("listitem");
+  await expect(evidenceItems).toHaveCount(3);
+  for (const [index, event] of orderedEvidence.entries()) {
+    const step = orderedPath.steps.find((candidate) => candidate.id === event.step);
+    if (!step) throw new Error(`Correlation evidence ${event.id} has no step.`);
+    await expect(evidenceItems.nth(index)).toContainText(stepShortName(orderedPath, step));
+    await expect(evidenceItems.nth(index)).toContainText(event.text || event.image || event.kind);
+  }
+  const terminalLog = page.locator(".lv-dt-log");
+  await expect(terminalLog).toContainText(orderedEvidence[2]?.text || orderedEvidence[2]?.image || orderedEvidence[2]?.kind || "");
+  for (const event of orderedEvidence.slice(0, 2)) await expect(terminalLog).not.toContainText(event.text || event.image || event.kind);
+
+  // The default Wazuh view late in the step that logs in to the build server and copies files back: seen, its
+  // below-alert rule matches whole, "Fix this" beside it and the hint that says which rule to start from.
   await openPath(at({ step: copy.id, at: LATE }));
   await expectWholeMoment(page, copy, path);
   const told = page.getByRole("region", { name: "The step", exact: true });
-  await expect(told.getByRole("button", { name: "Fix this", exact: true }), `${NO_ALERT_SECTION}: the step it shows has no Fix this`).toBeVisible();
-  await expect(told, `${NO_ALERT_PICTURE}: the step it shows is not told as seen with two rules matched for review`).toContainText(/2 rules matched for review, none at alert level/);
-  await expect(told, `${NO_ALERT_SECTION}: the step's hint does not start from a rule that matched it`).toContainText(/start from the rule/);
+  const outcome = told.locator(".lv-why");
+  const fix = told.getByRole("button", { name: "Fix this", exact: true });
+  const hint = told.locator(".lv-fix-hint");
+  await expect(fix, `${NO_ALERT_PICTURE}: the step it shows has no Fix this`).toBeVisible();
+  await expect(told, `${NO_ALERT_PICTURE}: the step it shows is not told as seen with one rule matched for review`).toContainText(/1 rule matched for review, none at alert level/);
+  await expect(told, `${NO_ALERT_PICTURE}: the step's hint does not start from a rule that matched it`).toContainText(/start from the rule/);
   await expectWholeRaceLine(page, "path-no-alert.png");
+  // Bring the bottom of the step's story band just into the frame. The minimal scroll keeps the network and its
+  // below-alert match above it, while the picture now shows the outcome, its action and the rule to start from.
+  await hint.scrollIntoViewIfNeeded();
+  for (const [part, name] of [[outcome, "selected step's outcome"], [fix, "Fix this"], [hint, "rule-start hint"]] as const) {
+    await expect(part, `${NO_ALERT_PICTURE}: the ${name} is not wholly inside the 1440 by 900 picture`).toBeInViewport({ ratio: 1 });
+  }
   await picture(page, folder, "path-no-alert.png");
   // The path at its goal, at 1920 by 1080, for the documents.
   await page.setViewportSize({ width: 1920, height: 1080 });
   await openPath(at({ step: pathLast.id, at: 1 }));
   await expectGoal(page, "path-goal-wide.png");
+  const defenseChoices = page.getByRole("group", { name: "The defenses that judge this run" });
+  await expect(defenseChoices.getByRole("button")).toHaveCount(5);
+  await expect(defenseChoices.getByRole("button", { name: /Wazuh with its stock rules/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".lv-winning")).toContainText("with no step stopped");
   await picture(page, folder, "path-goal-wide.png");
 
   // Inside the app: the Overview, which leads with the attack path and the turns of the loop.
@@ -748,7 +807,10 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await expectGoal(page, "the loop's first frame");
   await openPath(at(alertTold));
   await expect(page.getByRole("region", { name: "The step", exact: true }).locator(".lv-word"), `${CAPTION}: the loop's frame of the first alert does not tell the first step alerted`).toHaveText("alerted");
-  await expect(page.getByText(/^The defense raised its first alert/), "the loop's frame of the first alert has no first alert on the race line").toBeVisible();
+  const loopRace = page.getByRole("region", { name: "The race", exact: true });
+  const firstPathStep = `step ${pathSteps.indexOf(pathFirst) + 1}`;
+  await expect(loopRace.getByText(new RegExp(`first alert · ${firstPathStep}`, "i")).filter({ visible: true }), "the loop's frame of the first alert has no visible first-alert mark on the race line").toBeVisible();
+  await expect(loopRace.locator(".lv-winning"), "the loop's frame of the first alert does not name the default defense and alerted step").toContainText(`${defaultDefense.name} first alerted on ${firstPathStep}`);
   await openPath(at(copyLate));
   await expect(page.getByRole("region", { name: "The step", exact: true }).getByRole("button", { name: "Fix this", exact: true })).toBeVisible();
   const loop: LoopPlan = {

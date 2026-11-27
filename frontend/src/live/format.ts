@@ -295,7 +295,7 @@ export function matchKind(alert: Alert): MatchKind {
 
 const KIND_RANK: Record<MatchKind, number> = { alert: 3, lab: 2, review: 1, launcher: 0 };
 
-/** A match of one of the lab's own rules at alert level is a "lab alert", on every screen: the score does not count it. */
+/** A match of an ad hoc lab rule at alert level is a "lab alert", on every screen: the score does not count it. */
 export const MARK_WORDS: Readonly<Record<MatchKind, string>> = { alert: "alert", lab: "lab alert", review: "review", launcher: "" };
 
 /**
@@ -355,7 +355,7 @@ export function kindRank(kind: MatchKind): number {
   return KIND_RANK[kind];
 }
 
-/** True when a detector holds the rules written in this repository, which are never scored. */
+/** True when a detector holds ad hoc local rules, which are never scored. */
 export function isLabDetector(recording: Recording, detectorId: string): boolean {
   if (detectorId === "lab") return true;
   const own = recording.alerts.filter((alert) => alert.detector === detectorId);
@@ -390,8 +390,8 @@ export function testNumbers(recording: Recording): Map<string, number> {
 }
 
 /**
- * How many events of ordinary activity, outside every step, a published rule
- * of this title alerted on. These are events, not false alerts: a rule that
+ * How many events of ordinary activity, outside every step, a rule in the
+ * scored defense with this title alerted on. These are events, not false alerts: a rule that
  * alerted there is one false alert, however many events it matched, as the
  * score counts. 0 when the recording says nothing of ordinary activity or the
  * rule did not alert there.
@@ -411,7 +411,7 @@ export function ordinal(value: number): string {
 
 
 /**
- * The published rules that matched a step below alert level, of `alerts`, by
+ * The rules in the scored defense that matched a step below alert level, of `alerts`, by
  * distinct rule: those for review, and those at informational level, which
  * nobody reviews and which are counted apart.
  */
@@ -437,16 +437,16 @@ export function titleInSentence(title: string): string {
   return title.replace(/\.$/, "");
 }
 
-/** How many published rules, by distinct rule, matched only the line that started the step, which never counts. */
+/** How many rules in the scored defense, by distinct rule, matched only the line that started the step, which never counts. */
 export function launcherRules(alerts: readonly Alert[]): number {
   return new Set(alerts.filter((alert) => alert.launcher_only === true && alert.rule.origin === "pinned").map((alert) => alert.rule.id)).size;
 }
 
 /**
  * A seen step in one sentence: "24 events recorded, 1 rule matched for
- * review, none at alert level." Where one of the lab's own rules alerted, the
- * last words say they speak of the published rules; where no rule matched,
- * they are left out. Where the only published match was on the launcher line,
+ * review, none at alert level." Where an ad hoc lab rule alerted, the last
+ * words say they speak of the rules in the scored defense; where no rule
+ * matched, they are left out. Where the only scored-defense match was on the launcher line,
  * the sentence says so: "1 rule matched only the launcher line, which never counts."
  */
 export function seenWords(events: number, alerts: readonly Alert[]): string {
@@ -454,9 +454,9 @@ export function seenWords(events: number, alerts: readonly Alert[]): string {
   const lab = alerts.some((alert) => matchKind(alert) === "lab");
   const matched = review + info > 0;
   const launcher = launcherRules(alerts);
-  if (!matched && launcher > 0) return `${plural(events, "event")} recorded, ${plural(launcher, lab ? "published rule" : "rule")} matched only the launcher line, which never counts.`;
-  if (!matched) return `${plural(events, "event")} recorded, ${lab ? "no published rule matched" : "no rule matched"}.`;
-  return `${plural(events, "event")} recorded, ${belowAlertWords(alerts)}, ${lab ? "none of the published rules at alert level" : "none at alert level"}.`;
+  if (!matched && launcher > 0) return `${plural(events, "event")} recorded, ${plural(launcher, "rule")}${lab ? " in this defense" : ""} matched only the launcher line, which never counts.`;
+  if (!matched) return `${plural(events, "event")} recorded, ${lab ? "no rule in this defense matched" : "no rule matched"}.`;
+  return `${plural(events, "event")} recorded, ${belowAlertWords(alerts)}, ${lab ? "none of the rules in this defense at alert level" : "none at alert level"}.`;
 }
 
 /** The step a hardened or variant step repeats, if the recording has it. */

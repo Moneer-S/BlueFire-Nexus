@@ -105,7 +105,7 @@ test("Fix this walks the loop shipped with the app: the unseen test, the watch, 
   // The test comes before its run with changed input arguments, which has the same title.
   await page.getByRole("button", { name: TEST, exact: true }).first().click();
   await page.getByRole("button", { name: "Fix this", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("One of the lab's own rules alerted on it, which the score does not count.");
+  await expect(page.getByRole("region", { name: "Where to start" })).toContainText("An ad hoc lab rule alerted on it, which the score does not count.");
   const rule = page.getByRole("region", { name: "Rules that matched it" }).getByRole("article", { name: RULE });
   await expect(rule).toContainText("accepted");
   await expect(rule).toContainText("lab/rules/linux/auditd/lnx_auditd_history_file_truncated_in_place.yml");

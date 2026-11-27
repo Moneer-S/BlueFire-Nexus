@@ -6,15 +6,15 @@ import { launcherRules, onlyItsLaunch, plural, stepLabel, unseenWords } from "./
 import { stepEnd, stepMatchesInFiringOrder } from "./playback";
 import type { Timeline } from "./playback";
 
-/** The matches of one step, published and lab rules apart, alert and review apart, the launcher line named. */
+/** The matches of one step, scored-defense and ad hoc lab rules apart, alert and review apart, the launcher line named. */
 export interface MatchGroups {
-  /** Published rules at alert level: they make the score. */
+  /** Rules in the defense at alert level: they make the score. */
   alert: Alert[];
-  /** Published rules below alert level. */
+  /** Rules in the defense below alert level. */
   review: Alert[];
-  /** Rules written in this repository at alert level: never in the score. */
+  /** Ad hoc local rules at alert level: never in the score. */
   labAlert: Alert[];
-  /** Rules written in this repository below alert level. */
+  /** Ad hoc local rules below alert level. */
   labReview: Alert[];
   /** Matches of the one shell command that carried the test: they never count. */
   launcher: Alert[];
@@ -208,7 +208,7 @@ export function otherRuns(recording: Recording, step: Step): Step[] {
 }
 
 /**
- * The tests seen with no alert, split by what the published rules made of
+ * The tests seen with no alert, split by what the rules in the defense made of
  * them, by the table's rule: a match for review (low or medium), only
  * informational matches, which nobody reviews, a match on the launcher line
  * only, or nothing. The last are the furthest from an alert.
@@ -230,7 +230,7 @@ export function seenBreakdown(recording: Recording): { total: number; review: nu
 
 const LEVEL_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, informational: 0 };
 
-/** How many events of ordinary activity a published rule matched, or null when the recording says nothing of ordinary activity. */
+/** How many events of ordinary activity a rule in the defense matched, or null when the recording says nothing of ordinary activity. */
 export function ordinaryMatches(recording: Recording, ruleTitle: string): number | null {
   if (!recording.ordinary) return null;
   return recording.ordinary.matches.filter((match) => match.rule === ruleTitle).reduce((sum, match) => sum + match.count, 0);
@@ -239,7 +239,7 @@ export function ordinaryMatches(recording: Recording, ruleTitle: string): number
 /**
  * Where the gap is, for a step that got through without an alert. Null when
  * there is nothing to fix. For a step nobody saw, the hint names the other
- * runs of the same technique that a sensor did record. When published rules
+ * runs of the same technique that a sensor did record. When rules in the defense
  * already matched a seen step below alert level, it names the one to start
  * from: the highest level, and of those the quietest on ordinary activity.
  */
@@ -258,14 +258,14 @@ export function fixHint(recording: Recording, step: Step, matches?: MatchGroups)
     return `Start with a sensor: ${why}. Other runs of ${step.technique.id} were recorded: ${named.join(", ")}${more}.`;
   }
   if (step.outcome !== "seen") return null;
-  // One of the lab's own rules alerted here, as the line above the hint says: no published rule is the place to start, and
+  // An ad hoc lab rule alerted here, as the line above the hint says: no counted rule is the place to start, and
   // what is left is the score, in the fix page's words.
-  if (matches ? matches.labAlert.length > 0 : step.outcome_with_lab_rules === "alerted") return "The score counts published rules only, and none of those alerted.";
+  if (matches ? matches.labAlert.length > 0 : step.outcome_with_lab_rules === "alerted") return "The score counts rules in this defense only, and none of those alerted.";
   const rules = new Map<string, Alert>();
   for (const alert of matches?.review ?? []) if (!rules.has(alert.rule.id)) rules.set(alert.rule.id, alert);
   const quiet = (alert: Alert) => ordinaryMatches(recording, alert.rule.title) ?? 0;
   const top = [...rules.values()].sort((a, b) => (LEVEL_RANK[b.rule.level] ?? 0) - (LEVEL_RANK[a.rule.level] ?? 0) || quiet(a) - quiet(b))[0];
-  // A published match on the launcher line alone, which the sentence above names, says nothing of what the step did.
+  // A scored-defense match on the launcher line alone, which the sentence above names, says nothing of what the step did.
   if (!top) return launcherRules(matches?.launcher ?? []) > 0 ? "No rule matched what the step itself did: start by writing one." : "No rule matched this step: start by writing one.";
   const ordinary = ordinaryMatches(recording, top.rule.title);
   const noise = ordinary === null ? "" : ordinary === 0 ? ", and nothing in ordinary activity" : `, and ${plural(ordinary, "event")} of ordinary activity too`;

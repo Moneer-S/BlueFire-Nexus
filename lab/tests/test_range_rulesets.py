@@ -128,6 +128,7 @@ def tracked(
             "source": "lab/rules/published/SHA256SUMS",
             "sha256": hashlib.sha256(manifest_data).hexdigest(),
             "version": "7",
+            "repository_authored": False,
         }
     }
     document["defenses"] = [
@@ -520,6 +521,7 @@ def test_a_tracked_manifest_and_every_listed_file_are_copied_byte_for_byte(tmp_p
     assert made["source"] == "lab/rules/published/SHA256SUMS"
     assert made["sha256"] == hashlib.sha256(manifest_data).hexdigest()
     assert made["version"] == "7" and made["files"] == 2
+    assert made["repository authored"] is False
     assert made["lock"] == dict(sorted(expected_lock.items()))
     rule_listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(hashes) if path.endswith(".rules"))
     assert made["digest"] == hashlib.sha256(rule_listing.encode()).hexdigest()
@@ -721,12 +723,14 @@ def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> 
     assert rulesets.wanted(sigma, locked) == sorted(locked)
     assert {path.split("/")[1] for path in locked if path != "LICENSE"} == {"linux", "web"}
     assert len(locked) == 166 and rulesets.record(sigma, locked)["files"] == 165
+    assert sigma.repository_authored is None
     assert (et_open.kind, et_open.source_file, et_open.sha256, et_open.version) == (
         "suricata",
         "lab/rules/et-open/SHA256SUMS",
         et_manifest_digest,
         "11342",
     )
+    assert et_open.repository_authored is False
     et_lock = rulesets.locked(spec, et_open)
     assert len(et_lock) == 13 and et_lock["SHA256SUMS"] == et_open.sha256
     assert sum(path.endswith(".rules") for path in et_lock) == 8
@@ -782,6 +786,7 @@ def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> 
         ordered_digest,
         "1",
     )
+    assert ordered.repository_authored is True
     assert len(ordered_lock) == 5 and ordered_lock["SHA256SUMS"] == ordered_digest
     assert rulesets.record(ordered, ordered_lock)["files"] == 4
     assert rulesets.digest(ordered, ordered_lock) == ordered_digest

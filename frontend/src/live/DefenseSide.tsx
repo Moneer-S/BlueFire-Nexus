@@ -48,7 +48,7 @@ export function DefenseSideRows({ judges, box, mapHeight }: { judges: MapJudges;
             <span className={`lv-ds-n is-alerted${tally.alerted === 0 ? " is-zero" : ""}`}>{tally.alerted}</span>
             <span className={`lv-ds-n is-seen${tally.seen === 0 ? " is-zero" : ""}`}>{tally.seen}</span>
             <span className={`lv-ds-n is-unseen${tally.unseen === 0 ? " is-zero" : ""}`}>{tally.unseen}</span>
-            <span className={`lv-ds-n is-false${!tally.falseAlerts ? " is-zero" : ""}`}>{tally.falseAlerts === undefined ? "" : tally.falseAlerts === null ? "–" : tally.falseAlerts}</span>
+            <span className={`lv-ds-n is-false${tally.falseAlerts === 0 || tally.falseAlerts === null ? " is-zero" : ""}`}>{tally.falseAlerts === undefined ? "not scored" : tally.falseAlerts === null ? "–" : tally.falseAlerts}</span>
           </button>
         );
       })}

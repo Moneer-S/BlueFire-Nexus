@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defensesOf, firstView, judgedBy, MAX_DEFENSES, MAX_DETECTORS, MAX_DETECTORS_WITH_DEFENSES, readRecording, RecordingError } from "../src/live/recording";
+import { countsForScore, defensesOf, firstView, judgedBy, MAX_DEFENSES, MAX_DETECTORS, MAX_DETECTORS_WITH_DEFENSES, readRecording, RecordingError } from "../src/live/recording";
 import type { Alert, Defense, Detector, Recording, Step, StepVerdict } from "../src/live/recording";
 
-// One run judged by several defenses. Each recording here is built from the path
-// through range one that the app ships, which holds one defense: its three agents
-// and Wazuh's stock rules. The service's tests build the same recordings
+// One run judged by several defenses. Each recording here is built from the first
+// defense's plain view of the path through range one that the app ships. The
+// service's tests build the same recordings
 // (tests_platform/test_recording_defenses.py); whether a verdict follows from the
 // events and alerts of its view is checked there alone, as it is for a recording
 // without defenses.
@@ -17,6 +17,12 @@ type Judged = Recording & { defenses: Defense[] };
 
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** The shipped path as one plain view, whether it already holds several defenses or not. */
+function plainShipped(): Recording {
+  const whole = readRecording(JSON.parse(SHIPPED));
+  return defensesOf(whole).length > 0 ? firstView(whole) : whole;
 }
 
 /** The keys of a step that say what a defense made of it, as that step has them. */
@@ -32,7 +38,7 @@ function verdictOf(step: Step): StepVerdict {
  * seen there, with no first alert, and its score follows.
  */
 function judgedTwice(): Judged {
-  const whole = JSON.parse(SHIPPED) as Recording;
+  const whole = plainShipped();
   const stock: Defense = {
     id: "wazuh-stock",
     name: "Wazuh with its stock rules",
@@ -95,10 +101,30 @@ function refusal(value: unknown): string {
 }
 
 describe("a recording of one run judged by several defenses", () => {
+  it("separates scored origin from authorship in the shipped ordered and public defenses", () => {
+    const whole = readRecording(JSON.parse(SHIPPED));
+    const ordered = judgedBy(whole, "ordered-credential");
+    const counted = ordered.alerts.filter(countsForScore);
+    const terminal = ordered.steps.find((step) => step.id === "s08");
+    const orderedDetector = ordered.network.detectors.find((detector) => detector.id === "ordered-credential");
+
+    expect(ordered.score.alerted).toBe(1);
+    expect(terminal?.outcome).toBe("alerted");
+    expect(counted).toHaveLength(1);
+    expect(counted[0]).toMatchObject({ step: "s08", detector: "ordered-credential", counts: true, rule: { origin: "pinned" } });
+    expect(orderedDetector?.name).toContain("Repository-authored Sigma rules");
+
+    const publicView = judgedBy(whole, "sigma-public");
+    const publicDetector = publicView.network.detectors.find((detector) => detector.id === "sigma");
+    expect(publicView.score.alerted).toBe(0);
+    expect(publicDetector?.name).toContain("Published Sigma rules");
+    expect(publicDetector?.name).toContain("SigmaHQ/sigma");
+  });
+
   it("is read whole, with its defenses in order, and a recording without defenses has none", () => {
     const read = readRecording(copy(judgedTwice()));
     expect(defensesOf(read).map((defense) => [defense.id, defense.name])).toEqual([["wazuh-stock", "Wazuh with its stock rules"], ["agents-alone", "The three agents with no rule set"]]);
-    expect(defensesOf(readRecording(JSON.parse(SHIPPED)))).toEqual([]);
+    expect(defensesOf(plainShipped())).toEqual([]);
   });
 
   it("gives, judged by the first defense, the top level's steps, ordinary activity and score, as a recording without defenses", () => {
@@ -171,13 +197,13 @@ describe("a recording of one run judged by several defenses", () => {
   it("names a defense the recording does not have", () => {
     const whole = readRecording(copy(judgedTwice()));
     expect(() => judgedBy(whole, "sigma-public")).toThrow('This recording has no defense "sigma-public".');
-    expect(() => judgedBy(readRecording(JSON.parse(SHIPPED)), "wazuh-stock")).toThrow(RecordingError);
+    expect(() => judgedBy(plainShipped(), "wazuh-stock")).toThrow(RecordingError);
   });
 
   it("is played as its first defense judged it, and a recording without defenses as it is", () => {
     const whole = readRecording(copy(withPacketCapture(judgedTwice(), 1)));
     expect(firstView(whole)).toEqual(judgedBy(whole, "wazuh-stock"));
-    const plain = readRecording(JSON.parse(SHIPPED));
+    const plain = plainShipped();
     expect(firstView(plain)).toBe(plain);
   });
 

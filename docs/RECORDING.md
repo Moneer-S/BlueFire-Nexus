@@ -104,7 +104,7 @@ runs must share.
 | `hosts` | array | Each host of the run. |
 | `links` | array | Optional. Each `{ "from", "to", "label" }` between host ids: who can reach whom. |
 | `sensors` | array | Each `{ "id", "name", "host", "records" }`: a sensor, the host it runs on, and in plain words what it records. Optional on the sensor `auditd`: `audit_watches`, an object that maps each audit key of its rules (the word after `-k`, or after `key=` in `-F`) to what the rules under that key watch, read from the rules as the run loaded them (after `-D`, `-d` and `-W`; `""` for the rules without a key). Each rule is a string in one fixed form, its keys taken out: `-a <list>,<action>` sorted, then `-S` with the system calls sorted and joined by commas, then each `-F` sorted, then each `-C`. A watch `-w <path> -p <perms>` is written as the rule it stands for, `-a always,exit -F path=<path> -F perm=<perms>` (`perm=arwx` without `-p`), `dir=` as `path=`, the letters of `perm` sorted, `arch=` left out, so that a rule for `b32` and the same one for `b64` are one, and an unset login uid (`-1`, `4294967295`) written `unset`. The forms of a key are sorted and each is there once. An older recording does not have it, and may have `audit_keys` instead: the audit keys of its rules, sorted, without what they watch. Nothing reads `audit_keys` now, and on two runners that differed a comparison of `sensors:auditd` refuses a recording that has only that (see Two runners that differed). |
-| `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. A detector's id is free, with two that are kept: `lab` is the id of the rules written in this repository, and a detector with the id `pinned` holds published rules only. Whether a rule is a published one or one of this repository's own is said by each alert's `rule.origin`, not by the detector's id. |
+| `detectors` | array | Each `{ "id", "name", "rules", "when" }`, plus an optional `digest`: a rule set with its engine, the number of rules evaluated, `when` the rules ran: `live` or `after the run`, and the SHA-256 of its rule files. A detector's id is free, with two reserved ids: `pinned` holds a versioned rule set included in the defense and `lab` holds ad hoc local rule work excluded from the score. An alert's `rule.origin` gives that same scoring class: `pinned` can be public or repository-authored. The detector's name and source metadata, not its id or a rule's origin, say who authored the rules and where they came from. |
 
 A network holds at most 12 hosts, at most 3 of them of kind `defense`, at most
 16 links, at most 16 sensors with at most 4 on one host, and at most 4
@@ -152,7 +152,7 @@ file that ends with a line break, uses no other kind and holds no character a
 text cannot hold (see above), as the lab's do. The
 detector can also have `commit`, optional, the commit of this repository the
 rules came from; where it is given, it and not `source.defense_commit` says
-where the lab's rules came from. In the artifact `lab-rules-twice` of
+where that detector's rules came from. In the artifact `lab-rules-twice` of
 [CI run 45395673682](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45395673682),
 which holds one run's recording written with two sets of the lab's rules, the
 text of 9 rules makes about 14 KB of a 1.2 MB recording, and that of 10 rules
@@ -194,12 +194,12 @@ where it says the goal was reached.
 | `command` | string | Optional. What ran, as text. It keeps its start: when it is cut it ends in `...`. |
 | `output` | string | Optional. What the step printed. It keeps its end: when it is cut it starts with `...`. |
 | `happened` | object | `{ "answer", "basis" }`. `answer` is `took effect`, `attempted without effect`, `blocked`, `not attempted` (the attack did not start) or `inconclusive`. `basis` says what the answer rests on. |
-| `visibility` | object | `{ "answer", "basis", "events" }`. `answer` is `alert`, `telemetry only`, `no telemetry`, `inconclusive` or `not applicable`. `answer` and `basis` count published rules only, like `outcome`; a match of a lab rule shows in `outcome_with_lab_rules` and in the step's alerts. `events` counts the sensor events tied to the step, and is left out when the engine could not tie events to it (`inconclusive` or `not applicable`). When the recording holds fewer of them than that, `kept` says how many. |
-| `outcome` | string | The score word for the step, counting published rules only. See below. |
-| `outcome_with_lab_rules` | string | Optional. The score word when the accepted rules written in this repository count too. Present on every step when the run evaluated such rules, and absent when it did not. |
+| `visibility` | object | `{ "answer", "basis", "events" }`. `answer` is `alert`, `telemetry only`, `no telemetry`, `inconclusive` or `not applicable`. `answer` and `basis` count the pinned rules included in the defense, like `outcome`; a match of an ad hoc lab rule shows in `outcome_with_lab_rules` and in the step's alerts. `events` counts the sensor events tied to the step, and is left out when the engine could not tie events to it (`inconclusive` or `not applicable`). When the recording holds fewer of them than that, `kept` says how many. |
+| `outcome` | string | The score word for the step, counting the pinned rules included in the defense. See below. |
+| `outcome_with_lab_rules` | string | Optional. The score word when ad hoc local rules count too. Present on every step when the run evaluated such rules, and absent when it did not. |
 | `first_event` | time | Optional. The first sensor event of the step. |
-| `first_alert` | time | Optional. The first match of a published rule on the step that counts as an alert, at its moment: its `raised` time when its detector ran live, and its `time` when the rules ran after the run, like the score's `first_alert_seconds`. Absent when there is none. |
-| `first_alert_with_lab_rules` | time | Optional. The same, when the accepted rules written in this repository count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
+| `first_alert` | time | Optional. The first match of a pinned rule in the defense on the step that counts as an alert, at its moment: its `raised` time when its detector ran live, and its `time` when the rules ran after the run, like the score's `first_alert_seconds`. Absent when there is none. |
+| `first_alert_with_lab_rules` | time | Optional. The same, when ad hoc local rules count too. Written only when the run evaluated such rules and one of the two kinds alerted on the step. A step whose `outcome` is `seen` or `stopped` can carry it. |
 | `compared_with` | string | Optional. For a `hardened` or `variant` step only: the id of the step it repeats, an earlier step that is itself neither `hardened` nor `variant`, never the step itself. |
 | `defense` | object | Optional. For a `hardened` step: `{ "title", "why" }` of the hardening change. |
 
@@ -238,15 +238,15 @@ no race.
 
 1. `stopped`: `happened.answer` is `blocked`.
 2. `no effect`: `happened.answer` is `attempted without effect` or `not attempted`.
-3. `alerted`: `visibility.answer` is `alert`: a published rule that counts as an alert matched an event of the step.
-4. `seen`: `visibility.answer` is `telemetry only`: a sensor recorded the step, and no published rule that counts as an alert matched it.
+3. `alerted`: `visibility.answer` is `alert`: a pinned rule in the defense that counts as an alert matched an event of the step.
+4. `seen`: `visibility.answer` is `telemetry only`: a sensor recorded the step, and no pinned rule in the defense that counts as an alert matched it.
 5. `unseen`: `happened.answer` is `took effect` and `visibility.answer` is `no telemetry`.
 6. `inconclusive`: anything else, for example `happened.answer` `inconclusive` with `visibility.answer` `no telemetry`, or `visibility.answer` `inconclusive`.
 
 A step whose `happened.answer` is `inconclusive` is scored by what the sensors
 saw: `alerted` or `seen`, or else `inconclusive`. It is never `unseen`, which
 needs the step to have taken effect. `outcome_with_lab_rules` follows the same
-rules, with an alert of an accepted lab rule counted as an alert too.
+rules, with an alert of an ad hoc lab rule counted as an alert too.
 
 ## An event
 
@@ -321,7 +321,7 @@ from that defense's sensors and `visibility.kept` is the exact count retained.
 | `raised` | time | Optional. When the alert existed in the defender's system. Absent when the rules ran after the run. |
 | `host` | string | Host id. |
 | `detector` | string | Detector id. |
-| `rule` | object | `{ "id", "title", "level", "origin" }`. `level` is one of Sigma's levels: `informational`, `low`, `medium`, `high`, `critical`. `origin` is `pinned` for a published rule and `lab` for an accepted rule written in this repository. |
+| `rule` | object | `{ "id", "title", "level", "origin" }`. `level` is one of Sigma's levels: `informational`, `low`, `medium`, `high`, `critical`. `origin` is `pinned` for a rule from a versioned rule set included in the defense, whether public or repository-authored, and `lab` for ad hoc local rule work excluded from the score. Authorship and source come from detector metadata, not `origin`. |
 | `counts` | boolean | True when the match counts as an alert: its level is high or critical. A lower level is a match for review. This holds for both origins: a counting match of a lab rule goes toward `outcome_with_lab_rules` and `first_alert_with_lab_rules` only, never toward `outcome` or `first_alert`. |
 | `step` | string | The id of the step the matched event belongs to. |
 | `events` | array of strings | The ids of the matched events, in evidence order. Usually they belong to the alert's step. For a multi-event correlation whose detector ran after the run, earlier evidence may belong to earlier steps on the same host; the last id is its terminal event, belongs to the alert's step, and has the alert's `time`. No evidence is later than that terminal event, and observed users do not disagree. A live alert's moment (`raised`) is not earlier than the earliest event; it can be earlier than a later event of its own step. |
@@ -339,9 +339,11 @@ Optional: `{ "events", "matches" }`, both always there when `ordinary` is, and
 ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
-`matches` lists `{ "rule", "level", "count" }` for the published rules that
+The observations can be present when the ordinary day could not be scored; in
+that case `score.false_alerts` is absent, so an unknown result is not reported as zero.
+`matches` lists `{ "rule", "level", "count" }` for the rules included in the defense that
 matched any of those events, each rule once: `rule` is the rule's title, and
-`count` the number of events it matched, not more than `events`. Two published
+`count` the number of events it matched, not more than `events`. Two such
 rules can share a title, so where two listed rules do, each one's `rule` is its
 title followed by its id in parentheses, such as `Some Title (<id>)`, and no two
 rules are listed under one `rule`. `id`, optional, is the rule's id, as an
@@ -356,11 +358,11 @@ alert.
 | `steps` | number | Steps with role `test`. |
 | `took_effect` | number | Of those, how many took effect. |
 | `alerted`, `seen`, `unseen` | number | Of those that took effect, how many have each outcome. |
-| `alerted_with_lab_rules` | number | Optional. The same count of alerted steps when the accepted rules of this repository count too. Present when the run evaluated such rules. |
+| `alerted_with_lab_rules` | number | Optional. The same count of alerted steps when ad hoc local rules count too. Present when the run evaluated such rules. |
 | `stopped` | number | Steps of any role with outcome `stopped`. |
-| `first_alert_seconds` | number | Optional, attack path only: seconds from the `started` of the first step, which is of role `test`, to the first alert of a published rule on a step of role `test`, and zero when that alert's stamp is a moment earlier. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
+| `first_alert_seconds` | number | Optional, attack path only: seconds from the `started` of the first step, which is of role `test`, to the first alert of a pinned rule in the defense on a step of role `test`, and zero when that alert's stamp is a moment earlier. An alert counts from its `raised` time when its detector ran live, and from its `time` when the rules ran after the run. Not written for a test list, whose steps do not build on each other: read each step's `first_alert` there. |
 | `goal_seconds` | number | Optional, attack path only: seconds from the same start, the first step's `started`, to the end of the step that reached the goal. Written only with an `attacker.goal`. Not written for a test list. |
-| `false_alerts` | number | Optional, and only with `ordinary`. Published rules that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
+| `false_alerts` | number | Optional, and only with `ordinary`. Rules included in the defense that matched ordinary activity (see `ordinary`) at a level that counts as an alert. Each such rule is one false alert, whatever the number of events it matched. |
 
 ## Defenses
 
@@ -380,7 +382,7 @@ defense, which has no name: every sensor and every detector of its network.
 | `sensors` | array of strings | Ids of `network.sensors`: what this defense records with. At least one. |
 | `detectors` | array of strings | Ids of `network.detectors`: the rule sets this defense runs, at most 4. May be empty, for a defense that only records. |
 | `steps` | object | This defense's verdict on each step, by the step's `id`: `{ "visibility", "outcome", "first_event", "first_alert", "outcome_with_lab_rules", "first_alert_with_lab_rules" }`, each with the meaning and the rules the same key has on a step. `visibility` and `outcome` are always there, and the others as on a step. It has an entry for every step of the recording, and for no other id. |
-| `ordinary` | object | Optional, as the top-level `ordinary`: the events of ordinary activity this defense's sensors recorded, and the published rules of its rule sets that matched them. |
+| `ordinary` | object | Optional, as the top-level `ordinary`: the events of ordinary activity this defense's sensors recorded, and the rules included in this defense that matched them. |
 | `score` | object | As the top-level `score`, counted from this defense's `steps` and `ordinary`. |
 
 **A defense is a view of the recording.** The view of a defense is the
@@ -400,7 +402,7 @@ says of a recording holds for each view. A step's `visibility.events` counts
 the events of the defense's sensors tied to the step, and its `kept`, when the
 recording holds fewer of them, the number the view holds. Its `first_event` is
 the earliest event the view holds of the step, and its `first_alert` the
-moment of the first counting alert of a published rule among the view's
+moment of the first counting alert of a pinned rule among the view's
 alerts on the step. Its `outcome` follows from the step's `happened` and the
 view's `visibility`. The score is counted from the view's steps,
 `false_alerts` from the view's `ordinary`, and the race from the view's first
@@ -493,8 +495,8 @@ follows this format and its parts agree with each other:
   alert's moment is not earlier than the earliest event it names. A
   `compared_with` is on a `hardened` or `variant` step only, and names an
   earlier step that is neither.
-- A step's `visibility.answer` is `alert` exactly when an alert of a published
-  rule that counts is on the step. Its `outcome` is the one the rules under
+- A step's `visibility.answer` is `alert` exactly when an alert of a pinned
+  rule in the defense that counts is on the step. Its `outcome` is the one the rules under
   "A step" give for its `happened.answer` and `visibility.answer`, and its
   `outcome_with_lab_rules`, when present, the one they give when a counting alert
   of a lab rule counts too. `visibility.events` is there unless the answer is
@@ -504,7 +506,7 @@ follows this format and its parts agree with each other:
   of the step's events the recording holds.
 - A step's `first_event` is the time of its earliest event in the recording, and
   is there exactly when it has events. `first_alert` is the moment of its
-  earliest counting alert of a published rule, and is there exactly when it has
+  earliest counting alert of a pinned rule in the defense, and is there exactly when it has
   one: an alert's moment is its `raised` time where its detector ran live, and
   its `time` otherwise, and the earliest is the earliest by moment. A file that
   gives a live alert's `time` instead is refused with both times named.
@@ -632,7 +634,7 @@ file differs. From the two kept files: their `source` is the same; they hold the
 same steps in the same order, each with the same `happened`, `recorded`,
 `outcome`, `visibility.events`, `first_event`, `first_alert`, `started` and
 `ended`; the same events, where an event one file holds alone must be one an
-alert of the lab's rules there rests on; the same alerts of the published rules
+alert of the lab's rules there rests on; the same alerts of the scored rules
 and the same `ordinary`; both detectors `lab` have `verdicts`, and every rule
 whose file has the same digest in both was judged the same and matched the same
 steps; `lab_rules` lists exactly the rules that are new, gone or of another
@@ -702,7 +704,7 @@ effect, each sensor with the events it recorded of it, each rule engine with
 what it matched, an alert or a match below alert level; what reads the same on
 both stages is drawn dim and named once under them. Each stage links to the
 step in the live view, paused at its start, and the after stage offers Fix this, which opens
-the step's fix page in the after run, when the step still raises no alert. Under the stages: the price (false alerts of published rules on
+the step's fix page in the after run, when the step still raises no alert. Under the stages: the price (false alerts of scored rules on
 ordinary activity, `score.false_alerts` and `ordinary` of each recording, with
 the delta's price in its words; "None in this run" when the price is not
 counted for a new rule of the lab's own that the run after kept, which it does
@@ -807,7 +809,7 @@ detector's rules of these recordings, is the same in both, or is not recorded in
 both; when any name of the setup other than the declared change differs (but
 see Two runners that differed, below); or when `--two-runners` says the runs
 were made side by side in one CI run and the two recordings do not name the
-same `run_url`. The published rules' pin, the version of the tool of role
+same `run_url`. The versioned rule set's pin, the version of the tool of role
 `rules`, is the commit their files come from, so it is part of a declared
 `detectors:pinned`; no other tool version is part of a declared change. The
 rule engine's version is not part of either rule set, and a sensor's program
@@ -985,7 +987,7 @@ the same `happened`, `recorded` and `outcome`, `visibility.events`,
 `first_event`, `first_alert`, `started` and `ended`; the same events, where an
 event only one recording holds must be one that an alert of the lab's rules
 there rests on (a recording keeps every event a rule matched beyond the first
-few hundred of a step); the same alerts of the published rules; the same
+few hundred of a step); the same alerts of the scored rules; the same
 `ordinary`; and every rule of the lab's own whose file has the same digest in
 both judged the same way (`accepted` and `reason`) and matching the same
 steps. The last holds by construction too, since a run's verdict on a rule
@@ -998,7 +1000,7 @@ and `delta.md` says that the list ran once and what was checked.
 the lab leaves a rule that matched ordinary activity out of the recording before
 it is written, so the delta says the price is not counted, and quotes both
 recordings' notes on the rules they accepted; it never writes a number that
-looks like zero. For another rule set, the published rules that alerted on ordinary
+looks like zero. For another rule set, the scored rules that alerted on ordinary
 activity (`score.false_alerts`) before and after; for a sensor, those and the
 ordinary events (`ordinary.events`) before and after. A number the recording
 does not hold is written `not recorded`. Under a `limit`, each run counted its

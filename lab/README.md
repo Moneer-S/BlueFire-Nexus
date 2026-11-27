@@ -828,16 +828,19 @@ the rule. What it asks for:
   `writes` lists the files a job writes, by pattern. [Ordinary
   activity](#range-one-ordinary-activity) gives the rules that keep jobs
   apart from each other and from the path.
-- **Rule sets.** `rule_sets` maps a name to a pinned public or tracked rule
-  set. A public set has `kind` (`sigma` or `suricata`), `repo`, `commit`,
+- **Rule sets.** `rule_sets` maps a name to a pinned rule set. A repository set
+  has `kind` (`sigma` or `suricata`), `repo`, `commit`,
   `folders`, `licence` and `lock`. A commit is either its full lower-case
   40-hex string or exactly five quoted 8-hex chunks. No listed folder may
   contain another. The licence is fetched and
   kept with the selected files. The lock beside the spec records every file
   SHA-256; sets may share it, but it is not the `atomic_red_team` lock. A
   tracked set instead names a repository-local `SHA256SUMS` under `source`,
-  its `sha256` and a `version`.
-  A public set may select only executable rules with `include: rules`,
+  its `sha256` and a `version`. Its optional `repository_authored` is `true`
+  for rules written in this repository and `false` for published third-party
+  rules; an older tracked spec that omits it is described without an
+  authorship claim.
+  A repository set may select only executable rules with `include: rules`,
   restrict discovery with `rule_paths` (where `*` is one whole path part),
   and name exact files under `exclude`. A Sigma set may name exact
   `pipelines` made only of `value_placeholders` transformations. A Suricata
@@ -1743,63 +1746,32 @@ matches among them), the rule files the run fetched and `replay.html` in its
 artifact, and shows `score.md` in its summary.
 
 The app ships the recording of
-[run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)
+[run 46056792800](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46056792800)
 as `bluefire/data/recordings/lab-range-one-path.json`. The loop at the top of
 the [front page](../README.md) and the single page
 [`docs/live-view/attack-path.html`](../docs/live-view/attack-path.html) play it
 ([the run on the front page](../docs/LIVE_VIEW.md#the-run-on-the-front-page)).
 
-**What a run shows.** In
-[run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964),
-the run the app ships, on a hosted runner (its job "range one's path, sealed
-and watched", and the artifact `range-one-run`), the stock rules raised their
-first alert at level 12 or higher 76.367 s after the first step started: rule
-40112, "Multiple authentication failures followed by a success", on `s01`. The
-path reached its goal 730.488 s after that start, so the alert came 654.121 s
-before the goal. Beside it, on the ordinary day of 13.21 minutes: 0 false
-alerts at level 12 or higher. The clock check held: 19 program starts in the
-steps' sessions, none outside its step's daemon times.
+**What the run shows.** The attacker reached the goal at 717.79 s; none of
+the five defenses stopped it. Stock Wazuh alerted on the password guessing at
+64.404 s. The tuned ordered rule alerted at 706.803 s, on `s08`, after joining
+the credential-search evidence from `s06` and `s07` with the archive command.
+The public Sigma, ET Open and combined AI-tool-pack views raised no counting
+alert. Every defense recorded zero false alerts on the ordinary activity in
+this run.
 
-| Step | Host | Recorded | By | Tied by | First alert | Outcome |
-|---|---|---|---|---|---|---|
-| s01 | attacker to web | alert, 1,857 events | web | address 1,841, account 16 | 40112, level 12 | alerted |
-| s02 | web | 4 events | web | account 1, session 3 | none | seen |
-| s03 | web | 8 events | web | account 2, session 6 | none | seen |
-| s04 | web | 3 events | web | account 1, session 2 | none | seen |
-| s05a | web to build | 1 event | build | address 1 | none | seen |
-| s05b | web to db | 1 event | db | address 1 | none | seen |
-| s06 | web | 1 event | web | session 1 | none | seen |
-| s07 | web | 3 events | web | account 1, session 2 | none | seen |
-| s08 | web to build | 20 events | web 3, build 17 | account 18, session 1, address 1 | none | seen |
-| s09 | web | 5 events | web | account 2, session 3 | none | seen |
-| s10 | web to inet | 1 event | web | session 1 | none | seen |
+| Defense | Alerted | Seen | Unseen | First alert | Ordinary events | False alerts |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| Wazuh stock | 1 | 10 | 0 | 64.404 s | 629 | 0 |
+| Public Sigma | 0 | 11 | 0 | none | 629 | 0 |
+| ET Open network | 0 | 6 | 5 | none | 170 | 0 |
+| AI-tool packs | 0 | 11 | 0 | none | 799 | 0 |
+| Ordered credential | 1 | 10 | 0 | 706.803 s | 629 | 0 |
 
-One step alerted and ten were seen with no alert; none was unseen. **Each of
-the two port scans is tied by one line only.** On `build` it is sshd's line
-saying that a connection from `web`'s address sent a banner in an invalid
-format (`banner exchange: ... invalid format`: the scan writes a bare newline
-to each port). Two more lines of the same sshd process, its start and a broken
-pipe, are in the archive but count only as coincident, since their text does
-not name `web`. On `db` it is MariaDB's line about a connection from `web`'s
-container that closed without authentication. Each is tied by the `address`
-rule because its text names `web`. Where a step is tied by the `address`
-rule alone, `score.md` and the recording quote its lines (up to three) in
-that step's own sentence, as this run's summary does for both scans. The
-range has no network sensor, so a scan of every port shows only where an open
-port's service logs a broken connection.
-
-One run is one sample. Four earlier hosted runs of the same job,
-[45507244968](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45507244968),
-[45521926761](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45521926761),
-[45524094071](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45524094071)
-and
-[45546532335](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45546532335),
-gave the same outcome for every step, with the first alert after 61.56 s,
-77.05 s, 76.58 s and 69.46 s and the goal after 628.44 s, 731.31 s, 730.87 s
-and 724.59 s. The first three were scored before a program start that snoopy
-logged was counted for the engine by its tag alone, so `s08` has 19 events
-there: its own archive of `/etc` was counted as the engine's. Five runs do not
-say how far the times can vary.
+This is one sample. Its three Wazuh agents recorded the host logs and watched
+files on `web`, `db` and `build`; the packet capture on `web` recorded the
+range traffic for the three packet rule sets. The artifact keeps that raw
+telemetry and the packets so the after-run judgments can be checked again.
 
 ## Range one: its defenses
 
@@ -1822,8 +1794,8 @@ ordinary day, with the denominators of the run.
 `wazuh-stock` is first, so the top level of a recording is its view, with the
 verdicts, ordinary day and score a recording had before the spec named
 defenses ([the recording](#range-one-the-score-and-the-recording) says what
-else differs). Range one names five defenses over seven fetched or tracked
-rule sets. `ai-tool-packs` deliberately keeps the four external sets in one
+else differs). Range one names 5 defenses, 7 after-run rule sets plus Wazuh
+live rules. `ai-tool-packs` deliberately keeps the four external sets in one
 view; `ordered-credential` is separate so the stock public rules and the tuned
 comparison remain inspectable.
 

@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { api, type Delta, type DeltaStep, type DeltaSummary, type RecordingSummary } from "../src/lib/api";
 import { activeProviderKind, backPath, candidates, draftKey, fixPath, modelWords, tieOf, triedFor } from "../src/lib/fix-step";
 import { RUNNING_POLL_MS } from "../src/lib/recorded-runs";
-import { readRecording, type Recording, type RuleLevel } from "../src/live/recording";
+import { countsForScore, judgedBy, readRecording, type Recording, type RuleLevel } from "../src/live/recording";
 import { FixStepPage } from "../src/pages/FixStep";
 import type { CatalogResponse } from "../src/types";
 import { alert, at, event, recording as fixture, step } from "./live-fixture";
@@ -240,10 +240,10 @@ describe("the page for fixing a step", () => {
     // The one published rule that matched it is the one to start from.
     expect(start).toHaveTextContent('A sensor recorded this test, but no rule raised an alert. To alert here, start from the rule "Use Of Hidden Paths Or Files": it matched this step at low level.');
     const matched = screen.getByRole("region", { name: "Rules that matched it" });
-    expect(within(matched).getByRole("heading", { level: 3, name: "Published rules below alert level: for review" })).toBeVisible();
+    expect(within(matched).getByRole("heading", { level: 3, name: "Rules in this defense below alert level: for review" })).toBeVisible();
     const published = within(matched).getByRole("article", { name: "Use Of Hidden Paths Or Files" });
     expect(published).toHaveTextContent("review · low");
-    expect(published).toHaveTextContent("published");
+    expect(published).toHaveTextContent("in this defense");
     const lab = within(matched).getByRole("article", { name: "A Lab Rule Below Alert Level" });
     expect(lab).toHaveTextContent("accepted");
     expect(lab).toHaveTextContent("it matched no ordinary activity");
@@ -289,7 +289,7 @@ describe("the page for fixing a step", () => {
 
     const start = await screen.findByRole("region", { name: "Where to start" });
     expect(start).toHaveTextContent('A sensor recorded this test, but no rule raised an alert. To alert here, start from the rule "Integrity checksum changed": it matched this step at medium level, and 38 events of ordinary activity too.');
-    expect(start).toHaveTextContent("Of the 5 published rules that matched it below alert level, it is the one at the highest level; a tie goes to the one that matched least ordinary activity.");
+    expect(start).toHaveTextContent("Of the 5 rules in this defense that matched it below alert level, it is the one at the highest level; a tie goes to the one that matched least ordinary activity.");
     expect(start).not.toHaveTextContent("Start with a rule that matches what the sensor recorded");
 
     const matched = screen.getByRole("region", { name: "Rules that matched it" });
@@ -299,8 +299,8 @@ describe("the page for fixing a step", () => {
       if (!box) throw new Error(`No group under ${name}.`);
       return within(box).getAllByRole("article").map((card) => card.getAttribute("aria-label"));
     };
-    expect(group("Published rules below alert level: for review")).toEqual(["File added to the system.", "File deleted.", "Integrity checksum changed."]);
-    expect(group("Published rules at informational level: nobody reviews them")).toEqual(["sshd: authentication success.", "PAM: Login session opened."]);
+    expect(group("Rules in this defense below alert level: for review")).toEqual(["File added to the system.", "File deleted.", "Integrity checksum changed."]);
+    expect(group("Rules in this defense at informational level: nobody reviews them")).toEqual(["sshd: authentication success.", "PAM: Login session opened."]);
     // An informational match is called informational, never one for review.
     expect(within(matched).getByRole("article", { name: "sshd: authentication success." })).toHaveTextContent("informational");
     expect(matched).not.toHaveTextContent(/review · informational/i);
@@ -352,7 +352,7 @@ describe("the page for fixing a step", () => {
   it("for a step a rule of the lab's own alerted on, shows that rule with how the run judged it and its text, and offers no draft", async () => {
     mount("3");
     const start = await screen.findByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("One of the lab's own rules alerted on it, which the score does not count. The score counts published rules only, and none of those alerted.");
+    expect(start).toHaveTextContent("An ad hoc lab rule alerted on it, which the score does not count. The score counts rules in this defense only, and none of those alerted.");
     const matched = screen.getByRole("region", { name: "Rules that matched it" });
     expect(matched).toHaveTextContent("The rule that raised the lab alert");
     // Where the run loaded the rule from, as the recording says; not a claim about the repository today.
@@ -399,9 +399,30 @@ describe("the page for fixing a step", () => {
   it("for a step a published rule alerted on, shows the rule that alerted", async () => {
     mount("4");
     const start = await screen.findByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
+    expect(start).toHaveTextContent("A rule in this defense raised an alert on it. There is nothing to fix here.");
     expect(within(screen.getByRole("region", { name: "Rules that matched it" })).getByRole("article", { name: "History File Deletion" })).toHaveTextContent("alert · high");
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("keeps the repository-authored ordered correlation alert scoring and visible without calling it published", async () => {
+    const title = "Credential Search Followed By Remote Archive Collection";
+    const ordered = judgedBy(shipped("lab-range-one-path"), "ordered-credential");
+    const scored = ordered.alerts.find((item) => item.rule.title === title && item.counts);
+    if (!scored) throw new Error("The shipped ordered defense should carry its scoring correlation alert.");
+    expect(countsForScore(scored)).toBe(true);
+    expect(ordered.score.alerted).toBe(1);
+
+    mount("s08", { recording: ordered, pairs: [] });
+    const start = await screen.findByRole("region", { name: "Where to start" });
+    expect(start).toHaveTextContent("A rule in this defense raised an alert on it. There is nothing to fix here.");
+    expect(start).not.toHaveTextContent("published");
+    const matched = screen.getByRole("region", { name: "Rules that matched it" });
+    const correlation = within(matched).getByRole("article", { name: title });
+    expect(correlation).toHaveTextContent("alert · high");
+    expect(correlation).toHaveTextContent("in this defense · on 3 events");
+    expect(correlation).not.toHaveTextContent("published");
+    expect(matched).toHaveTextContent("Rules in this defense at informational level: nobody reviews them");
+    expect(matched).not.toHaveTextContent("Published rules");
   });
 
   it("for a step of a run that two defenses judged, shows it as the first defense judged it, with nothing of the second", async () => {
@@ -442,10 +463,10 @@ describe("the page for fixing a step", () => {
   it("for step 1 of the attack path, which a published rule alerted on, lists all nine rules that matched it, each in its group", async () => {
     mount("s01", { recording: shipped("lab-range-one-path"), pairs: [] });
     const start = await screen.findByRole("region", { name: "Where to start" });
-    expect(start).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
+    expect(start).toHaveTextContent("A rule in this defense raised an alert on it. There is nothing to fix here.");
     expect(groupsOf(screen.getByRole("region", { name: "Rules that matched it" }))).toEqual([
       ["The rule that raised the alert", ["Multiple authentication failures followed by a success."]],
-      ["Published rules below alert level: for review", [
+      ["Rules in this defense below alert level: for review", [
         "PAM: Multiple failed logins in a small period of time.",
         "PAM: User login failed.",
         "sshd: Attempt to login using a non-existent user",
@@ -453,7 +474,7 @@ describe("the page for fixing a step", () => {
         "sshd: brute force trying to get access to the system. Authentication failed.",
         "sshd: brute force trying to get access to the system. Non existent user.",
       ]],
-      ["Published rules at informational level: nobody reviews them", ["PAM: Login session closed.", "PAM: Login session opened."]],
+      ["Rules in this defense at informational level: nobody reviews them", ["PAM: Login session closed.", "PAM: Login session opened."]],
     ]);
     expect(screen.getByRole("article", { name: "sshd: Attempt to login using a non-existent user" })).toHaveTextContent("review · low");
   });
@@ -461,7 +482,7 @@ describe("the page for fixing a step", () => {
   it("counts an event of a rule once where its match names it twice, as analyse mode's detail does", async () => {
     // Test 42 of a later run of the 60 tests: its one match of this rule names the event 45-3 twice.
     mount("test:23d348f3", { recording: shipped("lab-pair-history-watch-after"), pairs: [] });
-    expect(await screen.findByRole("article", { name: "Use Of Hidden Paths Or Files" })).toHaveTextContent("published · on 1 event · 3 events in ordinary activity");
+    expect(await screen.findByRole("article", { name: "Use Of Hidden Paths Or Files" })).toHaveTextContent("in this defense · on 1 event · 3 events in ordinary activity");
   });
 
   it("for a test of the run on one Linux machine a published rule alerted on, lists the rule below alert level and the lab's rule, and ends with the recording's note on the lab's rules", async () => {
@@ -474,9 +495,9 @@ describe("the page for fixing a step", () => {
     expect(groupsOf(matched)).toEqual([
       ["The rule that raised the alert", ["Binary Padding - Linux"]],
       ["The lab's own rules that matched", ["Shell History File Emptied"]],
-      ["Published rules below alert level: for review", ["Suspicious History File Operations - Linux"]],
+      ["Rules in this defense below alert level: for review", ["Suspicious History File Operations - Linux"]],
     ]);
-    expect(screen.getByRole("region", { name: "Where to start" })).toHaveTextContent("A published rule raised an alert on it. There is nothing to fix here.");
+    expect(screen.getByRole("region", { name: "Where to start" })).toHaveTextContent("A rule in this defense raised an alert on it. There is nothing to fix here.");
     // The lab's rule has a card: the section says how the run judged it, in the recording's note, as the other pages do.
     expect(matched.lastElementChild).toHaveTextContent(`This recording says of the lab's own rules: ${note}`);
     expect(matched).not.toHaveTextContent("This recording does not say how the run judged this rule.");
@@ -488,7 +509,7 @@ describe("the page for fixing a step", () => {
     const matched = await screen.findByRole("region", { name: "Rules that matched it" });
     expect(groupsOf(matched)).toEqual([
       ["The rule that raised the lab alert", ["Systemd Unit File Written By A Shell"]],
-      ["Published rules below alert level: for review", ["Service Reload or Start - Linux"]],
+      ["Rules in this defense below alert level: for review", ["Service Reload or Start - Linux"]],
       ["Matched only the line that starts the test, which never counts", ["Execution Of Script Located In Potentially Suspicious Directory"]],
     ]);
     expect(within(matched).getByRole("article", { name: "Execution Of Script Located In Potentially Suspicious Directory" })).toHaveTextContent("launcher line");
@@ -499,13 +520,13 @@ describe("the page for fixing a step", () => {
     mount("7", { recording: shipped("lab-linux-host"), pairs: [] });
     const matched = await screen.findByRole("region", { name: "Rules that matched it" });
     expect(groupsOf(matched)).toEqual([
-      ["Published rules below alert level", []],
+      ["Rules in this defense below alert level", []],
       ["The lab's own rules that matched", []],
       ["Matched only the line that starts the test, which never counts", ["Execution Of Script Located In Potentially Suspicious Directory"]],
     ]);
     // The published rule under them matched only that line: the empty group says it matched nothing the test itself did, not that none matched.
-    expect(matched).toHaveTextContent("No published rule matched what the test itself did, at any level.");
-    expect(matched).not.toHaveTextContent("No published rule matched it, at any level.");
+    expect(matched).toHaveTextContent("No rule in this defense matched what the test itself did, at any level.");
+    expect(matched).not.toHaveTextContent("No rule in this defense matched it, at any level.");
     expect(matched).toHaveTextContent("None of the lab's own rules matched it.");
   });
 
@@ -514,10 +535,10 @@ describe("the page for fixing a step", () => {
     mount("11", { recording: shipped("lab-linux-host"), pairs: [] });
     const matched = await screen.findByRole("region", { name: "Rules that matched it" });
     expect(groupsOf(matched)).toEqual([
-      ["Published rules below alert level", []],
+      ["Rules in this defense below alert level", []],
       ["The lab's own rules that matched", []],
     ]);
-    expect(matched).toHaveTextContent("No published rule matched it, at any level.");
+    expect(matched).toHaveTextContent("No rule in this defense matched it, at any level.");
     expect(matched).toHaveTextContent("None of the lab's own rules matched it.");
   });
 
@@ -529,14 +550,14 @@ describe("the page for fixing a step", () => {
     mount("2", { recording, pairs: [] });
     const matched = await screen.findByRole("region", { name: "Rules that matched it" });
     expect(groupsOf(matched)).toEqual([
-      ["Published rules below alert level", []],
+      ["Rules in this defense below alert level", []],
       ["The lab's own rules that matched", []],
       ["Matched only the line that starts the test, which never counts", ["A Lab Rule Below Alert Level"]],
     ]);
     expect(matched).toHaveTextContent("None of the lab's own rules matched what the test itself did.");
     expect(matched).not.toHaveTextContent("None of the lab's own rules matched it.");
     // No published rule matched at all, so that group keeps its sentence.
-    expect(matched).toHaveTextContent("No published rule matched it, at any level.");
+    expect(matched).toHaveTextContent("No rule in this defense matched it, at any level.");
   });
 
   it("for a step of a range, says that its sensors and rules are set in the range's spec and images, not in the lab's folders", async () => {
