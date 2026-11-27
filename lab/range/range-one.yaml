@@ -53,7 +53,7 @@ rule_sets:                         # rule sets, each file pinned before use
   aipt-sigma:
     kind: sigma
     repo: theori-io/aipt-detections
-    commit: 9e4653db4d9c9aaa6438354348953dbe89322848
+    commit: ["9e4653db", "4d9c9aaa", "64383543", "48953dbe", "89322848"]
     folders: [sigma]
     rule_paths: [sigma/correlation, sigma/file_event, sigma/network_connection,
                  sigma/process_creation, sigma/proxy, sigma/web, sigma/zeek]
@@ -64,16 +64,17 @@ rule_sets:                         # rule sets, each file pinned before use
   aipt-suricata:
     kind: suricata
     repo: theori-io/aipt-detections
-    commit: 9e4653db4d9c9aaa6438354348953dbe89322848
+    commit: ["9e4653db", "4d9c9aaa", "64383543", "48953dbe", "89322848"]
     folders: [suricata]
     include: rules
     exclude: [suricata/retired.rules]
+    hash_files: [suricata/artex-ui-assets.md5]
     licence: LICENSE
     lock: range-one.rules.lock
   agentic-sigma:
     kind: sigma
     repo: ThreatDefence/agentic-attack-detections
-    commit: 12e37af3bcce482d0053e7241a31ba43a7ce0e64
+    commit: ["12e37af3", "bcce482d", "0053e724", "1a31ba43", "a7ce0e64"]
     folders: [behaviors, general, frameworks]
     rule_paths: [behaviors/sigma, general/sigma, "frameworks/*/sigma"]
     include: rules
@@ -82,7 +83,7 @@ rule_sets:                         # rule sets, each file pinned before use
   agentic-suricata:
     kind: suricata
     repo: ThreatDefence/agentic-attack-detections
-    commit: 12e37af3bcce482d0053e7241a31ba43a7ce0e64
+    commit: ["12e37af3", "bcce482d", "0053e724", "1a31ba43", "a7ce0e64"]
     folders: [behaviors, frameworks]
     rule_paths: [behaviors/suricata, "frameworks/*/suricata"]
     include: rules

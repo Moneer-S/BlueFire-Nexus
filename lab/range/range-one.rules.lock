@@ -244,13 +244,15 @@ d19d295946ae624b170e5af8c951b5dbafcffe36353df6fbf65f247edf93517c  sigma/zeek/zee
 # aipt-suricata: theori-io/aipt-detections 9e4653db4d9c9aaa6438354348953dbe89322848
 # include: rules
 # exclude: suricata/retired.rules
+# hash file: suricata/artex-ui-assets.md5
 # left out: 1 excluded by the spec
-# left out: 3 not a Suricata .rules file
+# left out: 2 not a Suricata .rules file
 f648caafc6fd444dc1a9f92a0e1102e71128b9324677b34817babb7468bdb02e  LICENSE
 d76df7b6761fa17d1ac32d9a6abbd445c8e04acbf0f1b34260ca8cb24c114e80  suricata/aipt-exposed-console.rules
 5a0c5c0c52c3fa0060035cfd9d32e2e6d7d1eaaa7f0b5436bb61bd1a419bd288  suricata/aipt-llm-side.rules
 df6f54f09dbba41a649eb04ebdc257886b907cbaabc0e45080e2208cc3abc4c0  suricata/aipt-operator-egress.rules
 38474db078c26e695f37184bb1bdd81179b936366015dc88d66e7ae2a5360b8f  suricata/aipt-target-facing.rules
+0a7ed39de78ca7ad0ba1ab534065571bc94ce0bf67e640077f5a996d2aa6cbc1  suricata/artex-ui-assets.md5
 # agentic-sigma: ThreatDefence/agentic-attack-detections 12e37af3bcce482d0053e7241a31ba43a7ce0e64
 # include: rules
 # rule path: behaviors/sigma

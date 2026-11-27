@@ -242,7 +242,19 @@ def put(value, *path: str):
         ),
         (
             put("abc", "defense", "wazuh", "agent_deb", "sha512"),
-            "agent_deb.sha512 must be the package's SHA-512",
+            "agent_deb.sha512 must be the SHA-512",
+        ),
+        (
+            put(["01234567"] * 15, "defense", "wazuh", "agent_deb", "sha512"),
+            "agent_deb.sha512 must be the SHA-512",
+        ),
+        (
+            put(["01234567"] * 15 + ["ABCDEFGH"], "defense", "wazuh", "agent_deb", "sha512"),
+            "agent_deb.sha512 must be the SHA-512",
+        ),
+        (
+            put(["01234567"] * 15 + ["0123456"], "defense", "wazuh", "agent_deb", "sha512"),
+            "agent_deb.sha512 must be the SHA-512",
         ),
         (put(20, "defense", "wazuh", "alert_level"), "alert_level must be a Wazuh rule level from 1 to 16"),
         (
@@ -421,6 +433,18 @@ def change_entry(key: str, index: int, **values):
         (change_web("atomics_src", ["1110"]), "atomics_src must list technique ids once each"),
         (drop("atomic_red_team"), "host web carries published files, and the spec has no atomic_red_team"),
         (put("a0e3f9bc", "atomic_red_team", "commit"), "atomic_red_team.commit must be a full commit id"),
+        (
+            put(["01234567"] * 4, "atomic_red_team", "commit"),
+            "atomic_red_team.commit must be a full commit id",
+        ),
+        (
+            put(["01234567"] * 4 + ["ABCDEFGH"], "atomic_red_team", "commit"),
+            "atomic_red_team.commit must be a full commit id",
+        ),
+        (
+            put(["01234567"] * 4 + ["0123456"], "atomic_red_team", "commit"),
+            "atomic_red_team.commit must be a full commit id",
+        ),
         # what a host lists against what its services listen on
         (
             change_web("listens", [22, 80]),
@@ -496,6 +520,26 @@ def manifest_defended(change=None) -> dict:
     return document
 
 
+def test_lower_case_hex_pins_can_be_exact_eight_character_chunks() -> None:
+    document = defended()
+    atomics = document["atomic_red_team"]["commit"]
+    rule_set = document["rule_sets"]["made-up"]["commit"]
+    sha512 = document["defense"]["wazuh"]["agent_deb"]["sha512"]
+    document["atomic_red_team"]["commit"] = [atomics[place : place + 8] for place in range(0, 40, 8)]
+    document["rule_sets"]["made-up"]["commit"] = [
+        rule_set[place : place + 8] for place in range(0, 40, 8)
+    ]
+    document["defense"]["wazuh"]["agent_deb"]["sha512"] = [
+        sha512[place : place + 8] for place in range(0, 128, 8)
+    ]
+
+    found = range_spec.parse(document)
+
+    assert found.atomics.commit == atomics
+    assert found.rule_sets[0].commit == rule_set
+    assert found.wazuh.agent_sha512 == sha512
+
+
 def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
     spec = range_spec.parse(defended())
 
@@ -524,6 +568,7 @@ def test_a_spec_names_its_rule_sets_and_its_defenses_in_order() -> None:
     assert selected.include == "rules"
     assert selected.exclude == ("rules/linux/process_creation/retired.yml",)
     assert selected.pipelines == ("rules/web/placeholders.yml",)
+    assert selected.hash_files == ()
     # The first defense is the baseline; a defense that only records runs no rules.
     assert spec.defenses == (
         range_spec.Defense("wazuh-stock", "Wazuh with its stock rules", ("wazuh-agent",), ("wazuh",)),
@@ -630,6 +675,18 @@ def rename_set(name):
         (change_set(url="https://example.com/rules.zip"), "rule_sets: made-up has unknown keys: url"),
         (change_set(repo="https://github.com/example/rules"), "repo must be a GitHub repository"),
         (change_set(commit="552f3fee"), "rule_sets: made-up: commit must be a full commit id"),
+        (
+            change_set(commit=["01234567"] * 4),
+            "rule_sets: made-up: commit must be a full commit id",
+        ),
+        (
+            change_set(commit=["01234567"] * 4 + ["ABCDEFGH"]),
+            "rule_sets: made-up: commit must be a full commit id",
+        ),
+        (
+            change_set(commit=["01234567"] * 4 + ["0123456"]),
+            "rule_sets: made-up: commit must be a full commit id",
+        ),
         (change_set(include="yaml"), "rule_sets: made-up: include must be all or rules"),
         (change_set(rule_paths="rules/*"), "rule_paths must list relative source folders once each"),
         (change_set(rule_paths=["rules/**/sigma"]), "rule_paths must list relative source folders once each"),
@@ -651,6 +708,26 @@ def rename_set(name):
         (
             change_set(pipelines=["rules/web/pipeline.yml"], exclude=["rules/web/pipeline.yml"]),
             "pipelines names rules/web/pipeline.yml, which exclude also names",
+        ),
+        (change_set(hash_files="rules/web/hashes.md5"), "hash_files must list repository"),
+        (change_set(hash_files=["../hashes.md5"]), "hash_files must list repository"),
+        (change_set(hash_files=["rules/web/hashes.txt"]), "hash_files must list repository"),
+        (
+            change_set(hash_files=["rules/web/hashes.md5", "rules/web/hashes.md5"]),
+            "hash_files must list repository",
+        ),
+        (change_set(hash_files=["rules/web/hashes.md5"]), "hash_files is only for suricata rule sets"),
+        (
+            change_set(kind="suricata", hash_files=["tests/hashes.md5"]),
+            "hash_files names tests/hashes.md5, outside",
+        ),
+        (
+            change_set(
+                kind="suricata",
+                hash_files=["rules/web/hashes.md5"],
+                exclude=["rules/web/hashes.md5"],
+            ),
+            "hash_files names rules/web/hashes.md5, which exclude also names",
         ),
         (change_set(folders=[]), "folders must list folders of the repository"),
         (change_set(folders=["/rules/linux"]), "folders must list folders of the repository"),

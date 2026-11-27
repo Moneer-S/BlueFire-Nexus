@@ -195,6 +195,7 @@ def selection_spec(
     rule_paths: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
     pipelines: tuple[str, ...] = (),
+    hash_files: tuple[str, ...] = (),
 ) -> range_spec.Spec:
     """A parsed spec changed only to exercise made-up format-aware discovery."""
 
@@ -207,6 +208,7 @@ def selection_spec(
         include="rules",
         exclude=exclude,
         pipelines=pipelines,
+        hash_files=hash_files,
     )
     return replace(spec, rule_sets=(rule_set,))
 
@@ -318,14 +320,67 @@ def test_a_suricata_set_locks_only_active_rule_files_and_keeps_an_exact_exclusio
         "exclude": list(omitted),
         "pipelines": [],
         "selected files": 1,
+        "left out files": 4,
+        "left out by reason": {
+            "excluded by the spec": 1,
+            "no active Suricata rule": 1,
+            "not a Suricata .rules file": 2,
+        },
+    }
+    assert not any(url.endswith("/suricata/retired.rules") for url in asked)
+
+
+def test_a_suricata_hash_dataset_is_selected_by_exact_name_and_bound_into_the_lock(
+    tmp_path: Path, served
+) -> None:
+    hashes = "suricata/exposed-assets.md5"
+    spec = selection_spec(
+        tmp_path,
+        "suricata",
+        "suricata",
+        exclude=("suricata/retired.rules",),
+        hash_files=(hashes,),
+    )
+
+    rulesets.lock(spec, served(SELECTION))
+    locked = rulesets.locked(spec, spec.rule_sets[0])
+    made = rulesets.record(spec.rule_sets[0], locked)
+
+    assert set(locked) == {"LICENSE", "suricata/active.rules", hashes}
+    assert made["selection"] == {
+        "include": "rules",
+        "rule paths": [],
+        "exclude": ["suricata/retired.rules"],
+        "pipelines": [],
+        "selected files": 2,
         "left out files": 3,
         "left out by reason": {
             "excluded by the spec": 1,
             "no active Suricata rule": 1,
             "not a Suricata .rules file": 1,
         },
+        "hash files": [hashes],
     }
-    assert not any(url.endswith("/suricata/retired.rules") for url in asked)
+    assert f"{rulesets.HASH_FILE}{hashes}" in (tmp_path / "made-up.lock").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "reason"),
+    [
+        ("hashes.md5", b"0" * 32 + b"\n" + b"abcdef0123456789abcdef0123456789\r\n", None),
+        ("hashes.sha1", b"0" * 40 + b"\n", None),
+        ("hashes.sha256", b"0" * 64 + b"\n", None),
+        ("hashes.txt", b"0" * 32 + b"\n", "not a Suricata hash file"),
+        ("hashes.md5", b"", "not one 128-bit hexadecimal hash per line"),
+        ("hashes.md5", b"0" * 31 + b"\n", "not one 128-bit hexadecimal hash per line"),
+        ("hashes.md5", b"0" * 32 + b" extra\n", "not one 128-bit hexadecimal hash per line"),
+        ("hashes.md5", b"\xff\n", "Suricata hash file is not ASCII"),
+    ],
+)
+def test_a_suricata_hash_dataset_is_one_exact_hash_per_line(
+    path: str, data: bytes, reason: str | None
+) -> None:
+    assert rulesets.suricata_hash_reason(path, data) == reason
 
 
 def test_locking_refuses_a_filter_that_does_not_describe_the_pinned_folders(tmp_path: Path, served) -> None:
@@ -688,14 +743,16 @@ def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> 
     )
 
     aipt_suricata_lock = rulesets.locked(spec, aipt_suricata)
-    assert len(aipt_suricata_lock) == 5
-    assert rulesets.record(aipt_suricata, aipt_suricata_lock)["files"] == 4
+    assert len(aipt_suricata_lock) == 6
+    assert rulesets.record(aipt_suricata, aipt_suricata_lock)["files"] == 5
+    assert sum(path.endswith(".rules") for path in aipt_suricata_lock) == 4
+    assert aipt_suricata.hash_files == ("suricata/artex-ui-assets.md5",)
     assert aipt_suricata_lock.left_out == {
         "excluded by the spec": 1,
-        "not a Suricata .rules file": 3,
+        "not a Suricata .rules file": 2,
     }
     assert rulesets.digest(aipt_suricata, aipt_suricata_lock) == "".join(
-        ("e78d8feb", "6aa9b263", "c622e580", "03193127", "b3867ec7", "e9bbe24c", "1963f4a4", "329f0871")
+        ("6dd0d8a2", "478f90df", "58ab8ace", "d3e75282", "6c0c4b3a", "2a39749a", "b37e1edf", "6563f5aa")
     )
 
     agentic_sigma_lock = rulesets.locked(spec, agentic_sigma)

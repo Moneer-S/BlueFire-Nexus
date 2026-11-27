@@ -153,6 +153,7 @@ INCLUDE = "# include: "
 RULE_PATH = "# rule path: "
 EXCLUDE = "# exclude: "
 PIPELINE = "# pipeline: "
+HASH_FILE = "# hash file: "
 LEFT_OUT = "# left out: "
 SURICATA_RULE = re.compile(r"^(alert|drop|pass|reject(?:src|dst|both)?)\s+", re.IGNORECASE)
 
@@ -183,6 +184,7 @@ def read_lock(text: str, rule_set: RuleSet) -> Locked:
     rule_paths: list[str] = []
     excluded: list[str] = []
     pipelines: list[str] = []
+    hash_files: list[str] = []
     left_out: dict[str, int] = {}
     start = lines.index(header(rule_set)) + 1
     for number, line in enumerate(lines[start:], start=start + 1):
@@ -207,6 +209,12 @@ def read_lock(text: str, rule_set: RuleSet) -> Locked:
                 raise SpecError(f"line {number} of {rule_set.lock} does not name a new pipeline file")
             pipelines.append(path)
             continue
+        if line.startswith(HASH_FILE):
+            path = line.removeprefix(HASH_FILE)
+            if not plain(path) or path in hash_files:
+                raise SpecError(f"line {number} of {rule_set.lock} does not name a new hash file")
+            hash_files.append(path)
+            continue
         if line.startswith(LEFT_OUT):
             count, separator, reason = line.removeprefix(LEFT_OUT).partition(" ")
             if not separator or not count.isdigit() or int(count) < 1 or not reason or reason in left_out:
@@ -226,6 +234,7 @@ def read_lock(text: str, rule_set: RuleSet) -> Locked:
         or sorted(rule_paths) != sorted(rule_set.rule_paths)
         or sorted(excluded) != sorted(rule_set.exclude)
         or sorted(pipelines) != sorted(rule_set.pipelines)
+        or sorted(hash_files) != sorted(rule_set.hash_files)
     ):
         raise SpecError(
             f"the section for {rule_set.name} in {rule_set.lock} selects different files than the spec: "
@@ -264,6 +273,12 @@ def wanted(rule_set: RuleSet, locked: dict[str, str]) -> list[str]:
     if missing_pipelines:
         raise SpecError(
             f"{rule_set.lock} does not list {', '.join(missing_pipelines[:5])}, a pipeline of {rule_set.name}: {again}"
+        )
+    missing_hash_files = sorted(set(rule_set.hash_files) - set(locked))
+    if missing_hash_files:
+        raise SpecError(
+            f"{rule_set.lock} does not list {', '.join(missing_hash_files[:5])}, a hash file of "
+            f"{rule_set.name}: {again}"
         )
     for folder in rule_set.folders:
         if not any(path.startswith(folder + "/") for path in locked):
@@ -424,6 +439,17 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
             ),
         }
     left_out = dict(getattr(hashes, "left_out", {}))
+    selection = {
+        "include": rule_set.include,
+        "rule paths": list(rule_set.rule_paths),
+        "exclude": list(rule_set.exclude),
+        "pipelines": list(rule_set.pipelines),
+        "selected files": len(hashes) - 1,
+        "left out files": sum(left_out.values()),
+        "left out by reason": left_out,
+    }
+    if rule_set.hash_files:
+        selection["hash files"] = list(rule_set.hash_files)
     return {
         "kind": rule_set.kind,
         "repo": rule_set.repo,
@@ -432,15 +458,7 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
         "licence": rule_set.licence,
         "folder": f"{FOLDER}/{rule_set.name}",
         "files": len(hashes) - 1,
-        "selection": {
-            "include": rule_set.include,
-            "rule paths": list(rule_set.rule_paths),
-            "exclude": list(rule_set.exclude),
-            "pipelines": list(rule_set.pipelines),
-            "selected files": len(hashes) - 1,
-            "left out files": sum(left_out.values()),
-            "left out by reason": left_out,
-        },
+        "selection": selection,
         "digest": digest(rule_set, hashes),
         "lock": dict(sorted(hashes.items())),
         "note": "every selected file was fetched from raw.githubusercontent.com at the commit and had the "
@@ -506,6 +524,8 @@ def selection_reason(rule_set: RuleSet, path: str, data: bytes) -> str | None:
 
     if path in rule_set.pipelines:
         return sigma_pipeline_reason(path, data)
+    if path in rule_set.hash_files:
+        return suricata_hash_reason(path, data)
     if rule_set.include == "all":
         return None
     if rule_set.kind == "sigma":
@@ -521,6 +541,8 @@ def path_selection_reason(rule_set: RuleSet, path: str) -> str | None:
     if path in rule_set.exclude:
         return "excluded by the spec"
     if path in rule_set.pipelines:
+        return None
+    if path in rule_set.hash_files:
         return None
     if rule_set.rule_paths and not any(in_rule_path(path, pattern) for pattern in rule_set.rule_paths):
         return "outside selected source paths"
@@ -609,6 +631,22 @@ def suricata_reason(path: str, data: bytes) -> str | None:
     return None
 
 
+def suricata_hash_reason(path: str, data: bytes) -> str | None:
+    """Why bytes are not one strict hash list a Suricata file-hash rule can load."""
+
+    widths = {".md5": 32, ".sha1": 40, ".sha256": 64}
+    width = widths.get(PurePosixPath(path).suffix.lower())
+    if width is None:
+        return "not a Suricata hash file"
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        return "Suricata hash file is not ASCII"
+    if not lines or any(re.fullmatch(rf"[0-9A-Fa-f]{{{width}}}", line) is None for line in lines):
+        return f"not one {width * 4}-bit hexadecimal hash per line"
+    return None
+
+
 def selection_lines(rule_set: RuleSet, left_out: dict[str, int]) -> list[str]:
     """Lock comments that bind a section to its selection and preserve the excluded counts."""
 
@@ -618,6 +656,7 @@ def selection_lines(rule_set: RuleSet, left_out: dict[str, int]) -> list[str]:
     lines += [RULE_PATH + path for path in sorted(rule_set.rule_paths)]
     lines += [EXCLUDE + path for path in sorted(rule_set.exclude)]
     lines += [PIPELINE + path for path in sorted(rule_set.pipelines)]
+    lines += [HASH_FILE + path for path in sorted(rule_set.hash_files)]
     lines += [f"{LEFT_OUT}{count} {reason}" for reason, count in sorted(left_out.items())]
     return lines
 
@@ -650,6 +689,12 @@ def lock(spec: Spec, get: atomics.Fetch = atomics.http_get) -> list[Path]:
         if missing_pipelines:
             raise SpecError(
                 f"{rule_set.name}: pipelines names {', '.join(missing_pipelines[:5])}, which the configured "
+                "folders do not hold at the pinned commit"
+            )
+        missing_hash_files = sorted(set(rule_set.hash_files) - set(candidates))
+        if missing_hash_files:
+            raise SpecError(
+                f"{rule_set.name}: hash_files names {', '.join(missing_hash_files[:5])}, which the configured "
                 "folders do not hold at the pinned commit"
             )
         unmatched = sorted(
