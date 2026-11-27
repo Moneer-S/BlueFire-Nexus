@@ -7,13 +7,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./replay.css";
 import { LiveView } from "./live/LiveView";
-import type { LiveViewProps, OriginKind } from "./live/LiveView";
+import type { LiveMoment, LiveViewProps, OriginKind } from "./live/LiveView";
 import { LiveViewBoundary } from "./live/LiveViewBoundary";
 import { plainMarks } from "./live/format";
-import { RecordingError, firstView, readRecording } from "./live/recording";
+import { RecordingError, readRecording } from "./live/recording";
 import type { Recording } from "./live/recording";
 
-/** The recording the page holds, as it is played: one with defenses as its first defense judged the run. */
 function readPage(): { recording: Recording } | { problem: string; empty: boolean } {
   const holder = document.getElementById("bluefire-recording");
   const text = holder?.textContent?.trim() ?? "";
@@ -26,7 +25,7 @@ function readPage(): { recording: Recording } | { problem: string; empty: boolea
     return { problem: "The recording in this page could not be read.", empty: false };
   }
   try {
-    return { recording: firstView(readRecording(value)) };
+    return { recording: readRecording(value) };
   } catch (error) {
     if (error instanceof RecordingError) return { problem: error.message, empty: false };
     return { problem: `The recording in this page could not be checked: ${error instanceof Error ? error.message : "an unknown failure"}.`, empty: false };
@@ -80,7 +79,25 @@ function readAddress(): NonNullable<LiveViewProps["initial"]> {
   if (mode === "watch" || mode === "analyse") initial.mode = mode;
   const select = query.get("select");
   if (select) initial.select = select;
+  const defense = query.get("defense");
+  if (defense) initial.defense = defense;
   return initial;
+}
+
+/** Keep the same shareable moment in the address, including which defense judges. */
+function writeAddress(moment: LiveMoment): void {
+  const query = new URLSearchParams();
+  if (moment.step !== undefined) {
+    query.set("step", moment.step);
+    if (moment.at !== undefined) query.set("at", String(moment.at));
+  }
+  if (moment.paused) query.set("paused", "1");
+  if (moment.mode === "analyse") query.set("mode", "analyse");
+  if (moment.select !== undefined) query.set("select", moment.select);
+  if (moment.defense !== undefined) query.set("defense", moment.defense);
+  const search = query.toString();
+  const next = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
+  window.history.replaceState(null, "", next);
 }
 
 function Problem({ title, text }: { title: string; text: string }) {
@@ -103,7 +120,7 @@ if (root) {
     <StrictMode>
       {view ? (
         <LiveViewBoundary fallback={(message) => <Problem title="This recording cannot be played" text={message} />}>
-          <LiveView recording={view.recording} origin={view.origin} originKind={view.originKind} initial={readAddress()} />
+          <LiveView recording={view.recording} origin={view.origin} originKind={view.originKind} initial={readAddress()} onMoment={writeAddress} />
         </LiveViewBoundary>
       ) : "problem" in page ? (
         <Problem title={page.empty ? "No recording here" : "This recording cannot be played"} text={page.problem} />

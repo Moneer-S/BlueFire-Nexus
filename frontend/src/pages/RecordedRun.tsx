@@ -12,7 +12,7 @@ import { addressShows, momentFromSearch, momentSearch, namesMissingStep, originW
 import { pairPath, sidesOf, sideWords, turnName, type PairSide } from "../lib/recording-pairs";
 import { LiveView, type LiveMoment, type LiveViewProps } from "../live/LiveView";
 import { LiveViewBoundary } from "../live/LiveViewBoundary";
-import { RecordingError, firstView, readRecording, type Recording } from "../live/recording";
+import { RecordingError, readRecording, type Recording } from "../live/recording";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "./RecordedRun.css";
 
@@ -28,7 +28,7 @@ const ADDRESS_SETTLE_MS = 300;
 function read(value: unknown, summary: RecordingSummary): { recording: Recording } | { problem: string } {
   try {
     // The app follows a recording that is still running, which the replay page refuses.
-    const recording = firstView(readRecording(value, { running: true }));
+    const recording = readRecording(value, { running: true });
     if (summary.origin.kind !== "imported" || recording.source.run_url === undefined) return { recording };
     const source = { ...recording.source };
     delete source.run_url;

@@ -1,0 +1,124 @@
+/* Direction c: the chosen defense and the other judges live in the defense side of the map. */
+
+.lv-head.is-line.lv-ds-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lv-ds-head .lv-ds-name {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--lv-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lv-ds-head small {
+  flex: none;
+  max-width: 44%;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 450;
+  letter-spacing: 0.03em;
+  color: var(--lv-muted);
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.lv-ds-rows {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  grid-auto-rows: 16px;
+  padding-top: 2px;
+  background: linear-gradient(90deg, rgba(8, 26, 39, 0.9), rgba(8, 26, 39, 0.68));
+}
+
+.lv-ds-row {
+  all: unset;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) 38px 30px 36px 58px;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  padding: 0 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.lv-ds-row.is-heads {
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: var(--lv-muted);
+  cursor: default;
+}
+
+.lv-ds-row.is-heads span:nth-child(n + 3) { text-align: right; }
+
+.lv-ds-row kbd {
+  width: 13px;
+  height: 13px;
+  font-size: 9px;
+}
+
+.lv-ds-row kbd.is-alerted {
+  color: var(--lv-ink-950);
+  background: var(--lv-flame);
+  box-shadow: none;
+}
+
+.lv-ds-row kbd.is-seen { background: rgba(180, 197, 214, 0.55); }
+.lv-ds-row kbd.is-unseen { color: var(--lv-red); background: rgba(255, 110, 121, 0.12); box-shadow: inset 0 0 0 1.5px var(--lv-red); }
+.lv-ds-row kbd.is-stopped { background: repeating-linear-gradient(135deg, var(--lv-green) 0 2px, rgba(40, 217, 176, 0.32) 2px 4px); }
+.lv-ds-row kbd.is-running { box-shadow: inset 0 0 0 1px rgba(238, 247, 255, 0.75); }
+.lv-ds-row kbd.is-future { box-shadow: inset 0 0 0 1px rgba(101, 163, 212, 0.4); }
+.lv-ds-row kbd.is-noeffect,
+.lv-ds-row kbd.is-inconclusive { border: 1px dotted var(--lv-muted); }
+
+.lv-ds-rname {
+  min-width: 0;
+  overflow: hidden;
+  padding-right: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--lv-muted-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lv-ds-n {
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 16px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-ds-n.is-alerted { color: var(--lv-flame); }
+.lv-ds-n.is-seen { color: var(--lv-muted-strong); }
+.lv-ds-n.is-unseen { color: var(--lv-red); }
+.lv-ds-n.is-false { color: #ffb59c; }
+.lv-ds-n.is-zero { opacity: 0.45; }
+
+.lv-ds-row:hover { background: rgba(123, 202, 255, 0.05); }
+
+.lv-ds-row.is-chosen {
+  background: rgba(123, 202, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(123, 202, 255, 0.22);
+}
+
+.lv-ds-row.is-chosen .lv-ds-rname {
+  font-weight: 650;
+  color: var(--lv-text);
+}
+
+@media (max-width: 1120px) {
+  .lv-ds-row { grid-template-columns: 15px minmax(0, 1fr) repeat(3, 28px) 44px; gap: 3px; }
+  .lv-ds-head small { display: none; }
+}

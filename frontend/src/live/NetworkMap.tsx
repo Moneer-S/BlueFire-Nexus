@@ -4,7 +4,9 @@
 import { memo, useEffect, useId, useMemo } from "react";
 import type { ReactNode } from "react";
 import { useSize } from "./useSize";
-import type { Alert, Host, Recording, Sensor } from "./recording";
+import type { Alert, Host, Network, Recording, Sensor } from "./recording";
+import { DefenseSideHead, DefenseSideRows } from "./DefenseSide";
+import type { MapJudges } from "./DefenseSide";
 import { alertMoment, eventsByStep } from "./recording";
 import { badgeBoxOf, curvePath, ENGINE_EDGE, layoutNetwork, leastHeights, linkBetween, markAlertedHosts, markBadgedHosts, markGoalHost, pointOn, roleParts, SENSOR_NAME_LARGE, sharedSensorName, SILENCE_WORDS, travelPath, ZONE_RADIUS, zoneSaid } from "./networkLayout";
 import type { Box, Curve, HostNode, LinkLine, NetworkLayout, Point } from "./networkLayout";
@@ -49,6 +51,15 @@ interface NetworkMapProps {
   onLeast?: (heights: { least: number; roomy: number }) => void;
   /** The least height the view gives the map's box; without it, the box claims the map's own least height. */
   minHeight?: number;
+  /**
+   * For a recording judged by several defenses, whose `recording` here is the chosen one's view: the network the map
+   * lays out, which holds every sensor of the run and the chosen defense's rule engines, and the alerts of every
+   * defense, so that no host moves when another defense is chosen. A sensor of that network that the view does not
+   * hold is another defense's: it is drawn unlit.
+   */
+  stage?: { network: Network; alerts: readonly Alert[] };
+  /** The defenses as the map's defense side lists them (the design round's direction c). */
+  judges?: MapJudges;
 }
 
 /** The tints of the networks a map tells as zones, in the order their names first appear. */
@@ -376,8 +387,11 @@ interface MapViewProps extends NetworkMapProps {
   scale: number;
 }
 
-function MapView({ recording, layout, moment, speed, seek, colours, labDetectors, arrival, box, scale, goalHost = null, raised = [], firstAlert = null, goalTime = null, runStart }: MapViewProps) {
+function MapView({ recording, layout, moment, speed, seek, colours, labDetectors, arrival, box, scale, goalHost = null, raised = [], firstAlert = null, goalTime = null, runStart, stage, judges }: MapViewProps) {
   const step = moment?.step ?? null;
+  // Of a run judged by several defenses, the sensors the chosen one records with: any other on the map is drawn unlit.
+  const lit = useMemo(() => (stage ? new Set(recording.network.sensors.map((sensor) => sensor.id)) : null), [stage, recording]);
+  const isOff = (sensorId: string): boolean => lit !== null && !lit.has(sensorId);
   const unseen = moment !== null && moment.revealed && moment.outcome === "unseen";
   const stopped = moment !== null && moment.revealed && moment.outcome === "stopped";
   const currentHost = step?.host ?? null;
@@ -469,7 +483,9 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
   const fromNode = step?.from ? (layout.hosts.find((node) => node.host.id === step.from) ?? null) : null;
   const sinceStart = moment ? moment.now - moment.segment.bodyStart : -1;
   const alerted = moment !== null && moment.revealed && moment.outcome === "alerted";
-  const heads = useMemo(() => headsOf(recording, layout), [recording, layout]);
+  // Where the map lists the defenses, the head of the defense's side names the one that judges.
+  const ownHead = judges !== undefined && layout.defenseSide !== null;
+  const heads = useMemo(() => headsOf(recording, layout, ownHead), [recording, layout, ownHead]);
   // The way the attacker came: the links the steps before this one crossed, and the one this step crosses.
   const stepIndex = moment ? moment.segment.index : -1;
   const trail = useMemo(() => crossedBefore(recording, stepIndex), [recording, stepIndex]);
@@ -561,7 +577,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
         {layout.sensors.map((node) => {
           const curve = layout.sensorToJunction.get(node.sensor.id);
           const used = (perSensor.get(node.sensor.id)?.last ?? null) !== null;
-          return curve ? <path key={`sj-${node.sensor.id}`} className={`lv-wire lv-wire--sj${used ? " is-used" : ""}`} d={curvePath(curve)} /> : null;
+          return curve ? <path key={`sj-${node.sensor.id}`} className={`lv-wire lv-wire--sj${used ? " is-used" : ""}${isOff(node.sensor.id) ? " is-off" : ""}`} d={curvePath(curve)} /> : null;
         })}
         {layout.detectors.map((node) => {
           const curve = layout.junctionToDetector.get(node.detector.id);
@@ -570,7 +586,7 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
         })}
         {layout.sensors.map((node) => {
           const curve = layout.hostToSensor.get(node.sensor.id);
-          return curve ? <path key={`hs-${node.sensor.id}`} className={`lv-wire lv-wire--hs${node.sensor.host === currentHost ? " is-current" : ""}`} d={curvePath(curve)} /> : null;
+          return curve ? <path key={`hs-${node.sensor.id}`} className={`lv-wire lv-wire--hs${node.sensor.host === currentHost && !isOff(node.sensor.id) ? " is-current" : ""}${isOff(node.sensor.id) ? " is-off" : ""}`} d={curvePath(curve)} /> : null;
         })}
         {layout.junction.hostId === null ? (
           <g className="lv-junction">
@@ -594,10 +610,12 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
         })}
         {layout.sensors.map((node) => {
           const rgb = colours.get(node.sensor.id) ?? "123,202,255";
-          const crossed = unseen && node.sensor.host === currentHost;
+          const off = isOff(node.sensor.id);
+          const crossed = unseen && node.sensor.host === currentHost && !off;
           return (
-            <g key={node.sensor.id} className={`lv-sensor${crossed ? " is-crossed" : ""}`} style={{ "--rgb": rgb } as StyleVars}>
+            <g key={node.sensor.id} className={`lv-sensor${crossed ? " is-crossed" : ""}${off ? " is-off" : ""}`} style={{ "--rgb": rgb } as StyleVars}>
               <circle className="lv-sensor-body" cx={node.x} cy={node.y} r={node.r} fill="url(#lv-node-fill)" />
+              <title>{`${node.sensor.name}: records ${node.sensor.records}${off ? ". Not used by the defense that is judging." : ""}`}</title>
               <circle className="lv-sensor-ring" cx={node.x} cy={node.y} r={node.r * 0.42} />
               <circle className="lv-sensor-dot" cx={node.x} cy={node.y} r={Math.max(1.6, node.r * 0.13)} />
               {crossed ? (
@@ -649,6 +667,8 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
 
       <div className="lv-labels">
         {heads}
+        {ownHead && judges && layout.defenseSide ? <DefenseSideHead judges={judges} left={layout.detectorsHeadX} width={layout.defenseSide.box[2] - 16 - layout.detectorsHeadX} /> : null}
+        {judges && layout.defenseSide?.rows ? <DefenseSideRows judges={judges} box={layout.defenseSide.rows} mapHeight={layout.height} /> : null}
         {layout.defenseSide?.note && defenseNote ? (
           <div className="lv-defense-note" style={{ left: layout.defenseSide.note.x, top: layout.defenseSide.note.y, width: layout.defenseSide.noteWidth }} title={defenseNote}>
             <i className="lv-agent-dot" aria-hidden="true" />
@@ -685,8 +705,14 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
             goal={goalNode === node}
             sensors={recording.network.sensors.filter((sensor) => sensor.host === node.host.id)}
             map={layout}
-            count={node.counted && moment?.running ? layout.sensors.filter((item) => item.sensor.host === node.host.id && !item.named).reduce((sum, item) => sum + (perSensor.get(item.sensor.id)?.count ?? 0), 0) : null}
+            count={!stage && node.counted && moment?.running ? layout.sensors.filter((item) => item.sensor.host === node.host.id && !item.named).reduce((sum, item) => sum + (perSensor.get(item.sensor.id)?.count ?? 0), 0) : null}
             countedName={layout.sensors.find((item) => item.sensor.host === node.host.id && !item.named)?.sensor.name ?? null}
+            // Of a run judged by several defenses, each sensor of the chosen one that stands by the host has a line of its own.
+            counts={
+              stage && node.counted && moment?.running
+                ? layout.sensors.filter((item) => item.sensor.host === node.host.id && !item.named && !isOff(item.sensor.id)).map((item) => ({ word: sensorKind(item.sensor.name), count: perSensor.get(item.sensor.id)?.count ?? 0, rgb: colours.get(item.sensor.id) ?? "123,202,255" }))
+                : undefined
+            }
             keptOnly={keptOnly}
             alert={alertedHosts.has(node.host.id) ? alertLineOf(node.host.id) : null}
             goalTime={goalTime}
@@ -731,7 +757,9 @@ function MapView({ recording, layout, moment, speed, seek, colours, labDetectors
           const width = Math.max(160, layout.width - (node.x + node.r + 16) - (layout.single ? 12 : ENGINE_EDGE));
           // The matches have the room between the engine's name and the next engine's label, or the map's bottom.
           // On a network the line about the sensors stands at the foot of the defense's side, under the matches.
-          const below = layout.detectors.filter((other) => other.y > node.y).reduce((lowest, other) => Math.min(lowest, other.y - 15), layout.defenseSide?.note ? layout.defenseSide.note.y - 8 : layout.height);
+          // Where the map lists the defenses at the foot of the side, the matches end above that list.
+          const foot = judges && layout.defenseSide?.rows ? layout.defenseSide.rows[1] - 8 : layout.defenseSide?.note ? layout.defenseSide.note.y - 8 : layout.height;
+          const below = layout.detectors.filter((other) => other.y > node.y).reduce((lowest, other) => Math.min(lowest, other.y - 15), foot);
           // On a map drawn larger, the engines' words are drawn larger with it, as the hosts' are: the alert reads at least as large as a host's name.
           const room = { width, height: below - (node.y - 15) - ENGINE_HEAD };
           return (
@@ -808,6 +836,17 @@ interface HostLabelProps {
   networks?: string;
   /** The goal's time as the race line gives it: said in the goal's badge. */
   goalTime?: string | null;
+  /**
+   * Of a run judged by several defenses, while a step runs: what each sensor of the chosen defense that stands by the
+   * host recorded of the step, each on a line of its own under the role, by its kind and in its colour.
+   */
+  counts?: { word: string; count: number; rgb: string }[];
+}
+
+/** A sensor's kind in a word, for its count under its host: "agent" of "Wazuh agent 4.14.10", "packets" of "Packets (placeholder)". */
+function sensorKind(name: string): string {
+  const words = sensorShortName(name.replace(/\s*\([^)]*\)/g, "")).split(/\s+/).filter(Boolean);
+  return (words.length === 2 ? (words[1] ?? "") : words.join(" ")).toLowerCase();
 }
 
 /** An alert raised on a host, as the chip under its words tells it. */
@@ -836,7 +875,7 @@ const DETAIL_MARGIN = 8;
 /** The width of a host's words on a map of one host, as the map's style says. */
 const SINGLE_LABEL = 340;
 
-function HostLabel({ node, single, commandLines, moment, sensors, map, goal = false, count = null, countedName = null, keptOnly = false, alert = null, networks = "", goalTime = null }: HostLabelProps) {
+function HostLabel({ node, single, commandLines, moment, sensors, map, goal = false, count = null, countedName = null, keptOnly = false, alert = null, networks = "", goalTime = null, counts }: HostLabelProps) {
   const host = node.host;
   const sensorsWords = sensors.map((sensor) => `${sensor.name}: records ${sensor.records}`).join("\n");
   const told = badgeOf(moment);
@@ -898,6 +937,14 @@ function HostLabel({ node, single, commandLines, moment, sensors, map, goal = fa
             {keptOnly && count > 0 ? `${count.toLocaleString("en-US")} kept` : plural(count, "event")}
           </div>
         ) : null}
+        {(counts ?? []).map((item, index) => (
+          <div key={index} className={`lv-host-count${item.count === 0 ? (moment?.revealed && moment.outcome === "unseen" ? " is-zero" : " is-none") : ""}`} title={sensorsWords} style={{ "--rgb": item.rgb } as StyleVars}>
+            <i className="lv-agent-dot is-own" aria-hidden="true" />
+            {item.word ? `${item.word} · ` : ""}
+            {/* Only a sensor whose events the recording cut says "kept": a step keeps the first few hundred of each. */}
+            {keptOnly && item.count >= 300 ? `${item.count.toLocaleString("en-US")} kept` : plural(item.count, "event")}
+          </div>
+        ))}
         {/* An alert raised on the host: its chip under the host's words, strong when it fires and quieter after, with its time. */}
         {alert ? (
           <div className={`lv-host-alert${alert.strong ? " is-strong" : ""}`} title={`An alert was raised on ${host.name}: ${alert.alert.rule.title} (rule ${alert.alert.rule.id})${alert.time ? `, at ${alert.time} into the run` : ""}`}>
@@ -1101,7 +1148,7 @@ function defenseWords(recording: Recording): string {
   return `${list}, reporting to ${defense.name}${over.length > 0 ? ` over ${listWords(over)}` : ""}.`;
 }
 
-function headsOf(recording: Recording, layout: NetworkLayout): ReactNode {
+function headsOf(recording: Recording, layout: NetworkLayout, ownDefenseHead = false): ReactNode {
   const network = recording.network;
   // How the rules ran is only said of a run that happened.
   const ran = recording.steps.length > 0 && network.detectors.length > 0;
@@ -1140,7 +1187,7 @@ function headsOf(recording: Recording, layout: NetworkLayout): ReactNode {
           </span>
         )}
       </div>
-      {network.detectors.length > 0 ? (
+      {network.detectors.length > 0 && !ownDefenseHead ? (
         // On a network the head spans the engines' column, to the page's side margin, as the log's head does.
         <div className={`lv-head is-left${line}`} style={{ left: layout.detectorsHeadX }}>
           {/* On a network the defense host and the rule engines are one side: the defense. */}
@@ -1163,11 +1210,12 @@ const MAP_SCALE_WIDTH = 1500;
 const MAP_SCALE_HEIGHT = 380;
 const MAP_SCALE_MOST = 1.25;
 
-export function fitScale(recording: Recording, width: number, height: number, goalAt: string | null, squeeze: boolean): { layout: NetworkLayout; scale: number } {
-  const network = recording.network;
+export function fitScale(recording: Recording, width: number, height: number, goalAt: string | null, squeeze: boolean, stage?: { network: Network; alerts: readonly Alert[] }): { layout: NetworkLayout; scale: number } {
+  const network = stage?.network ?? recording.network;
   const many = network.hosts.filter((host) => host.kind !== "defense").length > 1;
-  // The hosts the run's alerts are raised on keep room under their words for the alert's chip, at every moment alike.
-  if (many) markAlertedHosts(network, recording.alerts.filter((alert) => matchKind(alert) === "alert").map((alert) => alert.host));
+  // The hosts the run's alerts are raised on keep room under their words for the alert's chip, at every moment alike:
+  // of a run judged by several defenses, the hosts any of them raised an alert on, so the room is the same for each.
+  if (many) markAlertedHosts(network, (stage?.alerts ?? recording.alerts).filter((alert) => matchKind(alert) === "alert").map((alert) => alert.host));
   // The hosts the steps run on wear a badge: every line keeps out of its place.
   if (many) markBadgedHosts(network, recording.steps.map((step) => step.host));
   if (many && goalAt) markGoalHost(network, goalAt);
@@ -1186,12 +1234,13 @@ export function NetworkMap(props: NetworkMapProps & { arrival: (id: string) => n
   const goalAt = props.goalAt ?? null;
   // The watch view, which shares its room (room.ts), may squeeze a network to its least layout; elsewhere a map keeps room above its rows.
   const squeeze = props.onLeast !== undefined;
-  const fitted = useMemo(() => (size.width > 0 ? fitScale(props.recording, size.width, size.height, goalAt, squeeze) : null), [props.recording, size.width, size.height, goalAt, squeeze]);
+  const { onLeast, recording, stage } = props;
+  const fitted = useMemo(() => (size.width > 0 ? fitScale(recording, size.width, size.height, goalAt, squeeze, stage) : null), [recording, size.width, size.height, goalAt, squeeze, stage]);
   const scale = fitted?.scale ?? 1;
   const box = useMemo(() => ({ width: size.width / scale, height: size.height / scale }), [size.width, size.height, scale]);
   // The least heights are the map's at its smallest drawing: a map drawn larger is drawn at its own size again when the room is short.
-  const { onLeast, recording } = props;
-  const heights = useMemo(() => (onLeast && size.width > 0 ? leastHeights(recording.network, size.width) : null), [onLeast, recording, size.width]);
+  const laidOut = stage?.network ?? recording.network;
+  const heights = useMemo(() => (onLeast && size.width > 0 ? leastHeights(laidOut, size.width) : null), [onLeast, laidOut, size.width]);
   const least = heights ? Math.ceil(heights.least) : 0;
   const roomy = heights ? Math.ceil(heights.roomy) : 0;
   useEffect(() => {

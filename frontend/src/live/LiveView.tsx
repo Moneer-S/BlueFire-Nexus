@@ -17,8 +17,10 @@ import { NetworkMap } from "./NetworkMap";
 import { EventLog } from "./EventLog";
 import { StepCaption } from "./StepCaption";
 import { goalReached, RaceLine } from "./RaceLine";
-import { Scrubber } from "./Scrubber";
+import { quietRows, Scrubber } from "./Scrubber";
 import { AnalyseView } from "./AnalyseView";
+import { judgeAll, sameMoment, tallyOf } from "./defenses";
+import { DefenseTable, OutcomeLead } from "./DefenseParts";
 
 export type LiveMode = "watch" | "analyse";
 
@@ -30,6 +32,8 @@ export interface LiveMoment {
   paused: boolean;
   mode: LiveMode;
   select?: string;
+  /** The defense that judges, of a recording judged by several: its `id`. */
+  defense?: string;
 }
 
 export interface LiveViewProps {
@@ -43,7 +47,8 @@ export interface LiveViewProps {
    * say, and "A run" when nothing is given.
    */
   originKind?: OriginKind;
-  initial?: { step?: string; at?: number; paused?: boolean; mode?: LiveMode; select?: string };
+  /** Where the view opens. `defense` is the id of the defense that judges. */
+  initial?: { step?: string; at?: number; paused?: boolean; mode?: LiveMode; select?: string; defense?: string };
   /** Starts fixing a step. When absent, "Fix this" in watch mode opens the step's detail, and the detail offers no "Fix this". */
   onFix?: (stepId: string) => void;
   /** Told where the viewer is when the step, the mode, the chosen step or the pause changes, and when the clock moves while paused. */
@@ -340,8 +345,13 @@ function useStuck(element: HTMLElement | null): boolean {
   return stuck;
 }
 
-export function LiveView({ recording, origin, originKind, initial, onFix, onMoment }: LiveViewProps) {
-  const timeline = useMemo(() => buildTimeline(recording), [recording]);
+export function LiveView({ recording: held, origin, originKind, initial, onFix, onMoment }: LiveViewProps) {
+  // A recording judged by several defenses plays as the chosen one's view of it; one judged by one defense, or none, as it is.
+  const judged = useMemo(() => judgeAll(held), [held]);
+  const [defenseId, setDefenseId] = useState<string | undefined>(() => (judged.find((item) => item.defense.id === initial?.defense) ?? judged[0])?.defense.id);
+  const chosen = judged.find((item) => item.defense.id === defenseId) ?? judged[0] ?? null;
+  const recording = chosen ? chosen.view : held;
+  const timeline = useMemo(() => (chosen ? chosen.timeline : buildTimeline(held)), [chosen, held]);
   const firstMode: LiveMode = recording.steps.length > 0 ? (initial?.mode ?? "watch") : "watch";
   const [time, setTime] = useState(() => startTime(timeline, initial));
   // Nothing plays in analyse mode, so a page opened there starts paused.
@@ -428,6 +438,36 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
     return () => document.removeEventListener("keydown", onKey);
   }, [mode, togglePlay]);
 
+  // Another defense judges the same moment: the same step, the same time on the clock.
+  const chooseDefense = useCallback(
+    (id: string) => {
+      const next = judged.find((item) => item.defense.id === id);
+      if (!next || next === chosen) return;
+      const at = sameMoment(timeline, next.timeline, timeRef.current);
+      timeRef.current = at;
+      setTime(at);
+      setDefenseId(id);
+      setSeek((count) => count + 1);
+    },
+    [judged, chosen, timeline],
+  );
+
+  // A defense's number chooses it, anywhere on the page, in both modes, unless a field is being typed in.
+  useEffect(() => {
+    if (judged.length < 2) return undefined;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || !/^[1-8]$/.test(event.key)) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest("input, select, textarea, [contenteditable='true']")) return;
+      const wanted = judged[Number(event.key) - 1];
+      if (!wanted) return;
+      event.preventDefault();
+      chooseDefense(wanted.defense.id);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [judged, chooseDefense]);
+
   // After "Watch from here" or the Watch button, focus goes to the play button, not back to the page.
   useEffect(() => {
     if (mode !== "watch" || !focusPlayOnWatch.current) return;
@@ -438,7 +478,8 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
 
   const frame = useMemo(() => frameAt(timeline, time), [timeline, time]);
   const byStepEvents = useMemo(() => eventsByStep(recording), [recording]);
-  const colours = useMemo(() => sensorColours(recording.network.sensors), [recording]);
+  // A sensor keeps its colour whichever defense judges: the colours are given over every sensor of the run.
+  const colours = useMemo(() => sensorColours(held.network.sensors), [held]);
   const labDetectors = useMemo(() => new Set(recording.network.detectors.filter((detector) => isLabDetector(recording, detector.id)).map((detector) => detector.id)), [recording]);
   const facts = useMemo(() => runFacts(recording, timeline), [recording, timeline]);
   const stepId = frame.step?.id;
@@ -455,7 +496,8 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   // The host an attack path reached its goal on: the host of the step whose end is the goal. Marked on the map once the race line tells the goal.
   const goalStepHost = useMemo(() => (facts.goal === null ? null : (recording.steps.find((item) => item.ended !== undefined && Math.abs(timeOf(item.ended) - (facts.goal ?? 0)) <= 1)?.host ?? null)), [recording, facts]);
   const firstTold = firstAlertOnScreen(frame.race.firstAlert, frame.time, frame.segment, moment?.revealed ?? false);
-  const goalHost = goalStepHost !== null && goalReached(frame, facts, firstTold) ? goalStepHost : null;
+  const goalTold = goalReached(frame, facts, firstTold);
+  const goalHost = goalStepHost !== null && goalTold ? goalStepHost : null;
   // The first alert and the goal are places on the map too, each with the time the race line gives it.
   const firstClock = firstTold ? firstAlertClock(recording, facts, firstTold) : null;
   const mapFirst = firstTold && firstClock ? { id: firstTold.alert.id, time: elapsed(firstClock.seconds) } : null;
@@ -485,6 +527,15 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   // The log holds 3 lines on a network and 4 on one host, fewer where the room is short.
   const logMost = network ? 3 : 4;
   const room = useRoomPlan(view, mode === "watch" && hasSteps, mapHeights, logMost);
+
+  // What each defense has made of the run by this moment, each as its own view of the moment tells it.
+  const tallies = useMemo(() => judged.map((item) => tallyOf(item, item === chosen ? time : sameMoment(timeline, item.timeline, time), mode === "analyse")), [judged, chosen, timeline, time, mode]);
+  const multi = chosen !== null && tallies.length > 1;
+  // The timeline keeps room for the quiet rows of the defense that has the most, so nothing moves when another is chosen.
+  const scrubRows = useMemo(() => judged.reduce((most, item) => Math.max(most, quietRows(item.timeline)), 0), [judged]);
+  // The network the map lays out: every sensor of the run, so that no host moves when another defense is chosen.
+  const stage = useMemo(() => (chosen ? { network: chosen.stage, alerts: held.alerts } : undefined), [chosen, held]);
+  const mapJudges = useMemo(() => (multi && chosen ? { tallies, chosen: chosen.defense.id, onChoose: chooseDefense, goalTold, current: frame.segment?.index ?? -1 } : undefined), [multi, chosen, tallies, chooseDefense, goalTold, frame.segment]);
 
   // One rule for entering watch mode, however the page was opened: playback
   // starts from where the clock stands, and plays unless it is at the end.
@@ -523,14 +574,34 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
   // Not every frame: while playing only the step counts, while paused the position too,
   // also inside the silence after the step, where a late alert may already be on screen.
   const momentAt = playing ? 0 : addressPosition(stepPosition(frame));
+  // The defense that judges is part of the moment, for a recording judged by several.
+  const defenseOnScreen = multi && chosen ? chosen.defense.id : undefined;
   useEffect(() => {
-    onMoment?.({ step: stepId, at: momentAt, paused: !playing, mode, select });
-  }, [onMoment, stepId, momentAt, playing, mode, select]);
+    onMoment?.({ step: stepId, at: momentAt, paused: !playing, mode, select, ...(defenseOnScreen === undefined ? {} : { defense: defenseOnScreen }) });
+  }, [onMoment, stepId, momentAt, playing, mode, select, defenseOnScreen]);
+
+  const modes = (
+    <div className="lv-modes" role="group" aria-label="Mode">
+      <button type="button" aria-pressed={mode === "watch"} onClick={() => switchMode("watch")}>
+        Watch
+      </button>
+      <button type="button" aria-pressed={mode === "analyse"} onClick={() => switchMode("analyse")} disabled={!hasSteps} title={hasSteps ? undefined : recording.source.finished !== undefined ? "This run holds no step, so there is nothing to analyse" : "Nothing has run on this network yet, so there is nothing to analyse"}>
+        Analyse
+      </button>
+    </div>
+  );
 
   return (
     <div className={`lv lv--${mode}${hasSteps ? "" : " lv--plan"}${playing ? "" : " is-paused"}`} ref={setView}>
       <header className="lv-top">
         <Brand recording={recording} origin={origin} originKind={originKind} notice={notice} />
+        {multi && chosen && recording.kind === "attack path" ? (
+          // Judged by several defenses: the outcome of the run leads, and the counts of the chosen defense are a detail under it.
+          <div className="lv-score-wrap is-judged">
+            {hasSteps ? <OutcomeLead recording={recording} real={frame.real} goalTold={goalTold} whole={mode === "analyse"} /> : null}
+            {modes}
+          </div>
+        ) : (
         <div className="lv-score-wrap">
           {hasSteps ? (
             <div className="lv-score" aria-label={mode === "watch" ? "The score so far" : "The score"}>
@@ -577,20 +648,14 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
               ) : null}
             </div>
           ) : null}
-          <div className="lv-modes" role="group" aria-label="Mode">
-            <button type="button" aria-pressed={mode === "watch"} onClick={() => switchMode("watch")}>
-              Watch
-            </button>
-            <button type="button" aria-pressed={mode === "analyse"} onClick={() => switchMode("analyse")} disabled={!hasSteps} title={hasSteps ? undefined : recording.source.finished !== undefined ? "This run holds no step, so there is nothing to analyse" : "Nothing has run on this network yet, so there is nothing to analyse"}>
-              Analyse
-            </button>
-          </div>
+          {modes}
         </div>
+        )}
       </header>
 
       {mode === "watch" && !hasSteps ? (
         <div className="lv-main is-plan">
-          <NetworkMap recording={recording} moment={null} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} />
+          <NetworkMap recording={recording} moment={null} speed={speed} seek={seek} colours={colours} labDetectors={labDetectors} arrival={arrival} stage={stage} />
           <p className="lv-plan-note">
             {recording.source.finished !== undefined ? "This run finished with no steps: nothing ran as a step on this network. " : ""}
             {planWords(recording)}
@@ -598,7 +663,16 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
         </div>
       ) : mode === "watch" ? (
         <>
-          <RaceLine recording={recording} timeline={timeline} frame={frame} facts={facts} score={score} revealed={moment?.revealed ?? false} ended={moment?.ended ?? false} />
+          <RaceLine
+            recording={recording}
+            timeline={timeline}
+            frame={frame}
+            facts={facts}
+            score={score}
+            revealed={moment?.revealed ?? false}
+            ended={moment?.ended ?? false}
+            judge={multi && chosen ? chosen.defense.name : undefined}
+          />
           <div className="lv-main">
             <NetworkMap
               recording={recording}
@@ -616,6 +690,8 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
               goalAt={goalStepHost}
               onLeast={onMapHeights}
               minHeight={room?.map}
+              stage={stage}
+              judges={mapJudges}
             />
             <EventLog recording={recording} moment={moment} total={total} colours={colours} onOpen={openStep} lines={room?.lines ?? logMost} />
           </div>
@@ -649,7 +725,7 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
               </b>
               <span title={`Counted from ${facts.startWords}, ${clockTime(facts.start)} UTC`}>{elapsed((frame.real - facts.start) / 1000)} into the run</span>
             </div>
-            <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} ended={moment?.ended ?? false} onSeek={jump} />
+            <Scrubber recording={recording} timeline={timeline} time={time} real={frame.real} revealed={moment?.revealed ?? false} ended={moment?.ended ?? false} onSeek={jump} rows={scrubRows} />
             <div className="lv-stepno">
               {/* On an attack path a step's name is its place on the path: one line says both, "Step 9 of 11". */}
               <b>{segment ? (unit === "step" ? `${capital(stepLabel(recording, segment.step))} of ${recording.steps.length}` : capital(stepLabel(recording, segment.step))) : ""}</b>
@@ -662,7 +738,18 @@ export function LiveView({ recording, origin, originKind, initial, onFix, onMome
           </footer>
         </>
       ) : (
-        <AnalyseView recording={recording} timeline={timeline} facts={facts} colours={colours} select={select} focusSelected={focusDetail} onSelect={setSelect} onWatch={watchStep} onFix={onFix} />
+        <AnalyseView
+          recording={recording}
+          timeline={timeline}
+          facts={facts}
+          colours={colours}
+          select={select}
+          focusSelected={focusDetail}
+          onSelect={setSelect}
+          onWatch={watchStep}
+          onFix={onFix}
+          defenses={multi && chosen ? <DefenseTable recording={recording} tallies={tallies} chosen={chosen.defense.id} onChoose={chooseDefense} goalTold /> : undefined}
+        />
       )}
     </div>
   );
