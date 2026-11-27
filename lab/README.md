@@ -1595,6 +1595,18 @@ exact closure and declared provenance validated, then be copied and judged by
 a later defense without changing the retained source:
 
 ```bash
+bluefire-lab range retain "$RUN" \
+  --spec lab/range/<fixture-spec>.yaml \
+  --out "$RUNNER_TEMP/retained-artifact/lab/retained/<run>"
+```
+
+That export command is for a GitHub-hosted, manually dispatched fixture job
+only. It derives the declaration from the standard Actions context, validates
+the exact tracked workflow and spec, recomputes the complete Wazuh/step/packet
+raw closure, and publishes only after the retained verifier accepts a private
+candidate. It does not turn a developer-machine run into a fixture.
+
+```bash
 bluefire-lab range rejudge lab/retained/<run> \
   --defenses lab/range/<defense-spec>.yaml \
   --engine <path to Zircolite 4.7.1> \

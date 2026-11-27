@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import atomic, compare, evaluate, pair, recording, replay, report, run
 from .range import engine as range_engine
+from .range import retain as range_retain
 from .range import retained as range_retained
 
 
@@ -191,6 +192,21 @@ def main(arguments: list[str] | None = None) -> int:
         help="a pinned Suricata image already present locally: with it, packet rule sets judge the retained "
         "captures offline; the evaluator never pulls it or joins a network",
     )
+    retaining = actions.add_parser(
+        "retain",
+        help=(
+            "in a GitHub-hosted workflow_dispatch job, select one sealed run's minimal raw evidence, "
+            "validate its declared packet and Wazuh closure, and atomically write a retained candidate"
+        ),
+    )
+    retaining.add_argument("run", type=Path, help="the new hosted range run folder to retain")
+    retaining.add_argument("--spec", type=Path, required=True, help="the exact tracked spec the run used")
+    retaining.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="new candidate folder below $RUNNER_TEMP/retained-artifact",
+    )
     rejudging = actions.add_parser(
         "rejudge",
         help=(
@@ -229,6 +245,8 @@ def main(arguments: list[str] | None = None) -> int:
                 defenses=options.defenses,
                 suricata_image=options.suricata_image,
             )
+        if options.action == "retain":
+            return range_retain.main(options.run, options.spec, options.out)
         if options.action == "rejudge":
             return range_retained.rejudge(
                 options.retained,
