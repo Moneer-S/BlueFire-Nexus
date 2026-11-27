@@ -170,19 +170,27 @@ the build server's `/etc` back with its signing secret
 (`buildbot/signing.env`) and uploads it to `inet`, a stand-in internet. Its
 goal, in the recording's words, is "build's signing secret reaches inet".
 Wazuh watches three of the hosts
-([CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)).
+and a packet capture on the web server records the range traffic
+([CI run 45968323688](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688)).
 Select it to watch each step cross the map of the network, with what the
-agents recorded and the race between the first alert and the attacker's goal
+selected defense recorded and the race between its first alert and the attacker's goal
 (see [The map of a network](LIVE_VIEW.md#the-map-of-a-network)). The same run
 plays without the app in the single page
 [`docs/live-view/attack-path.html`](live-view/attack-path.html), and the loop
 at the top of the [front page](../README.md) is made from it. An attack
 path counts steps where a test list counts tests: its card on **Runs** reads
 "1 of 11 steps alerted, 10 seen, 0 unseen" and gives the race in words: the
-first alert came after 1 min 16 s, 10 min 54 s before the attacker reached
-the goal. On a step seen
-with no alert, **Fix this** says where a range's defense is set: its sensors in the range's
-spec under `lab/range/`, its rules on the range's own Wazuh manager.
+first Wazuh alert came after about 1 minute, 9 min 36 s before the attacker
+reached the goal. **Judged by** selects one of five views: stock Wazuh, public
+Sigma, ET Open, the combined AI-tool packs or the tuned ordered rule. Each
+view changes the sensors, rules, events and verdicts shown. **Analyse** compares
+their completed outcomes and scores side by side. During Watch, switching
+after a sensor-specific event between steps can clamp the transient clock and
+counts to the new defense's step edge; the visible note beside the selector
+says so, and the completed Analyse result stays final. On a step seen
+with no alert, **Fix this** points to the selected defense's declared sensors
+and pinned rule sets. For stock Wazuh, that includes the rules on the range's
+own manager.
 
 Under **Before against after** come the changes to the defense that the lab
 compared, as the turns of one loop, in the order they were made and joined by

@@ -352,23 +352,28 @@ The home folders they name belong to the runner's lab accounts: `bluefire-lab`, 
 the lab creates, and `art`, which Atomic Red Team's own tests create.
 
 The path through range one shipped with the app,
-`bluefire/data/recordings/lab-range-one-path.json` (1,248,170 bytes, SHA-256
-`659c049033d1727179bf87c9e638897f77acfa23f990f2aedf5c265144985bda`), is the
-`recording.json` of the artifact `range-one-run` that the range one workflow wrote on
-a GitHub-hosted runner in the run
-https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964, unchanged. It is
+`bluefire/data/recordings/lab-range-one-path.json` (1,754,801 bytes, SHA-256
+`9c54de849492da1d0b9ffa10779f90f7d42ace88b4d26f916d30d95d069cfd45`), is the
+`recording.json` of artifact `range-one-run` (artifact 15185245908, 26,604,314-byte
+ZIP, digest
+`sha256:1e0b96286a953cf66b2dec6ab841b6ec4f647f2557e946abe80c35f955a01ab6`).
+The range one workflow wrote it on a GitHub-hosted runner in
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688 at commit
+`3247a292078471cb6c14cd7cb99a8d471fdf4181`; the file is copied unchanged. It is
 data, not code: nothing in it is run.
 
 - It quotes the commands and the printed output of ten published Atomic Red Team
   tests (one of them run twice, on eleven steps) at commit `a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6`, and their names and
   GUIDs, under the MIT license preserved at `bluefire/data/atomic_red_team_LICENSE.txt`.
-- It names the stock Wazuh 4.14.10 rules that matched, by id, level and their one-line
-  description; no rule file is copied. The Wazuh ruleset is GPL-2.0, Copyright (C)
-  2015, Wazuh Inc.
-- It holds what the Wazuh agents (GPL-2.0) and snoopy (GPL-2.0) recorded in the
-  range's containers: lines of their logs and the changes to the files they watch.
-  Those tools ran in CI only; none of them is shipped. The home folder it names
-  belongs to the account `webadmin`, which range one's spec
+- It names rule metadata from Wazuh 4.14.10, SigmaHQ's public rules, ET Open and the
+  AIPT and Agentic public detection packs, each at the pinned source named in the
+  recording and in the source tables below; no third-party rule text is copied. The
+  tuned ordered rules it names are this repository's own work under its license.
+- It holds what the Wazuh agents and snoopy recorded in the range's containers, plus
+  packet-derived network events produced by Suricata in CI: lines of logs, changes to
+  watched files and the selected packet evidence. Those tools and sensors ran in CI
+  only; none of them is shipped. The home folder it names belongs to the account
+  `webadmin`, which range one's spec
   (`lab/range/range-one.yaml`) creates on its `web` host, and the password it shows is
   one the spec plants.
 

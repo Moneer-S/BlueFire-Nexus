@@ -19,6 +19,7 @@ interface Recording {
   steps: Step[];
   events: { sensor: string; step?: string }[];
   score: { steps: number; alerted: number; seen: number; unseen: number; first_alert_seconds?: number; goal_seconds?: number };
+  defenses: { id: string; name: string }[];
 }
 
 /** The agent that recorded a step, by its host's name as the page labels it, and how many of the step's events it recorded. */
@@ -82,6 +83,9 @@ test("the path through range one is listed on Runs, plays across the range's hos
   // It opens in the live view, at its first step, on a map of every host of the range.
   await item.getByRole("link", { name: path.title, exact: true }).click();
   await expect(page).toHaveURL(/#\/runs\/recorded\/[A-Za-z0-9_-]+/);
+  const defenses = page.getByRole("group", { name: "The defenses that judge this run" });
+  await expect(defenses.getByRole("button")).toHaveCount(5);
+  await expect(defenses.getByRole("button", { name: /Wazuh with its stock rules/ })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   if (first.plain) await expect(page.getByText(first.plain, { exact: true })).toBeVisible();
   const map = page.getByRole("region", { name: "Network map" });

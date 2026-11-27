@@ -15,11 +15,12 @@ and the single replay page use the same screen and preserve that choice in the
 address.
 
 The app ships a recorded attack path: eleven steps of ten published tests on a
-path through range one, a network of seven containers watched by Wazuh,
-recorded in
-[CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964).
+path through range one, a network of seven containers recorded with Wazuh
+agents and a packet capture on `web`. The same sensor-complete run was judged
+by five named defenses in
+[CI run 45968323688](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688).
 Open it on the Runs screen, where it is listed first, or write it as one page
-with `bluefire recordings page 20261125T054314Z-037227 --out path.html`. That
+with `bluefire recordings page 20261127T084854Z-640926 --out path.html`. That
 page, made in CI, is
 [`docs/live-view/attack-path.html`](live-view/attack-path.html); the run on one
 Linux machine shipped with the app is
@@ -53,7 +54,7 @@ Linux machine shipped with the app is
   of file names written right to left makes one). Each such character is shown
   as its code in a small tag, "U+202E", and is not applied; in a tooltip or the
   page's title it is written "[U+202E]".
-- **Rules written in this repository are drawn apart and not scored.** Their
+- **Rules a recording marks as lab rules are drawn apart and not scored.** Their
   engine says "not counted in the score" under its name, a match of one of
   them at alert level is a "lab alert" on every screen ("LAB ALERT · HIGH" on
   a chip), and the score never counts them. In a step's detail, the other runs
@@ -86,7 +87,7 @@ Linux machine shipped with the app is
   "Judged by" and names the chosen defense, then lists every defense with the
   current step's verdict and its alerted, seen, unseen and false-alert counts.
   Keys 1 through 8, or a row, choose a defense. The same step remains on
-  screen. Within a step window shared by both defenses, and in quiet gaps, its
+  screen. Within a step window shared by the selected defenses, and in quiet gaps, its
   recorded clock remains too; playback does not restart. A sensor-specific
   event can extend one defense's step window beyond another's. Switching from
   that extension clamps the clock to the other defense's step edge rather than
@@ -147,10 +148,7 @@ Linux machine shipped with the app is
   soon as the earliest event it names has arrived; it does not wait for later
   events it names, which arrive after it as events of a match already told.
 - **An alert raised after its step ended arrives late, and is shown when it
-  arrives.** In the path through range one shipped with the app, Wazuh's
-  manager judged the events as they arrived, and its first alert, on step 1,
-  was raised 280 ms after the step ended. Where the rules ran live, a match
-  fires at its `raised` time.
+  arrives.** Where the rules ran live, a match fires at its `raised` time.
   While a step is on screen it is told as it stood at its end, so a step whose
   alert was not raised yet is told as seen (or unseen) with no alert by the end
   of the step. When a match of a step is raised after that step ended, on
@@ -199,15 +197,15 @@ Linux machine shipped with the app is
   rules ran live), and counted as the screen counts it. It is a time "into the
   run", on the same clock as the clock beside the timeline and the race track,
   and is named the same way wherever it is said: "The defense raised its first
-  alert on step 1, 01:16.4 into the run." For a test list that clock counts
+  alert on step 1, 01:00.2 into the run." For a test list that clock counts
   from the start of the first step's stretch, its `started` or an event of it
   stamped a moment before (in the shipped run, the canary's first event, 2 ms
   before its start); the race track's 00:00 says so in its tooltip. For an
   attack path it counts from the first step's recorded start, the same clock
   the race compares with the goal.
 - **An attack path's race and its goal.** In the path through range one
-  shipped with the app, the first alert came 01:16.4 into the run and the
-  attacker reached its goal 12:10.5 into the run (see [the goal on the
+  shipped with the app, the first alert came 01:00.2 into the run and the
+  attacker reached its goal 10:35.9 into the run (see [the goal on the
   map](#what-a-network-of-several-hosts-shows)). An attack path begins with a
   step of role `test` that has a recorded start, and its race counts from that
   one moment: the first alert's number,
@@ -301,23 +299,23 @@ same things as on one host, laid out for a network:
   words, it takes the shorter way round.
 - **Each sensor's count is in words.** An agent that the defense's line names
   once has its count under its host's role: "agent · 8 events", or "agent ·
-  1,439 kept" where the recording kept fewer of the step's events than were
+  1,404 kept" where the recording kept fewer of the step's events than were
   recorded. Every sensor that recorded the step is counted, the agent of the
   host it ran from too, and the log's key names each by its host ("Wazuh agent
   on web 3", "Wazuh agent on build 17" at step 9).
 - **An alert is told the same way everywhere.** The rule engine names it as an
   alert ("ALERT · HIGH", its title, where it was raised: host, step and rule
   number). An alert raised after its step ended says so in one wording, on the
-  engine, in the log and in the caption alike: "raised 280 ms after the step
-  ended". The log calls that line "alert". The host it was raised on has its
+  engine, in the log and in the caption alike: "raised after the step ended".
+  The log calls that line "alert". The host it was raised on has its
   chip under its words, strong at the moment it fires and quieter after, with
   its time; the run's first alert carries the race line's orange diamond and
-  the race line's time ("first alert 01:16.4").
+  the race line's time ("first alert 01:00.2").
 - **The goal is a place on the map.** The host where the path reached its goal
   has a white ring and a "goal reached" badge with the race line's white
-  diamond and its time ("goal reached 12:10.5"). The race line's sentence at
+  diamond and its time ("goal reached 10:35.9"). The race line's sentence at
   the goal says both facts, the attacker's first: "The attacker reached its
-  goal, “build's signing secret reaches inet”, 10 min 54 s after the first
+  goal, “build's signing secret reaches inet”, 9 min 36 s after the first
   alert, with no step stopped."
 - **The step's words keep their room.** The log holds three lines on a
   network; lines a step leaves empty go to the story band below, which stands
@@ -326,7 +324,7 @@ same things as on one host, laid out for a network:
 - **The goal's badge stands clear of its host.** A badge stands above its
   host, clear of the ring a lit host wears. Where a row at the top of a short
   map leaves no room above it, the badge stands beside the host, starting past
-  that ring however wide the badge is ("goal reached 12:10.5" is the widest),
+  that ring however wide the badge is ("goal reached 10:35.9" is the widest),
   or under its words; it never lies on the host it marks or on a host's name,
   no line runs through the place of a badge of a host a step runs on (the
   host's own links included, as wide as the widest badge it wears), and a
@@ -463,7 +461,7 @@ A map of one host is drawn as before.
   hardened rerun's "not stopped" stands under its outcome. The title takes the room the other columns leave, each as wide as its
   contents need, and where the recording keeps fewer of a step's events than
   were recorded, how many it keeps of how many were recorded stands under the
-  title, not beside it ("1,439 of 1,857 events kept"): the sensors' columns
+  title, not beside it ("1,404 of 1,857 events kept"): the sensors' columns
   count the kept events, as their tooltips say. The column of rules matched
   counts rules, each once however often it matched, as the step's sentence
   does: step 1 of the attack path shows "1 alert", "6 review" after a dot of
@@ -559,7 +557,7 @@ in this order:
    as what it is ("1 alert rule, 5 rules for review and 2 informational").
    When no event has a line, the head says how many there are and how many of
    them Analyse lists, the events the recording keeps of the step: "19 events,
-   all 19 in Analyse", "1,857 events recorded, 1,439 kept here, all 1,439 in
+   all 19 in Analyse", "1,857 events recorded, 1,404 kept here, all 1,404 in
    Analyse", "1 event, listed in Analyse"; when some have, "N more in
    Analyse" counts those not shown.
 2. **The map takes less height**, down to its least: on a network, first the
@@ -616,7 +614,7 @@ for each kind of recording:
   tests alerted", "first alert · test 39", "Test 39 of 60".
 - **An attack path** names each step "step N" and counts steps, everywhere a
   step is named or counted: "1 / 11 steps alerted", "first alert · step 1",
-  "The defense raised its first alert on step 1, 01:16.4 into the run.", "Step
+  "The defense raised its first alert on step 1, 01:00.2 into the run.", "Step
   9 of 11" over the step's detail and beside the timeline, with no second line
   that says its place again, "step 10" under the lanes' time axis, and one tab
   of steps in the analyse table where a tab of tests would hold the same rows.
@@ -774,13 +772,11 @@ is narrower than 1440 pixels, as beside the app's rail). It also fails, with the
 shipped recordings and comparisons no longer bear out what the
 [README](../README.md) says of them: the caption under the loop (Wazuh's stock
 rules alerted on the first step, the password guessing against the web server,
-about a minute in; the goal, the build server's signing secret on the
-stand-in internet, was reached about eleven minutes after that, by a last step
-no rule alerted on), "Read what no rule alerted on" (every step after the
-first seen with no alert; at step 9, the step of its picture and the one it
-says to drag the timeline to, published rules matched and none at alert level;
-the picture tells two rules matched for review and names a rule to start
-from), "Change a defense, see before and
+while the tuned ordered rule alerted near the goal; public Sigma, ET Open and
+the combined AI-tool packs raised no counting alert; all five defenses let the
+signing secret reach the stand-in internet), "Compare 5 defenses on the same
+run" (the five named views, their completed outcomes, which two alerted and
+their zero false-alert results), "Change a defense, see before and
 after" (the new auditd settings took "Clear Bash history (echo)" from unseen
 to seen; the one new rule then took 4 steps from seen to alerted with the
 lab's rules, and the score, which counts published rules only, still marks
@@ -825,24 +821,26 @@ mode, the score at the end, and that the page makes no request.
 The loop at the top of the [README](../README.md) plays the attack path shipped
 with BlueFire. These are its numbers and the CI run that made it.
 
-![The live view at the end of the attack path: every hop drawn on the map of seven hosts, from the attacker's machine to the web server, on to the database and the build server and out to the stand-in internet, the goal marked reached there, the one alert marked on the web server, and the race line above the map](assets/screenshots/live-view-path-goal.png)
+![The live view at the end of the attack path: every hop drawn on the map of seven hosts, the goal marked reached, and five defenses beside it with their completed alerted, seen, unseen and false-alert counts](assets/screenshots/live-view-path-goal.png)
 
 [The lab](../lab/README.md#range-one-its-hosts) built range one, seven
 containers on networks with no route out, from one spec file on a
 GitHub-hosted runner, and ran a path of eleven steps through it, each a
-published Atomic Red Team test, while Wazuh 4.14.10 with its stock rules
-watched the web server, the database and the build server through an agent on
-each. The first step guessed passwords against the web server's SSH until one
-got in, and Wazuh raised its first alert on it 01:16.4 into the run: rule
+published Atomic Red Team test. Three Wazuh agents and a packet capture on the
+web server recorded the run; five defenses then judged it with 7 after-run rule
+sets plus Wazuh live rules. The first step guessed passwords against the web
+server's SSH until one got in, and Wazuh raised its first alert on it 01:00.2
+into the run: rule
 40112, "Multiple authentication failures followed by a success." The path went
 on from the web server, found a private SSH key, logged in to the build server
 with it, copied files back with the build's signing secret among them, and
 uploaded them to the stand-in internet: the goal, "build's signing secret
-reaches inet", was reached 12:10.5 into the run, 10 min 54 s after the first
-alert. The other ten steps were recorded and no rule alerted
-on them; none was unseen and none was stopped, since the range has no active
-response. No rule raised a false alert on the ordinary work beside the path
-([CI run 45555332964](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964)).
+reaches inet", was reached 10:35.9 into the run, 9 min 36 s after Wazuh's
+first alert. The tuned ordered rule also alerted, at 10:24.9, after joining
+evidence from steps 6, 7 and 8. Public Sigma, ET Open and the combined AI-tool
+packs raised no counting alert. None of the five defenses stopped the path,
+and none raised a false alert on the ordinary work beside it
+([CI run 45968323688](https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688)).
 
 Watch this run in the app: start it with [`docker compose up app`](INSTALLATION.md#look-at-the-current-source-with-docker), open the address it prints, then **Runs**, where it is listed first. Or open `docs/live-view/attack-path.html` from a clone in any browser, with nothing installed: double-click it, or drag it onto a browser window.
 

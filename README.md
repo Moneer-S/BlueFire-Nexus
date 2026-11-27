@@ -4,12 +4,12 @@
 
 <h1 align="center">BlueFire Nexus</h1>
 
-<p align="center"><strong>Watch an attack move through a real network, step by step, next to what its defenses saw.</strong><br>
-Each step is drawn on a map and marked alerted, seen (recorded, no alert) or unseen (not recorded).</p>
+<p align="center"><strong>The attacker reached its goal; none of the 5 defenses stopped it.</strong><br>
+Watch the same real run through each defense, step by step, beside what it saw, alerted on and missed.</p>
 
-![The live view playing a recorded attack path on a map of seven hosts. It opens at the end of the path, every hop drawn and the goal marked reached, then plays the password guessing until Wazuh alerts, the login to the build server until it is told seen with no alert, and the upload to the goal again](docs/assets/front/live-view-loop.gif)
+![The live view playing a recorded attack path on a map of seven hosts. It opens at the completed path with the goal reached and five defense judgments available, then plays the password guessing until stock Wazuh alerts, the login to the build server until it is told seen with no alert, and the upload to the goal again](docs/assets/front/live-view-loop.gif)
 
-<p align="center">Wazuh, an open-source security monitor, alerted on the password guessing on the web server a minute in. About eleven minutes later the build server's signing secret was copied to inet, the stand-in internet, with no alert.</p>
+<p align="center">Stock Wazuh alerted on the password guessing; a tuned correlation alerted near the goal. Public Sigma, ET Open and the combined AI-tool packs raised no counting alert. Every defense let the signing secret reach inet.</p>
 
 ## Open the recording
 
@@ -21,11 +21,11 @@ The network is seven containers built from one spec file, on networks with no ro
 
 ## What you can do with it
 
-### Read what no rule alerted on
+### Compare 5 defenses on the same run
 
-Every step after the password guessing was recorded, and no rule alerted on any of them. In the recording, drag the timeline to step 9, pictured: every stock rule that matched it was below alert level, and the screen names the one to start from.
+Use **Judged by** beside the map to switch between stock Wazuh, public Sigma, ET Open, the combined AI-tool packs and the tuned ordered rule. Press **Analyse** to compare their completed results. Wazuh and the tuned rule alerted; the other 3 did not. None stopped the attacker, and none raised a false alert on the ordinary activity in this run.
 
-![The live view late in the step that logs in to the build server with the key it found and copies files back: the hop from the web server to the build server lit, the step told seen with two rules matched for review and none at alert level, Fix this beside it, and a hint to start from the rule "Integrity checksum changed"](docs/assets/front/path-no-alert.png)
+![The completed attack path at its goal: all seven hosts and every hop on the map, the signing secret marked as reached, and five named defenses beside it with their completed alerted, seen, unseen and false-alert counts](docs/assets/screenshots/live-view-path-goal.png)
 
 ### Change a defense, see before and after
 
