@@ -28,9 +28,12 @@ artifact is named `<range>-run-<attempt>`; each `artifact_path` is derived from
 the output folder's path below `$RUNNER_TEMP/retained-artifact`, which is the
 root the workflow uploads.
 
-The exporter recomputes the packet file closure, classic-PCAP facts, digests,
-ready tokens and tcpdump counters, refuses any kernel drop, and limits the
-PCAP identity bytes to 8 MiB and the whole candidate to 16 MiB. It selects the two live Wazuh JSON streams only
+The exporter binds packet capture to the engine's exact filter and the tracked
+spec's capture hosts. It requires one distinct ready interface, PCAP and counter
+record for every declared network, then recomputes the exact packet file
+closure, classic-PCAP facts, digests, ready tokens and tcpdump counters. It
+refuses any kernel drop and limits the PCAP identity bytes to 8 MiB and the
+whole candidate to 16 MiB. It selects the two live Wazuh JSON streams only
 after their bytes exactly match the chronological, decompressed daily files
 collected from the manager. It also selects the manager startup record, every
 file of every completed path step, every declared PCAP and its counter record,

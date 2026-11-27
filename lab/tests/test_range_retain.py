@@ -11,8 +11,8 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from bluefire_lab.__main__ import main
+from bluefire_lab.range import build, retain, retained
 from bluefire_lab.range import path as range_path
-from bluefire_lab.range import retain, retained
 from bluefire_lab.range.spec import load
 
 REPOSITORY = Path(__file__).parents[2]
@@ -119,67 +119,72 @@ def source_run(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
             },
         }
 
-    capture_host = spec.agents[0]
-    interface = "eth0"
-    token = "bluefire-packet-ready"
-    capture = pcap(token)
-    packet_folder = run / f"raw/hosts/{capture_host}/var/log/bluefire/packets"
-    packet_folder.mkdir(parents=True)
-    pcap_path = packet_folder / f"{interface}.pcap"
-    counter_path = packet_folder / f"{interface}.log"
-    pcap_path.write_bytes(capture)
-    counter_path.write_text(
-        "1 packet captured\n1 packet received by filter\n0 packets dropped by kernel\n",
-        encoding="utf-8",
-    )
-    home_hosts = sorted(set(spec.agents) | {capture_host})
+    capture_hosts = [host for host, settings in spec.hosts.items() if settings.capture == "packets"]
+    packet_hosts = {}
+    for capture_host in capture_hosts:
+        packet_folder = run / f"raw/hosts/{capture_host}/var/log/bluefire/packets"
+        packet_folder.mkdir(parents=True)
+        ready = []
+        files = {}
+        for number, network in enumerate(spec.hosts[capture_host].networks):
+            interface = f"eth{number}"
+            token = f"bluefire-packet-ready-{capture_host}-{network}"
+            capture = pcap(token)
+            pcap_path = packet_folder / f"{interface}.pcap"
+            counter_path = packet_folder / f"{interface}.log"
+            pcap_path.write_bytes(capture)
+            counter_path.write_text(
+                "1 packet captured\n1 packet received by filter\n0 packets dropped by kernel\n",
+                encoding="utf-8",
+            )
+            peer = next(host for host in spec.members(network) if host != capture_host)
+            ready.append(
+                {
+                    "network": network,
+                    "interface": interface,
+                    "source": containers[capture_host]["addresses"][network],
+                    "destination": containers[peer]["addresses"][network],
+                    "destination host": peer,
+                    "port": 62000 + number,
+                    "token": token,
+                    "seen": True,
+                    "seconds": 0.1,
+                }
+            )
+            files[f"{interface}.pcap"] = {
+                "file": f"raw/hosts/{capture_host}/var/log/bluefire/packets/{interface}.pcap",
+                "bytes": len(capture),
+                "sha256": sha256(capture),
+                "packets": 1,
+                "captured packet bytes": len(capture) - 40,
+                "wire packet bytes": len(capture) - 40,
+                "whole packets": True,
+                "snap length": 262144,
+                "link type": 1,
+                "timestamp resolution": "microseconds",
+                "xz -9 bytes": len(lzma.compress(capture, format=lzma.FORMAT_XZ, preset=9)),
+                "tcpdump": {
+                    "captured": 1,
+                    "received by filter": 1,
+                    "dropped by kernel": 0,
+                },
+            }
+        packet_hosts[capture_host] = {
+            "started": True,
+            "ready": ready,
+            "stopped": {"at": "2026-11-26T01:03:00Z", "cleanly": True},
+            "collected": {"copied": True},
+            "files": files,
+        }
+    home_hosts = sorted(set(spec.agents) | set(capture_hosts))
     home_net = numeric({address for host in home_hosts for address in containers[host]["addresses"].values()})
     packet_capture = {
         "program": "tcpdump",
         "path": "/var/log/bluefire/packets",
-        "filter": "not port 1514 and not port 1515",
+        "filter": build.CAPTURE_FILTER,
         "home_hosts": home_hosts,
         "home_net": home_net,
-        "hosts": {
-            capture_host: {
-                "started": True,
-                "ready": [
-                    {
-                        "network": spec.hosts[capture_host].networks[0],
-                        "interface": interface,
-                        "source": capture_host,
-                        "destination": spec.manager,
-                        "destination host": spec.manager,
-                        "port": 1515,
-                        "token": token,
-                        "seen": True,
-                        "seconds": 0.1,
-                    }
-                ],
-                "stopped": {"at": "2026-11-26T01:03:00Z", "cleanly": True},
-                "collected": {"copied": True},
-                "files": {
-                    f"{interface}.pcap": {
-                        "file": f"raw/hosts/{capture_host}/var/log/bluefire/packets/{interface}.pcap",
-                        "bytes": len(capture),
-                        "sha256": sha256(capture),
-                        "packets": 1,
-                        "captured packet bytes": len(capture) - 40,
-                        "wire packet bytes": len(capture) - 40,
-                        "whole packets": True,
-                        "snap length": 262144,
-                        "link type": 1,
-                        "timestamp resolution": "microseconds",
-                        "xz -9 bytes": len(lzma.compress(capture, format=lzma.FORMAT_XZ, preset=9)),
-                        "tcpdump": {
-                            "captured": 1,
-                            "received by filter": 1,
-                            "dropped by kernel": 0,
-                        },
-                    }
-                },
-            }
-        },
+        "hosts": packet_hosts,
         "analysed": True,
         "delivery_gap": False,
         "delivery_findings": [],
@@ -328,13 +333,24 @@ def test_exports_identity_bytes_with_derived_hosted_provenance_and_actual_verifi
         "basis": "the first and last Docker event timeNano selected by the hosted workflow",
     }
     assert (out / "files/raw/steps/s01/extra/context.txt").read_text() == "all step files are retained\n"
-    capture_host = load(spec_path).agents[0]
-    assert (out / f"files/raw/hosts/{capture_host}/var/log/bluefire/packets/eth0.pcap").read_bytes() == (
-        run / f"raw/hosts/{capture_host}/var/log/bluefire/packets/eth0.pcap"
-    ).read_bytes()
-    assert (out / f"files/raw/hosts/{capture_host}/var/log/bluefire/packets/eth0.txt").read_bytes() == (
-        run / f"raw/hosts/{capture_host}/var/log/bluefire/packets/eth0.log"
-    ).read_bytes()
+    spec = load(spec_path)
+    expected_packets = sum(
+        len(settings.networks) for settings in spec.hosts.values() if settings.capture == "packets"
+    )
+    assert sum(entry["role"] == "raw packet capture" for entry in document["files"]) == expected_packets
+    assert (
+        sum(entry["role"] == "raw tcpdump delivery counters" for entry in document["files"])
+        == expected_packets
+    )
+    for capture_host, settings in spec.hosts.items():
+        if settings.capture != "packets":
+            continue
+        for number, _network in enumerate(settings.networks):
+            interface = f"eth{number}"
+            target = out / f"files/raw/hosts/{capture_host}/var/log/bluefire/packets"
+            source = run / f"raw/hosts/{capture_host}/var/log/bluefire/packets"
+            assert (target / f"{interface}.pcap").read_bytes() == (source / f"{interface}.pcap").read_bytes()
+            assert (target / f"{interface}.txt").read_bytes() == (source / f"{interface}.log").read_bytes()
     assert source_hashes(run) == before
 
 
@@ -459,6 +475,51 @@ def test_refuses_an_incomplete_or_inconsistent_sensor_closure(tmp_path, problem,
         capture["delivery_gap"] = True
     else:
         record["defense"]["delivery_gap"] = True
+    write_json(run / "manifest.json", record)
+
+    with pytest.raises(retain.RetainError, match=message):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    ("problem", "message"),
+    [
+        ("filter", "exact filter"),
+        ("capture host", "hosts differ from the tracked spec"),
+        ("duplicate network", "repeats a tracked network"),
+        ("duplicate mark", "exactly one ready mark"),
+        ("network subset", "exactly one ready mark"),
+        ("reused interface", "reuses one interface"),
+    ],
+)
+def test_refuses_packet_capture_that_differs_from_the_engine_and_spec_closure(tmp_path, problem, message):
+    environment, spec_path, run, out = source_run(tmp_path)
+    record = manifest(run)
+    capture = record["packet_capture"]
+    host = next(iter(capture["hosts"]))
+    entry = capture["hosts"][host]
+    ready = entry["ready"]
+    assert len(ready) >= 2
+
+    if problem == "filter":
+        capture["filter"] = "not port 1514 and not port 1515"
+    elif problem == "capture host":
+        other = next(name for name, settings in load(spec_path).hosts.items() if settings.capture is None)
+        capture["hosts"][other] = capture["hosts"].pop(host)
+    elif problem == "duplicate network":
+        ready[1]["network"] = ready[0]["network"]
+    elif problem == "duplicate mark":
+        ready.append(dict(ready[0]))
+    elif problem == "network subset":
+        removed = ready.pop()
+        interface = removed["interface"]
+        entry["files"].pop(f"{interface}.pcap")
+        folder = run / f"raw/hosts/{host}/var/log/bluefire/packets"
+        (folder / f"{interface}.pcap").unlink()
+        (folder / f"{interface}.log").unlink()
+    else:
+        ready[1]["interface"] = ready[0]["interface"]
     write_json(run / "manifest.json", record)
 
     with pytest.raises(retain.RetainError, match=message):

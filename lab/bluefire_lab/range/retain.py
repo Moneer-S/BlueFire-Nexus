@@ -28,8 +28,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from . import build, retained, wazuh
 from . import path as range_path
-from . import retained, wazuh
 from .path import iso
 from .spec import Spec, SpecError, load
 
@@ -885,16 +885,16 @@ def _packet_files(
         or capture.get("collect_error")
     ):
         raise RetainError("the source packet capture is incomplete, has a delivery gap, or was not analysed")
-    _plain(capture.get("filter"), "packet_capture.filter")
+    if capture.get("filter") != build.CAPTURE_FILTER:
+        raise RetainError("packet_capture.filter differs from the packet engine's exact filter")
     hosts = capture.get("hosts")
     if not isinstance(hosts, dict) or not hosts:
         raise RetainError("the source packet capture names no host")
-    if not set(hosts).issubset(spec.hosts):
-        raise RetainError("the source packet capture names a host outside the tracked spec")
-    if all(hasattr(settings, "capture") for settings in spec.hosts.values()):
-        declared = {host for host, settings in spec.hosts.items() if settings.capture == "packets"}
-        if set(hosts) != declared:
-            raise RetainError("the source packet capture hosts differ from the tracked spec")
+    declared = {
+        host: settings.networks for host, settings in spec.hosts.items() if settings.capture == "packets"
+    }
+    if set(hosts) != set(declared):
+        raise RetainError("the source packet capture hosts differ from the tracked spec")
     home_hosts = sorted(set(spec.agents) | set(hosts))
     if capture.get("home_hosts") != home_hosts:
         raise RetainError("packet_capture.home_hosts differs from the agents and capture hosts")
@@ -927,19 +927,35 @@ def _packet_files(
             raise RetainError(f"packet capture on {host} was not stopped and collected cleanly")
         ready = entry.get("ready")
         files = entry.get("files")
-        if not isinstance(ready, list) or not ready or not isinstance(files, dict) or not files:
+        networks = declared[host]
+        if not isinstance(ready, list) or len(ready) != len(networks):
+            raise RetainError(
+                f"packet capture on {host} does not have exactly one ready mark for every tracked network"
+            )
+        if not ready or not isinstance(files, dict) or not files:
             raise RetainError(f"packet capture on {host} has no ready marks or files")
-        expected_interfaces = set()
-        marks_by_interface: dict[str, list[dict]] = {}
+        marks_by_network: dict[str, dict] = {}
+        marks_by_interface: dict[str, dict] = {}
         for mark in ready:
             if not isinstance(mark, dict) or mark.get("seen") is not True:
                 raise RetainError(f"packet capture on {host} has an unseen ready mark")
+            network = _plain(mark.get("network"), f"packet capture on {host}'s ready network")
             interface = _plain(mark.get("interface"), f"packet capture on {host}'s ready interface")
             token = _plain(mark.get("token"), f"packet capture on {host}'s ready token")
+            if network not in networks:
+                raise RetainError(f"packet capture on {host} has a ready mark outside its tracked networks")
+            if network in marks_by_network:
+                raise RetainError(f"packet capture on {host} repeats a tracked network's ready mark")
             if not INTERFACE.fullmatch(interface):
                 raise RetainError(f"packet capture on {host} has an unsafe interface name")
-            expected_interfaces.add(interface)
-            marks_by_interface.setdefault(interface, []).append({**mark, "token": token})
+            if interface in marks_by_interface:
+                raise RetainError(f"packet capture on {host} reuses one interface for multiple networks")
+            checked = {**mark, "network": network, "interface": interface, "token": token}
+            marks_by_network[network] = checked
+            marks_by_interface[interface] = checked
+        if set(marks_by_network) != set(networks):
+            raise RetainError(f"packet capture on {host} does not cover every tracked network")
+        expected_interfaces = set(marks_by_interface)
         expected_names = {f"{interface}.pcap" for interface in expected_interfaces}
         if set(files) != expected_names:
             raise RetainError(f"packet capture on {host} does not exactly match its ready interfaces")
@@ -973,9 +989,8 @@ def _packet_files(
                 raise RetainError(
                     f"packet capture {host}/{name} is empty or truncated by its snapshot length"
                 )
-            for mark in marks_by_interface[interface]:
-                if not _contains(pcap_snapshot, mark["token"]):
-                    raise RetainError(f"packet capture {host}/{name} does not contain its ready token")
+            if not _contains(pcap_snapshot, marks_by_interface[interface]["token"]):
+                raise RetainError(f"packet capture {host}/{name} does not contain its ready token")
             counter_run = run_path.with_suffix(".log")
             counter_path = _source_path(run, counter_run, f"tcpdump counters {host}/{interface}")
             counter_snapshot, _ = _remember(snapshots, counter_path, f"tcpdump counters {host}/{interface}")
