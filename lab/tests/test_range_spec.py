@@ -127,9 +127,7 @@ def test_executor_commit_chunks_reassemble_to_the_exact_scalar() -> None:
     ],
 )
 def test_executor_commit_chunks_are_strict(commit: list[object]) -> None:
-    document = a_spec(
-        executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": commit}
-    )
+    document = a_spec(executor={"reference": "redcanaryco/invoke-atomicredteam", "commit": commit})
 
     with pytest.raises(range_spec.SpecError, match="executor.commit must be a full commit id"):
         range_spec.parse(document)
@@ -558,9 +556,7 @@ def test_lower_case_hex_pins_can_be_exact_eight_character_chunks() -> None:
     rule_set = document["rule_sets"]["made-up"]["commit"]
     sha512 = document["defense"]["wazuh"]["agent_deb"]["sha512"]
     document["atomic_red_team"]["commit"] = [atomics[place : place + 8] for place in range(0, 40, 8)]
-    document["rule_sets"]["made-up"]["commit"] = [
-        rule_set[place : place + 8] for place in range(0, 40, 8)
-    ]
+    document["rule_sets"]["made-up"]["commit"] = [rule_set[place : place + 8] for place in range(0, 40, 8)]
     document["defense"]["wazuh"]["agent_deb"]["sha512"] = [
         sha512[place : place + 8] for place in range(0, 128, 8)
     ]

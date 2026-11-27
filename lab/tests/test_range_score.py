@@ -1171,8 +1171,7 @@ def test_each_defense_judges_the_same_run_by_its_own_rules(tmp_path: Path, monke
     )
     assert (
         "| `wazuh-stock` | `sigma-public` | `packets-et-open` | "
-        "`ai-tool-packs` | `ordered-credential` |"
-        in summary
+        "`ai-tool-packs` | `ordered-credential` |" in summary
     )
     assert "| alerted | seen | not judged | not judged | not judged | 5715 |" in summary
 
