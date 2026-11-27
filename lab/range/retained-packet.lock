@@ -1,0 +1,4 @@
+# redcanaryco/atomic-red-team a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6
+65af6027045d23175366eab50e460ab3ee7790e591cb84cc32c78ac63a4c90e1  LICENSE.txt
+d640beaa6b6544f452d0f3dbf957f3138adb4a148b9d51df746197a781e519aa  atomics/T1105/T1105.yaml
+2eda85e8a3f6f8a3f211d114c2ee5e4aa0532e704e265a446b9e4437347d7e10  atomics/T1105/src/atomic.sh
