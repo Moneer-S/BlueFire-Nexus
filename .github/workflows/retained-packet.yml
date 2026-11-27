@@ -242,7 +242,7 @@ jobs:
           (
             cd "$scan"
             git ls-files -z |
-              xargs -0 "$RUNNER_TEMP/venv/bin/$scanner-hook" --baseline "$GITHUB_WORKSPACE/.$scanner.baseline"
+              xargs -0 "$RUNNER_TEMP/venv/bin/$scanner-hook" --baseline "$GITHUB_WORKSPACE/.secrets.baseline"
           )
 
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
