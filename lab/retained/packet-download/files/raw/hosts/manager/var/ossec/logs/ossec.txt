@@ -1,0 +1,75 @@
+2026/11/27 15:11:25 wazuh-analysisd: ERROR: Could not set resource limit for file descriptors to 458752: Operation not permitted (1)
+2026/11/27 15:11:25 wazuh-analysisd: INFO: Rule tree threshold 'analysisd.rule_tree_memory_warning' set to 8388608 nodes: 25% of 1024 MiB of cgroup memory, 32 bytes per node.
+2026/11/27 15:11:26 wazuh-modulesd:router: INFO: Loaded router module.
+2026/11/27 15:11:26 wazuh-modulesd:content_manager: INFO: Loaded content_manager module.
+2026/11/27 15:11:26 wazuh-modulesd:inventory-harvester: INFO: Loaded Inventory harvester module.
+2026/11/27 15:11:26 wazuh-testrule: INFO: Rule tree threshold 'analysisd.rule_tree_memory_warning' set to 8388608 nodes: 25% of 1024 MiB of cgroup memory, 32 bytes per node.
+2026/11/27 15:11:27 wazuh-csyslogd: INFO: Remote syslog server not configured. Clean exit.
+2026/11/27 15:11:27 wazuh-integratord: INFO: Remote integrations not configured. Clean exit.
+2026/11/27 15:11:27 wazuh-agentlessd: INFO: Not configured. Exiting.
+2026/11/27 15:11:27 wazuh-authd: INFO: Started (pid: 585).
+2026/11/27 15:11:27 wazuh-authd: INFO: Accepting connections on port 1515. No password required.
+2026/11/27 15:11:28 wazuh-db: ERROR: Could not set resource limit for file descriptors to 458752: Operation not permitted (1)
+2026/11/27 15:11:28 wazuh-db: INFO: Started (pid: 617).
+2026/11/27 15:11:28 :router: INFO: Registering GET endpoint: /v1/agents/ids
+2026/11/27 15:11:28 :router: INFO: Registering GET endpoint: /v1/agents/ids/groups/:name
+2026/11/27 15:11:28 :router: INFO: Registering GET endpoint: /v1/agents/ids/groups
+2026/11/27 15:11:28 :router: INFO: Registering GET endpoint: /v1/agents/:agent_id/groups
+2026/11/27 15:11:28 :router: INFO: Registering POST endpoint: /v1/agents/summary
+2026/11/27 15:11:28 :router: INFO: Registering GET endpoint: /v1/agents/sync
+2026/11/27 15:11:28 :router: INFO: Registering POST endpoint: /v1/agents/sync
+2026/11/27 15:11:28 :router: INFO: Registering POST endpoint: /v1/agents/restartinfo
+2026/11/27 15:11:28 :router: INFO: API started successfully
+2026/11/27 15:11:28 wazuh-db: INFO: Created Global database backup "backup/db/global.db-backup-2026-11-27-15:11:28.gz"
+2026/11/27 15:11:29 wazuh-execd: INFO: Started (pid: 660).
+2026/11/27 15:11:29 wazuh-analysisd: ERROR: Could not set resource limit for file descriptors to 458752: Operation not permitted (1)
+2026/11/27 15:11:29 wazuh-analysisd: INFO: Rule tree threshold 'analysisd.rule_tree_memory_warning' set to 8388608 nodes: 25% of 1024 MiB of cgroup memory, 32 bytes per node.
+2026/11/27 15:11:30 wazuh-analysisd: INFO: Total rules enabled: '8454'
+2026/11/27 15:11:30 wazuh-analysisd: INFO: Started (pid: 672).
+2026/11/27 15:11:30 wazuh-analysisd: INFO: (7200): Logtest started
+2026/11/27 15:11:30 wazuh-analysisd: INFO: EPS limit disabled
+2026/11/27 15:11:30 wazuh-syscheckd: INFO: (6001): File integrity monitoring disabled.
+2026/11/27 15:11:30 rootcheck: INFO: Rootcheck disabled.
+2026/11/27 15:11:30 wazuh-remoted: ERROR: Could not set resource limit for file descriptors to 458752: Operation not permitted (1)
+2026/11/27 15:11:30 wazuh-remoted: INFO: Started (pid: 759). Listening on port 1514/TCP (secure).
+2026/11/27 15:11:30 wazuh-remoted: INFO: (1410): Reading authentication keys file.
+2026/11/27 15:11:31 wazuh-authd: INFO: Received request for a new agent (web) from: 172.18.0.2
+2026/11/27 15:11:31 wazuh-authd: INFO: Agent key generated for 'web' (requested by any)
+2026/11/27 15:11:31 wazuh-remoted: INFO: (1409): Authentication file changed. Updating.
+2026/11/27 15:11:31 wazuh-remoted: INFO: (1410): Reading authentication keys file.
+2026/11/27 15:11:31 wazuh-logcollector: INFO: (1950): Analyzing file: '/var/ossec/logs/active-responses.log'.
+2026/11/27 15:11:31 wazuh-logcollector: INFO: Started (pid: 804).
+2026/11/27 15:11:31 wazuh-monitord: INFO: Started (pid: 821).
+2026/11/27 15:11:31 wazuh-modulesd:router: INFO: Loaded router module.
+2026/11/27 15:11:31 wazuh-modulesd:content_manager: INFO: Loaded content_manager module.
+2026/11/27 15:11:31 wazuh-modulesd:inventory-harvester: INFO: Loaded Inventory harvester module.
+2026/11/27 15:11:31 wazuh-modulesd: INFO: Started (pid: 831).
+2026/11/27 15:11:31 wazuh-modulesd:agent-upgrade: INFO: (8153): Module Agent Upgrade started.
+2026/11/27 15:11:31 wazuh-modulesd:ciscat: INFO: Module disabled. Exiting...
+2026/11/27 15:11:31 wazuh-modulesd:osquery: INFO: Module disabled. Exiting...
+2026/11/27 15:11:31 wazuh-modulesd:syscollector: INFO: Module disabled. Exiting...
+2026/11/27 15:11:31 wazuh-modulesd:router: INFO: Starting router module.
+2026/11/27 15:11:31 wazuh-modulesd:content_manager: INFO: Starting content_manager module.
+2026/11/27 15:11:31 sca: INFO: Module disabled. Exiting.
+2026/11/27 15:11:31 wazuh-modulesd:vulnerability-scanner: INFO: Starting vulnerability_scanner module.
+2026/11/27 15:11:31 wazuh-modulesd:database: INFO: Module started.
+2026/11/27 15:11:31 wazuh-modulesd:task-manager: INFO: (8200): Module Task Manager started.
+2026/11/27 15:11:31 wazuh-modulesd:download: INFO: Module started.
+2026/11/27 15:11:31 wazuh-modulesd:inventory-harvester: INFO: Starting inventory_harvester module.
+2026/11/27 15:11:31 wazuh-modulesd:control: INFO: Starting control thread.
+2026/11/27 15:11:31 wazuh-modulesd:vulnerability-scanner: INFO: Vulnerability scanner module is disabled.
+2026/11/27 15:11:31 indexer-connector: WARNING: No username and password found in the keystore, using default values.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-packages-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-system-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-processes-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-ports-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-hotfixes-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-hardware-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-protocols-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-interfaces-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-networks-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-users-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-groups-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-browser-extensions-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 indexer-connector: WARNING: IndexerConnector initialization failed for index 'wazuh-states-inventory-services-manager', retrying until the connection is successful.
+2026/11/27 15:11:31 logger-helper: INFO: InventoryHarvesterFacade module started.

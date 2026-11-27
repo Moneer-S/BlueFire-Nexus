@@ -241,6 +241,19 @@ def source_run(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "drops": {"manager: wazuh-analysisd.state": {"events_dropped": "0"}},
         "wazuh_counted_drops": False,
         "live": {"files": ["live/archives.json", "live/alerts.json"]},
+        "marks": [
+            {
+                "host": host,
+                "mark": f"{'file created' if event == 'added' else 'file changed'} in {folder}",
+                "source": "syscheck",
+                "made": True,
+                "archived": True,
+                "delay_seconds": 0.1,
+            }
+            for host in spec.agents
+            for folder in spec.watch_for(host).fim_realtime
+            for event in ("added", "modified")
+        ],
     }
     manifest = {
         "range": spec.range,
@@ -289,8 +302,15 @@ def write_collected(run: Path, manager: str, kind: str, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(path, "wb") as stream:
         stream.write(data)
-    if kind == "alerts":
-        (path.parent / "ossec-alerts-26.log").write_text("expected Wazuh text alert sibling\n")
+    text = "" if kind == "archives" else "expected Wazuh text alert sibling\n"
+    (path.parent / f"ossec-{singular}-26.log").write_text(text)
+
+
+def write_current_collected(run: Path, manager: str, kind: str, data: bytes) -> None:
+    path = run / f"raw/hosts/{manager}/var/ossec/logs/{kind}/{kind}.json.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wb") as stream:
+        stream.write(data)
 
 
 def manifest(run: Path) -> dict:
@@ -329,14 +349,25 @@ def test_exports_identity_bytes_with_derived_hosted_provenance_and_actual_verifi
         for entry in proof.files
     )
     assert set(projected).isdisjoint({"ecs", "score", "recording", "rule_sets", "docker"})
-    assert all("ossec-alerts-26.log" not in entry["run_path"] for entry in document["files"])
+    assert all(
+        not entry["run_path"].endswith(("ossec-archive-26.log", "ossec-alerts-26.log"))
+        for entry in document["files"]
+    )
     assert projected["recording_clock"] == {
         "started": retain.iso(1_795_643_323_123_456_789),
         "ended": retain.iso(1_795_643_384_987_654_321),
         "basis": "the first and last Docker event timeNano selected by the hosted workflow",
     }
-    assert (out / "files/raw/steps/s01/extra/context.txt").read_text() == "all step files are retained\n"
     spec = load(spec_path)
+    expected_marks = [
+        {"host": host, "folder": folder, "event": event, "made": True, "archived": True}
+        for host in spec.agents
+        for folder in spec.watch_for(host).fim_realtime
+        for event in ("added", "modified")
+    ]
+    expected_marks.sort(key=lambda row: (row["host"], row["folder"], row["event"]))
+    assert projected["defense"]["fim_marks"] == expected_marks
+    assert (out / "files/raw/steps/s01/extra/context.txt").read_text() == "all step files are retained\n"
     expected_packets = sum(
         len(settings.networks) for settings in spec.hosts.values() if settings.capture == "packets"
     )
@@ -458,6 +489,7 @@ def test_git_replacement_refs_cannot_substitute_the_declared_head_spec(tmp_path)
         ("packet extra", "missing or undeclared"),
         ("packet delivery", "incomplete, has a delivery gap"),
         ("wazuh delivery", "Wazuh delivery has a gap"),
+        ("wazuh FIM mark", "FIM delivery mark"),
     ],
 )
 def test_refuses_an_incomplete_or_inconsistent_sensor_closure(tmp_path, problem, message):
@@ -476,8 +508,10 @@ def test_refuses_an_incomplete_or_inconsistent_sensor_closure(tmp_path, problem,
         (run / f"raw/hosts/{host}/var/log/bluefire/packets/extra.txt").write_text("extra\n")
     elif problem == "packet delivery":
         capture["delivery_gap"] = True
-    else:
+    elif problem == "wazuh delivery":
         record["defense"]["delivery_gap"] = True
+    else:
+        record["defense"]["marks"][0]["archived"] = False
     write_json(run / "manifest.json", record)
 
     with pytest.raises(retain.RetainError, match=message):
@@ -667,6 +701,41 @@ def test_an_empty_but_complete_alert_stream_is_retained(tmp_path):
     assert (out / f"files/raw/hosts/{manager}/var/ossec/logs/alerts/alerts.json").read_bytes() == b""
 
 
+@pytest.mark.parametrize("kind", ["archives", "alerts"])
+def test_a_current_only_wazuh_stream_is_retained(tmp_path, kind):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    name = f"{kind}.json"
+    data = (run / "live" / name).read_bytes()
+    folder = run / f"raw/hosts/{manager}/var/ossec/logs/{kind}"
+    shutil.rmtree(folder)
+    write_current_collected(run, manager, kind, data)
+
+    retain.export(run, spec_path, out, environment)
+
+    assert (out / f"files/raw/hosts/{manager}/var/ossec/logs/{kind}/{name}").read_bytes() == data
+
+
+@pytest.mark.parametrize(("kind", "singular"), [("archives", "archive"), ("alerts", "alerts")])
+def test_rotated_then_current_wazuh_stream_is_retained(tmp_path, kind, singular):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    rotated = b'{"part":"rotated"}\n'
+    current = b'{"part":"current"}\n'
+    name = f"{kind}.json"
+    (run / "live" / name).write_bytes(rotated + current)
+    folder = run / f"raw/hosts/{manager}/var/ossec/logs/{kind}"
+    shutil.rmtree(folder)
+    write_collected(run, manager, kind, rotated)
+    write_current_collected(run, manager, kind, current)
+
+    retain.export(run, spec_path, out, environment)
+
+    assert (out / f"files/raw/hosts/{manager}/var/ossec/logs/{kind}/{name}").read_bytes() == (
+        rotated + current
+    )
+
+
 def test_refuses_a_live_wazuh_stream_that_differs_from_the_collected_logs(tmp_path):
     environment, spec_path, run, out = source_run(tmp_path)
     (run / "live/alerts.json").write_bytes(b"")
@@ -682,7 +751,30 @@ def test_refuses_an_unexpected_file_in_the_collected_wazuh_log_folders(tmp_path)
     unexpected = run / f"raw/hosts/{manager}/var/ossec/logs/alerts/2026/Nov/unexpected.log"
     unexpected.write_text("not a Wazuh daily alert log\n")
 
-    with pytest.raises(retain.RetainError, match="exact set of daily JSON gzip files"):
+    with pytest.raises(retain.RetainError, match="exact set of current or daily JSON gzip files"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(("kind", "singular"), [("archives", "archive"), ("alerts", "alerts")])
+def test_refuses_a_daily_text_file_without_matching_json(tmp_path, kind, singular):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    unmatched = run / f"raw/hosts/{manager}/var/ossec/logs/{kind}/2026/Nov/ossec-{singular}-27.log"
+    unmatched.write_text("unmatched Wazuh daily text sibling\n")
+
+    with pytest.raises(retain.RetainError, match="daily text file without matching JSON"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+def test_refuses_a_wrong_kind_daily_text_file(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    wrong_kind = run / f"raw/hosts/{manager}/var/ossec/logs/archives/2026/Nov/ossec-alerts-26.log"
+    wrong_kind.write_text("wrong-kind Wazuh daily text sibling\n")
+
+    with pytest.raises(retain.RetainError, match="exact set of current or daily JSON gzip files"):
         retain.export(run, spec_path, out, environment)
     assert not out.exists()
 

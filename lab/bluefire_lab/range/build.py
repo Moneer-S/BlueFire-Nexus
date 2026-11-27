@@ -182,6 +182,8 @@ INET_KEY = "/etc/inet/key.pem"
 # shop traffic the packet sensor records.
 CAPTURE_DIR = "/var/log/bluefire/packets"
 CAPTURE_RUN = "/run/bluefire/packets"
+# A full-snapshot TPACKET_V2 ring has large frames; reserve capacity for short scheduler stalls.
+CAPTURE_BUFFER_KIB = 8 * 1024
 CAPTURE_ARMED_SUFFIX = ".armed"
 CAPTURE_STATUS_SUFFIX = ".status"
 CAPTURE_FILTER = "not (port 1514 or port 1515)"
@@ -236,7 +238,9 @@ def start_script(spec: Spec, host: str) -> str:
             '      mv "$status_file.partial" "$status_file"',
             "      exit 125",
             "    fi",
-            f'    tcpdump -i "$iface" -p -nn -s 0 -U -Z tcpdump -w "{CAPTURE_DIR}/$iface.pcap" '
+            f'    tcpdump -i "$iface" -p -nn -s 0 -U --immediate-mode '
+            f"--buffer-size={CAPTURE_BUFFER_KIB} -Z tcpdump "
+            f'-w "{CAPTURE_DIR}/$iface.pcap" '
             f"'{CAPTURE_FILTER}' 2> \"{CAPTURE_DIR}/$iface.log\" &",
             "    child=$!",
             '    if [ "$stopping" -ne 0 ]; then',

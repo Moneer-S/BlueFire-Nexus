@@ -54,7 +54,7 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 PLAIN = re.compile(r"[^\x00-\x1f\x7f]+\Z")
 INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 RULES_LOADED = re.compile(r"Total rules enabled: '([0-9]+)'")
-WAZUH_TEXT_ALERT = re.compile(r"ossec-alerts-([0-9]{2})\.log\Z")
+WAZUH_TEXT_DAILY = re.compile(r"ossec-(archive|alerts)-([0-9]{2})\.log\Z")
 AT_FDCWD = -100
 RENAME_NOREPLACE = 1
 
@@ -705,6 +705,48 @@ def _containers(manifest: dict, spec: Spec) -> dict:
     return projected
 
 
+def _fim_marks(defense: dict, spec: Spec) -> list[dict]:
+    expected = [
+        {"host": host, "folder": folder, "event": event, "made": True, "archived": True}
+        for host in spec.agents
+        for folder in spec.watch_for(host).fim_realtime
+        for event in ("added", "modified")
+    ]
+    marks = defense.get("marks")
+    if not isinstance(marks, list):
+        raise RetainError("the source Wazuh defense has no delivery marks")
+    found = []
+    for row in marks:
+        if not isinstance(row, dict) or row.get("source") != "syscheck":
+            continue
+        host = row.get("host")
+        mark = row.get("mark")
+        matched = None
+        for expected_row in expected:
+            what = "file created" if expected_row["event"] == "added" else "file changed"
+            if host == expected_row["host"] and mark == f"{what} in {expected_row['folder']}":
+                matched = expected_row
+                break
+        delay = row.get("delay_seconds")
+        if (
+            matched is None
+            or row.get("made") is not True
+            or row.get("archived") is not True
+            or not isinstance(delay, int | float)
+            or isinstance(delay, bool)
+            or delay < 0
+        ):
+            raise RetainError("a source Wazuh FIM delivery mark is incomplete or outside the tracked spec")
+        found.append(matched)
+
+    def key(row: dict) -> tuple:
+        return row["host"], row["folder"], row["event"]
+
+    if sorted(found, key=key) != sorted(expected, key=key):
+        raise RetainError("the source Wazuh FIM delivery marks do not exactly cover the tracked spec")
+    return sorted(expected, key=key)
+
+
 def _defense(manifest: dict, spec: Spec) -> dict:
     if spec.wazuh is None or spec.manager is None:
         raise RetainError("the tracked spec has no Wazuh defense to rejudge")
@@ -755,6 +797,7 @@ def _defense(manifest: dict, spec: Spec) -> dict:
         "delivery_findings": [],
         "drops": defense.get("drops") or {},
         "wazuh_counted_drops": False,
+        "fim_marks": _fim_marks(defense, spec),
     }
 
 
@@ -1076,23 +1119,32 @@ def _same_as_collected(
     relative = PurePosixPath("raw/hosts") / manager / "var/ossec/logs" / kind
     actual = run.walk_files(relative, f"the collected Wazuh {kind} folder")
     ordered = []
+    current = None
     seen_days = set()
     text_days = set()
-    expected_prefix = "ossec-archive-" if kind == "archives" else "ossec-alerts-"
+    expected_kind = "archive" if kind == "archives" else "alerts"
+    expected_prefix = f"ossec-{expected_kind}-"
     for path in actual:
         parts = path.relative.relative_to(relative).parts
+        if len(parts) == 1:
+            if parts[0] != f"{kind}.json.gz" or current is not None:
+                raise RetainError(
+                    f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
+                )
+            current = path
+            continue
         if len(parts) != 3:
             raise RetainError(
-                f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files"
+                f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
             )
         year, month, filename = parts
         match = wazuh.DAILY.fullmatch(filename)
-        text_match = WAZUH_TEXT_ALERT.fullmatch(filename) if kind == "alerts" else None
+        text_match = WAZUH_TEXT_DAILY.fullmatch(filename)
         valid_folder = year.isascii() and year.isdecimal() and month in wazuh.MONTHS
-        if valid_folder and text_match is not None:
-            day = (int(year), wazuh.MONTHS.index(month), int(text_match.group(1)))
+        if valid_folder and text_match is not None and text_match.group(1) == expected_kind:
+            day = (int(year), wazuh.MONTHS.index(month), int(text_match.group(2)))
             if day in text_days:
-                raise RetainError(f"the collected Wazuh {kind} folder repeats one daily text alert file")
+                raise RetainError(f"the collected Wazuh {kind} folder repeats one daily text file")
             text_days.add(day)
             continue
         if (
@@ -1102,21 +1154,26 @@ def _same_as_collected(
             or not filename.endswith(".json.gz")
         ):
             raise RetainError(
-                f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files"
+                f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
             )
         day = (int(year), wazuh.MONTHS.index(month), int(match.group(1)))
         if day in seen_days:
             raise RetainError(f"the collected Wazuh {kind} folder repeats one daily JSON gzip file")
         seen_days.add(day)
         ordered.append((day, path))
-    if not ordered:
-        raise RetainError(f"the collected Wazuh {kind} folder is not an exact set of daily JSON gzip files")
+    sources = [path for _day, path in sorted(ordered, key=lambda item: item[0])]
+    if current is not None:
+        sources.append(current)
+    if not sources:
+        raise RetainError(
+            f"the collected Wazuh {kind} folder is not an exact set of current or daily JSON gzip files"
+        )
     if not text_days.issubset(seen_days):
-        raise RetainError(f"the collected Wazuh {kind} folder has a text alert file without matching JSON")
+        raise RetainError(f"the collected Wazuh {kind} folder has a daily text file without matching JSON")
 
     digest = hashlib.sha256()
     count = 0
-    for _day, path in sorted(ordered, key=lambda item: item[0]):
+    for path in sources:
         relative_path = path.relative.as_posix()
         snapshot, _ = _remember(snapshots, path, f"collected Wazuh file {relative_path}")
         try:
