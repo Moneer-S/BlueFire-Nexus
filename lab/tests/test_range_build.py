@@ -206,7 +206,10 @@ def test_a_packet_capture_starts_on_every_non_loopback_interface_before_the_serv
 
     assert "for path in /sys/class/net/*; do" in lines
     assert '  iface=${path##*/}; [ "$iface" = lo ] && continue' in lines
-    assert '-i "$iface" -p -nn -s 0 -U --immediate-mode -Z tcpdump' in command
+    assert (
+        f'-i "$iface" -p -nn -s 0 -U --immediate-mode --buffer-size={build.CAPTURE_BUFFER_KIB} -Z tcpdump'
+    ) in command
+    assert build.CAPTURE_BUFFER_KIB == 8 * 1024
     assert build.CAPTURE_FILTER in command
     assert f'-w "{build.CAPTURE_DIR}/$iface.pcap"' in command
     assert f'2> "{build.CAPTURE_DIR}/$iface.log" &' in command
