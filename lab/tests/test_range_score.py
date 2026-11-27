@@ -1070,12 +1070,9 @@ def test_the_recording_holds_each_defense_and_its_top_level_is_the_first(tmp_pat
         sigma_detector["name"] == "Published Sigma rules (SigmaHQ/sigma at 552f3fee420e) with Zircolite 4.7.1"
     )
     assert len(sigma_detector["digest"]) == 64
-    assert {
-        "name": "SigmaHQ/sigma",
-        "version": "552f3fee420ef232a8e5790c4fae591847e32347",  # pragma: allowlist secret
-        "role": "rules",
-    } in (made["source"]["tools"])
-    assert {"name": "Zircolite", "version": "4.7.1", "role": "rule engine"} in made["source"]["tools"]
+    # Post-run evaluation is not part of the immutable source of the run. Its commit, engine
+    # and digest stay on the detector above and in the notes below.
+    assert not {"SigmaHQ/sigma", "Zircolite"} & {tool["name"] for tool in made["source"]["tools"]}
     stock, public = made["defenses"]
     assert (stock["id"], stock["name"], stock["detectors"]) == (
         "wazuh-stock",

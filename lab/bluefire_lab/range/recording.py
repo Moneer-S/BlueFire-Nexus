@@ -513,27 +513,18 @@ def build(folder: Path) -> dict:
     tests = [step for step in steps if step["role"] == "test"]
     # A published test that runs twice, as the port scan does against two hosts, is one test of two steps.
     distinct = {step["test"]["guid"] for step in tests}
-    sets = (manifest.get("score") or {}).get("rule sets") or {}
-    after = [sets[entry["id"]] for entry in found if entry["id"] not in live]
-
     environment = manifest.get("environment") or "containers on a developer machine"
     atomic = manifest.get("atomic_red_team") or {}
+    # Source names what made the run, so it stays byte-for-byte stable when the same telemetry is
+    # judged again by another defense. Post-run rules and their engine belong to detector metadata
+    # and notes; the live Wazuh components stay here even when a selected defense does not use them.
     tools = [
         ("Atomic Red Team", atomic.get("commit"), "tests"),
         ("Wazuh agent", defense.get("wazuh_version"), "sensor"),
         ("snoopy", installed(folder, defense.get("agents") or [], "snoopy"), "sensor"),
+        ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
+        ("Wazuh manager", defense.get("wazuh_version"), "rule engine"),
     ]
-    if live:
-        tools += [
-            ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
-            ("Wazuh manager", defense.get("wazuh_version"), "rule engine"),
-        ]
-    for entry in after:
-        repo, _, commit = entry["source"].partition("@")
-        tools += [
-            (repo, commit, "rules"),
-            (entry["engine"]["name"], entry["engine"].get("version"), "rule engine"),
-        ]
     made = lab.known(
         schema="bluefire.recording/1",
         id=manifest["run_id"],
