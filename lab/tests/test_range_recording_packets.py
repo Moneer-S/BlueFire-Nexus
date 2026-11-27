@@ -343,7 +343,9 @@ def test_packet_cut_keeps_each_sensor_share_and_every_rule_match(tmp_path: Path)
     web_log.mkdir(parents=True)
     (web_log / "dpkg.log").write_text("2026-11-01 00:00:00 install tcpdump:amd64 <none> 4.99.4-3ubuntu4\n")
     write_lines(tmp_path / score.EVENTS_FILE, [wazuh_event()])
-    write_lines(tmp_path / recording.NETWORK_EVENTS_FILE, list(reversed([packet_event(n) for n in range(1, 321)])))
+    write_lines(
+        tmp_path / recording.NETWORK_EVENTS_FILE, list(reversed([packet_event(n) for n in range(1, 321)]))
+    )
     write_lines(
         tmp_path / score.MATCHES_FILE.format("et-open"),
         [
@@ -358,15 +360,20 @@ def test_packet_cut_keeps_each_sensor_share_and_every_rule_match(tmp_path: Path)
         ("wazuh-agent-web", "web"),
         ("packet-capture-web", "web"),
     ]
+    packet_sensor = next(
+        sensor for sensor in made["network"]["sensors"] if sensor["id"] == "packet-capture-web"
+    )
+    assert packet_sensor["records"] == (
+        "every packet web sent or received on its captured range interfaces, except Wazuh agent traffic "
+        "to the manager on ports 1514 and 1515"
+    )
     detector = next(entry for entry in made["network"]["detectors"] if entry["id"] == "et-open")
     assert (detector["rules"], detector["when"]) == (2, "after the run")
     assert detector["name"] == (
         "Published packet rules (lab/rules/et-open/SHA256SUMS at 11342) with Suricata 7.0.3"
     )
     held = {
-        event["fields"]["ecs_event_id"]
-        for event in made["events"]
-        if event["sensor"] == "packet-capture-web"
+        event["fields"]["ecs_event_id"] for event in made["events"] if event["sensor"] == "packet-capture-web"
     }
     assert held == {
         *(f"network-web-eth0-{number:06d}" for number in range(1, 300)),

@@ -669,6 +669,32 @@ def test_a_packet_capture_defense_needs_a_host_that_captures_packets() -> None:
         range_spec.parse(document)
 
 
+def test_a_packet_capture_defense_needs_the_manager_logs_that_scoring_starts_from() -> None:
+    document = a_spec(
+        base={"image": IMAGE, "apt_snapshot": "20261120T000000Z"},
+        defenses=[
+            {
+                "id": "packets",
+                "name": "Recorded packets",
+                "sensors": ["packet-capture"],
+                "rules": [],
+            }
+        ],
+    )
+    middle = document["hosts"]["middle"]
+    middle.pop("image")
+    middle.update(capture="packets", packages=["tcpdump"], listens=[])
+
+    with pytest.raises(
+        range_spec.SpecError,
+        match=(
+            "a defense with sensor packet-capture also needs defense.wazuh, because scoring starts "
+            "from the manager's copied logs"
+        ),
+    ):
+        range_spec.parse(document)
+
+
 def test_every_network_interface_of_a_capture_host_needs_a_peer() -> None:
     document = small()
     document["networks"]["alone"] = {}

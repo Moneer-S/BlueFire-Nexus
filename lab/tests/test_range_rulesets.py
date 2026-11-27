@@ -56,8 +56,8 @@ def defended(folder: Path = RULE_SET) -> range_spec.Spec:
 TRACKED_FILES = {
     "rules/LICENSE": b"made-up licence\r\n",
     "rules/classification.config": b"config kept byte for byte\n",
-    "rules/alpha.rules": b"alert tcp any any -> any any (msg:\"alpha\"; sid:1;)\r\n\xff",
-    "rules/nested/beta.rules": b"alert icmp any any -> any any (msg:\"beta\"; sid:2;)\n",
+    "rules/alpha.rules": b'alert tcp any any -> any any (msg:"alpha"; sid:1;)\r\n\xff',
+    "rules/nested/beta.rules": b'alert icmp any any -> any any (msg:"beta"; sid:2;)\n',
 }
 
 
@@ -266,20 +266,20 @@ def test_a_tracked_manifest_and_every_listed_file_are_copied_byte_for_byte(tmp_p
     copied = tmp_path / "run" / "rules" / "published"
     expected_lock = {"SHA256SUMS": hashlib.sha256(manifest_data).hexdigest(), **hashes}
     assert (copied / "SHA256SUMS").read_bytes() == manifest_data
-    assert {
-        path: copied.joinpath(*path.split("/")).read_bytes() for path in TRACKED_FILES
-    } == TRACKED_FILES
+    assert {path: copied.joinpath(*path.split("/")).read_bytes() for path in TRACKED_FILES} == TRACKED_FILES
     assert not (copied / "not-listed.rules").exists()
     assert (copied / "SOURCE").read_text() == "lab/rules/published/SHA256SUMS@7\n"
     assert made["source"] == "lab/rules/published/SHA256SUMS"
     assert made["sha256"] == hashlib.sha256(manifest_data).hexdigest()
     assert made["version"] == "7" and made["files"] == 2
     assert made["lock"] == dict(sorted(expected_lock.items()))
-    rule_listing = "".join(
-        f"{hashes[path]}  {path}\n" for path in sorted(hashes) if path.endswith(".rules")
-    )
+    rule_listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(hashes) if path.endswith(".rules"))
     assert made["digest"] == hashlib.sha256(rule_listing.encode()).hexdigest()
-    without_rule_changes = {**expected_lock, "rules/LICENSE": "0" * 64, "rules/classification.config": "1" * 64}
+    without_rule_changes = {
+        **expected_lock,
+        "rules/LICENSE": "0" * 64,
+        "rules/classification.config": "1" * 64,
+    }
     assert rulesets.digest(spec.rule_sets[0], without_rule_changes) == made["digest"]
     assert rulesets.held(tmp_path / "run", "published", made["lock"]) == copied
 

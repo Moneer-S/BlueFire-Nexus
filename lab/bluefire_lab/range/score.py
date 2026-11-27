@@ -305,9 +305,7 @@ def stretches(path: dict | None, out: Path) -> tuple[list[Stretch], list[Stretch
                 Stretch(
                     record["id"],
                     record["host"],
-                    (record["to"],)
-                    if isinstance(record.get("to"), str)
-                    else tuple(record.get("to") or ()),
+                    (record["to"],) if isinstance(record.get("to"), str) else tuple(record.get("to") or ()),
                     record["started_ns"] / 1e9,
                     record["ended_ns"] / 1e9,
                     argument_paths(record.get("args")),
@@ -563,9 +561,7 @@ def capture_inputs(out: Path, capture: dict | None) -> tuple[dict[str, Path], li
                     f"packet capture on {host} records {record['file']} more than once"
                 )
             if isinstance(record.get("bytes"), int) and record["bytes"] != resolved.stat().st_size:
-                raise suricata.SuricataError(
-                    f"packet capture on {host}: {record['file']} has changed size"
-                )
+                raise suricata.SuricataError(f"packet capture on {host}: {record['file']} has changed size")
             digest = record.get("sha256")
             if digest is not None and (not isinstance(digest, str) or _sha256(resolved) != digest):
                 raise suricata.SuricataError(
@@ -609,7 +605,9 @@ def protected_addresses(
     }
     if not values:
         raise suricata.SuricataError("the run records no protected address for Suricata HOME_NET")
-    return sorted(values, key=lambda value: (ipaddress.ip_address(value).version, ipaddress.ip_address(value)))
+    return sorted(
+        values, key=lambda value: (ipaddress.ip_address(value).version, ipaddress.ip_address(value))
+    )
 
 
 def packet_home_net(
@@ -770,8 +768,14 @@ def _engine_network(document: dict, marks: list[dict]) -> bool:
     source = str((document.get("source") or {}).get("ip") or "")
     destination = str((document.get("destination") or {}).get("ip") or "")
     destination_port = (document.get("destination") or {}).get("port")
+    transport = str((document.get("network") or {}).get("transport") or "").lower()
+    observer = document.get("observer") or {}
+    interface = ((observer.get("ingress") or {}).get("interface") or {}).get("name")
     return any(
         mark.get("seen") is True
+        and transport == "udp"
+        and observer.get("name") == mark.get("capture host")
+        and interface == mark.get("interface")
         and source == mark.get("source")
         and destination == mark.get("destination")
         and destination_port == mark.get("port")
@@ -792,8 +796,8 @@ def network_attributed(
     """Attribute canonical network events from exact endpoint and event-time evidence."""
 
     marks = [
-        mark
-        for entry in ((capture or {}).get("hosts") or {}).values()
+        {**mark, "capture host": host}
+        for host, entry in ((capture or {}).get("hosts") or {}).items()
         if isinstance(entry, dict)
         for mark in entry.get("ready") or []
         if isinstance(mark, dict)
@@ -1370,9 +1374,7 @@ def after_the_run(
                 # The rules ran after the run: a match counts from the time of its event.
                 "moment": ecs.iso(_when(events[index])),
                 "host": (events[index].get("agent") or {}).get("name"),
-                "sensor": sensor_id(
-                    WAZUH_AGENT, str((events[index].get("agent") or {}).get("name"))
-                ),
+                "sensor": sensor_id(WAZUH_AGENT, str((events[index].get("agent") or {}).get("name"))),
                 "event": index,
                 "event_id": ids[index],
                 "origin": origin,
@@ -1709,9 +1711,7 @@ def judge(
     denominators are the run's own.
     """
 
-    watched = {
-        sensor_id(kind, host) for kind in defense.sensors for host in hosts.get(kind, [])
-    }
+    watched = {sensor_id(kind, host) for kind in defense.sensors for host in hosts.get(kind, [])}
     detectors = [detector_id(rules) for rules in defense.rules]
     mine = [
         match
@@ -1760,9 +1760,7 @@ def judge(
                     if set(by_tie) == {"address"}
                     else [],
                     "coincident events": sum(1 for _, tied_by in of_step if tied_by == "window"),
-                    "first_event": ecs.iso(min(_observation_time(event) for event in tied))
-                    if tied
-                    else None,
+                    "first_event": ecs.iso(min(_observation_time(event) for event in tied)) if tied else None,
                     "matches": len(on_step),
                     "rules": matched_rules(on_step),
                     "first_alert": {
@@ -1803,7 +1801,9 @@ def judge(
         if not runs:
             packet_reason = "the range has no ordinary jobs, so no number of false alerts is a result"
         elif day["denominators"]["minutes of activity"] is None:
-            packet_reason = "the minutes of activity were not counted, so no number of false alerts is a result"
+            packet_reason = (
+                "the minutes of activity were not counted, so no number of false alerts is a result"
+            )
         elif missing:
             packet_reason = "an ordinary job did not run: " + ", ".join(missing)
     found["ordinary"] = {
@@ -1986,8 +1986,10 @@ def record(
         active_defenses = defenses or (BASELINE,)
         capture_hosts = (packet_capture or {}).get("hosts") if isinstance(packet_capture, dict) else {}
         packet_hosts = sorted(capture_hosts) if isinstance(capture_hosts, dict) else []
-        need_network = any(PACKET_CAPTURE in defense.sensors for defense in active_defenses) or any(
-            rule_set.kind == "suricata" for rule_set in rule_sets
+        need_network = (
+            bool(packet_hosts)
+            or any(PACKET_CAPTURE in defense.sensors for defense in active_defenses)
+            or any(rule_set.kind == "suricata" for rule_set in rule_sets)
         )
         network_documents: list[dict] = []
         network_ties: list[tuple] = []
@@ -1998,9 +2000,7 @@ def record(
         if need_network:
             try:
                 if suricata_image is None:
-                    raise suricata.SuricataError(
-                        "no Suricata image was given (--suricata-image IMAGE)"
-                    )
+                    raise suricata.SuricataError("no Suricata image was given (--suricata-image IMAGE)")
                 if not isinstance(packet_capture, dict):
                     raise suricata.SuricataError("the run recorded no packet capture")
                 (

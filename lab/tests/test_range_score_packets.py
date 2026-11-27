@@ -153,9 +153,7 @@ def test_ordinary_and_step_candidates_are_ambiguous_not_precedence_choices():
 
 def test_no_declared_peer_and_overlapping_steps_do_not_claim_a_network_event():
     addresses = {"web": ["10.0.0.3"], "db": ["10.0.0.4"]}
-    event = network_event(
-        "10.0.0.3", "10.0.0.4", 102.0, 103.0, destination_port=3306, protocol="mysql"
-    )
+    event = network_event("10.0.0.3", "10.0.0.4", 102.0, 103.0, destination_port=3306, protocol="mysql")
     local = score.Stretch("local", "web", (), 100.0, 110.0)
     first = score.Stretch("first", "web", ("db",), 100.0, 110.0, peers=("db",))
     second = score.Stretch("second", "web", ("db",), 101.0, 111.0, peers=("db",))
@@ -165,6 +163,47 @@ def test_no_declared_peer_and_overlapping_steps_do_not_claim_a_network_event():
     ]
     assert score.network_attributed([event], None, addresses, {}, {}, [first, second]) == [
         (score.UNATTRIBUTED, None, None, None)
+    ]
+
+
+def test_only_the_exact_udp_ready_mark_is_engine_traffic():
+    marked = network_event(
+        "10.0.0.3",
+        "10.0.0.4",
+        100.0,
+        100.1,
+        destination_port=62001,
+        protocol="",
+    )
+    marked["network"]["transport"] = "udp"
+    marked["observer"]["ingress"] = {"interface": {"name": "eth0"}}
+    capture = {
+        "hosts": {
+            "web": {
+                "ready": [
+                    {
+                        "seen": True,
+                        "interface": "eth0",
+                        "source": "10.0.0.3",
+                        "destination": "10.0.0.4",
+                        "port": 62001,
+                    }
+                ]
+            }
+        }
+    }
+
+    assert score.network_attributed([marked.copy()], None, {}, {}, {}, [], capture) == [
+        (score.ENGINE, None, None, None)
+    ]
+    wrong_transport = {**marked, "network": {**marked["network"], "transport": "tcp"}}
+    wrong_interface = {
+        **marked,
+        "observer": {**marked["observer"], "ingress": {"interface": {"name": "eth1"}}},
+    }
+    assert score.network_attributed([wrong_transport, wrong_interface], None, {}, {}, {}, [], capture) == [
+        (score.UNATTRIBUTED, None, None, None),
+        (score.UNATTRIBUTED, None, None, None),
     ]
 
 
@@ -431,3 +470,56 @@ def test_record_dispatches_each_rule_kind_and_removes_stale_network_output(tmp_p
     assert calls == ["telemetry", "sigma", "suricata"]
     assert not stale_network.exists()
     assert not (tmp_path / "alerts.old.ecs.ndjson").exists()
+
+
+def test_packet_rule_set_summary_reports_partial_loads_without_sigma_groups():
+    manifest = {
+        "range": "one",
+        "result": "sealed",
+        "score": {
+            "rule sets": {
+                "packet-set": {
+                    "kind": "suricata",
+                    "source": "example/rules@" + "a" * 40,
+                    "evaluated": True,
+                    "engine": {"name": "Suricata", "version": "8.0.8"},
+                    "rules": 3,
+                    "rule file count": 2,
+                    "rule files": ["rules/one.rules", "rules/two.rules"],
+                    "loaded": 2,
+                    "failed": 1,
+                    "load errors": ["one rule could not be parsed"],
+                    "file": "alerts.packet-set.ecs.ndjson",
+                    "lines": 1,
+                    "runs": [
+                        {
+                            "host": "web",
+                            "read counts": {
+                                "capture files": 1,
+                                "packets": 4,
+                                "network records": 1,
+                                "alerts": 1,
+                            },
+                        }
+                    ],
+                    "rules that matched": [
+                        {
+                            "rule": "1:990001",
+                            "title": "Made-up packet rule",
+                            "level": "high",
+                            "counts": True,
+                            "matches": 1,
+                            "on": {"s02 (web)": 1},
+                        }
+                    ],
+                }
+            }
+        },
+    }
+
+    written = "\n".join(score.rule_sets_summary(manifest))
+
+    assert "retained packet captures" in written
+    assert "2 loaded and 1 failed" in written
+    assert "one rule could not be parsed" in written
+    assert "Made-up packet rule" in written

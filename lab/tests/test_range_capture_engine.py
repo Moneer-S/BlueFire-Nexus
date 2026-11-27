@@ -6,6 +6,8 @@ import sys
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from bluefire_lab.range import build, engine
 from bluefire_lab.range import spec as range_spec
 
@@ -333,3 +335,36 @@ def test_rescore_keeps_three_positional_arguments_and_forwards_the_suricata_imag
 
     assert engine.rescore(tmp_path, None, None, suricata_image=image) == 0
     assert received["call"] == (tmp_path, spec, None, None, image)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "example/suricata:8.0.8",
+        "example/suricata:8.0.8@sha256:not-a-digest",
+    ],
+)
+def test_run_and_rescore_refuse_a_mutable_or_malformed_suricata_image_before_mutating(
+    tmp_path: Path, monkeypatch, capsys, image: str
+) -> None:
+    def should_not_be_called(*_args, **_kwargs):
+        raise AssertionError("an invalid image must be refused at the command entry")
+
+    monkeypatch.setattr(engine, "load", should_not_be_called)
+    monkeypatch.setattr(engine, "parse", should_not_be_called)
+    out = tmp_path / "new-run"
+
+    assert engine.run(SMALL, out, suricata_image=image) == engine.EXIT_REFUSED
+    assert not out.exists()
+    assert "immutable sha256 digest" in capsys.readouterr().out
+
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    manifest = retained / "manifest.json"
+    original = b'{"keep":"unchanged"}\n'
+    manifest.write_bytes(original)
+
+    assert engine.rescore(retained, suricata_image=image) == 2
+    assert manifest.read_bytes() == original
+    assert not (retained / "score.md").exists()
+    assert "immutable sha256 digest" in capsys.readouterr().err

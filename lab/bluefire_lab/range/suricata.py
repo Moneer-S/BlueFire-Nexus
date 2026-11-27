@@ -12,7 +12,10 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import secrets
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -28,7 +31,10 @@ NETWORK_TYPES = EVE_TYPES[1:]
 APP_TYPES = EVE_TYPES[2:]
 COMMUNITY_ID_SEED = 0
 CONTAINER_USER = "998:998"
+CONTAINER_PREFIX = "bluefire-suricata-"
+CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}\Z")
 ENGINE_SECONDS = 900
+CLEANUP_SECONDS = 30
 Runner = Callable[[list[str], float], subprocess.CompletedProcess[str]]
 EventKey: TypeAlias = tuple[object, ...]
 
@@ -135,7 +141,7 @@ def _held_rules(
     return root, rules, classification
 
 
-def _captures(folder: Path) -> tuple[Path, list[Path]]:
+def _captures(folder: Path) -> tuple[Path, list[Path], dict[str, dict]]:
     root = _folder(folder, "web capture folder")
     try:
         entries = list(root.rglob("*"))
@@ -151,13 +157,37 @@ def _captures(folder: Path) -> tuple[Path, list[Path]]:
     found = sorted(pcap_entries)
     if not found:
         raise SuricataError("the web capture folder has no classic .pcap file")
+    facts = {}
     for path in found:
         _relative(path, root, f"the capture {path.name}")
         try:
-            packets.pcap(path)
+            facts[path.name] = packets.pcap(path)
         except (OSError, packets.CaptureError) as error:
             raise SuricataError(f"the capture {path.name} is not a complete classic PCAP: {error}") from error
-    return root, found
+        if facts[path.name]["packets"] == 0:
+            raise SuricataError(f"the capture {path.name} contains no packet")
+    return root, found, facts
+
+
+def _stage_captures(paths: Sequence[Path], facts: dict[str, dict], folder: Path) -> Path:
+    """Copy only independently parsed PCAP bytes into one read-only container input."""
+
+    for source in paths:
+        target = folder / source.name
+        try:
+            shutil.copyfile(source, target)
+            if packets.pcap(target) != facts[source.name]:
+                raise SuricataError(f"the staged capture {source.name} does not match the retained PCAP")
+            target.chmod(0o444)
+        except SuricataError:
+            raise
+        except (OSError, packets.CaptureError) as error:
+            raise SuricataError(f"the capture {source.name} cannot be staged safely: {error}") from error
+    try:
+        folder.chmod(0o555)
+    except OSError as error:
+        raise SuricataError(f"the staged capture folder cannot be made read-only: {error}") from error
+    return folder
 
 
 def _mount_source(path: Path) -> str:
@@ -217,6 +247,8 @@ def _docker_command(
     captures: Path,
     home_net: Sequence[str],
     output: Path,
+    container_name: str,
+    cidfile: Path,
     rules: Path | None = None,
     rule_files: Sequence[tuple[Path, str]] = (),
     classification: tuple[Path, str] | None = None,
@@ -225,6 +257,10 @@ def _docker_command(
         "docker",
         "run",
         "--rm",
+        "--name",
+        container_name,
+        "--cidfile",
+        str(cidfile),
         "--network",
         "none",
         "--pull",
@@ -252,8 +288,9 @@ def _docker_command(
         (
             "--mount",
             f"type=bind,source={_mount_source(output)},target=/output",
-            image,
+            "--entrypoint",
             "/usr/bin/suricata",
+            image,
             "-c",
             "/etc/suricata/suricata.yaml",
             "-r",
@@ -315,7 +352,7 @@ def _docker_command(
 def capture_files(folder: Path) -> tuple[Path, ...]:
     """The exact regular, non-linked classic PCAP files evaluation will read."""
 
-    _, found = _captures(Path(folder))
+    _, found, _ = _captures(Path(folder))
     return tuple(found)
 
 
@@ -492,34 +529,94 @@ def read_eve(
     return records, alerts
 
 
+def _network_tuple(event: dict) -> tuple[object, ...]:
+    """A direction-independent protocol and endpoint tuple."""
+
+    endpoints: list[tuple[int, bytes, str, int | None]] = []
+    for ip_name, port_name in (("src_ip", "src_port"), ("dest_ip", "dest_port")):
+        address = ipaddress.ip_address(event[ip_name])
+        endpoints.append((address.version, address.packed, str(address), event.get(port_name)))
+    endpoints.sort(
+        key=lambda endpoint: (
+            endpoint[0],
+            endpoint[1],
+            -1 if endpoint[3] is None else endpoint[3],
+        )
+    )
+    first, second = endpoints
+    return (
+        event["proto"].lower(),
+        first[2],
+        first[3],
+        second[2],
+        second[3],
+    )
+
+
+def _directed_tuple(event: dict) -> tuple[object, ...]:
+    return (
+        str(ipaddress.ip_address(event["src_ip"])),
+        event.get("src_port"),
+        str(ipaddress.ip_address(event["dest_ip"])),
+        event.get("dest_port"),
+    )
+
+
+def _dns_role(event: dict) -> str | None:
+    if event["event_type"] != "dns":
+        return None
+    value = (event.get("dns") or {}).get("type")
+    return value if isinstance(value, str) and value else None
+
+
 def event_key(raw: dict) -> EventKey:
-    """A stable event identity that deliberately excludes process-local flow_id."""
+    """A stable capture occurrence identity that excludes process-local flow_id."""
 
     event = _validate_event(raw, "the EVE record")
     kind = event["event_type"]
     if kind == "alert":
         raise SuricataError("an alert is not a non-alert network event")
     capture = PurePosixPath(event["pcap_filename"]).relative_to("/captures").as_posix()
-    if kind in APP_TYPES and "tx_id" in event:
-        return ("transaction", capture, event["community_id"], kind, event["tx_id"])
-
-    endpoints: list[tuple[int, bytes, str, int | None]] = []
-    for ip_name, port_name in (("src_ip", "src_port"), ("dest_ip", "dest_port")):
-        address = ipaddress.ip_address(event[ip_name])
-        endpoints.append((address.version, address.packed, str(address), event.get(port_name)))
-    endpoints.sort(key=lambda endpoint: (endpoint[0], endpoint[1], endpoint[3] or -1))
-    first, second = endpoints
     return (
-        "five-tuple",
+        "network",
         capture,
+        event["community_id"],
         kind,
-        event["proto"].lower(),
-        first[2],
-        first[3],
-        second[2],
-        second[3],
+        event.get("tx_id"),
+        _dns_role(event),
+        *_network_tuple(event),
         _timestamp(event["timestamp"], "the EVE record"),
     )
+
+
+def _pick_occurrence(alert: dict, candidates: list[dict], description: str) -> dict | None:
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return None
+    alert_time = _timestamp(alert["timestamp"], "the EVE alert")
+    timed = [
+        record
+        for record in candidates
+        if _timestamp(record["timestamp"], "a matching EVE record") == alert_time
+    ]
+    pool = timed or candidates
+    directed = [record for record in pool if _directed_tuple(record) == _directed_tuple(alert)]
+    if len(directed) == 1:
+        return directed[0]
+    if len(pool) == 1:
+        return pool[0]
+    raise SuricataError(f"alert flow_id {alert['flow_id']} has more than one {description}")
+
+
+def _flow_contains(alert: dict, record: dict) -> bool | None:
+    flow = record.get("flow") or {}
+    if not isinstance(flow.get("start"), str) or not isinstance(flow.get("end"), str):
+        return None
+    moment = _timestamp(alert["timestamp"], "the EVE alert")
+    start = _timestamp(flow["start"], "a matching flow start")
+    end = _timestamp(flow["end"], "a matching flow end")
+    return start <= moment <= end
 
 
 def link_alert(alert: dict, records: Sequence[dict]) -> dict:
@@ -530,12 +627,22 @@ def link_alert(alert: dict, records: Sequence[dict]) -> dict:
         raise SuricataError("the record to link is not an alert")
     checked = [_validate_event(record, f"network record {number}") for number, record in enumerate(records)]
     alert_capture = alert["pcap_filename"]
-    same_flow = [
+    by_flow_id = [
         record
         for record in checked
-        if record["event_type"] != "alert"
-        and record["flow_id"] == alert["flow_id"]
-        and (alert_capture == "unknown" or record["pcap_filename"] == alert_capture)
+        if record["event_type"] != "alert" and record["flow_id"] == alert["flow_id"]
+    ]
+    if alert_capture == "unknown" and len({record["pcap_filename"] for record in by_flow_id}) > 1:
+        raise SuricataError(f"alert flow_id {alert['flow_id']} spans more than one input capture")
+    scoped = [
+        record
+        for record in by_flow_id
+        if alert_capture == "unknown" or record["pcap_filename"] == alert_capture
+    ]
+    same_flow = [
+        record
+        for record in scoped
+        if record["community_id"] == alert["community_id"] and _network_tuple(record) == _network_tuple(alert)
     ]
     application = alert.get("app_proto")
     preferred = [
@@ -543,16 +650,15 @@ def link_alert(alert: dict, records: Sequence[dict]) -> dict:
     ]
     if "tx_id" in alert:
         preferred = [record for record in preferred if record.get("tx_id") == alert["tx_id"]]
-    if len(preferred) == 1:
-        return preferred[0]
-    if len(preferred) > 1:
-        raise SuricataError(f"alert flow_id {alert['flow_id']} has more than one matching application record")
+    picked = _pick_occurrence(alert, preferred, "matching application record")
+    if picked is not None:
+        return picked
 
     flows = [record for record in same_flow if record["event_type"] == "flow"]
-    if len(flows) == 1:
-        return flows[0]
-    if len(flows) > 1:
-        raise SuricataError(f"alert flow_id {alert['flow_id']} has more than one flow record")
+    flows = [record for record in flows if _flow_contains(alert, record) is not False]
+    picked = _pick_occurrence(alert, flows, "flow record")
+    if picked is not None:
+        return picked
     raise SuricataError(f"alert flow_id {alert['flow_id']} has no real non-alert record")
 
 
@@ -656,6 +762,56 @@ def _completed_text(value: str | bytes | None) -> str:
     return value or ""
 
 
+def _container_target(name: str, cidfile: Path) -> str:
+    if not cidfile.is_symlink() and cidfile.is_file():
+        try:
+            value = cidfile.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            value = ""
+        if CONTAINER_ID.fullmatch(value):
+            return value
+    return name
+
+
+def _force_remove(runner: Runner, name: str, cidfile: Path) -> None:
+    """Best-effort removal of this invocation's exact container, and no other."""
+
+    try:
+        runner(["docker", "rm", "--force", _container_target(name, cidfile)], CLEANUP_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _run_container(
+    command: list[str],
+    output: Path,
+    name: str,
+    cidfile: Path,
+    runner: Runner,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        output.chmod(0o733)
+    except OSError as error:
+        raise SuricataError(f"the Suricata output folder cannot be made writable: {error}") from error
+    try:
+        try:
+            completed = runner(command, timeout)
+        except BaseException:
+            _force_remove(runner, name, cidfile)
+            raise
+    finally:
+        try:
+            output.chmod(0o700)
+        except OSError as error:
+            raise SuricataError(
+                f"the Suricata output folder cannot be made private again: {error}"
+            ) from error
+    if completed.returncode != 0:
+        _force_remove(runner, name, cidfile)
+    return completed
+
+
 def _evaluate(
     image: str,
     captures: Path,
@@ -675,31 +831,47 @@ def _evaluate(
     classification: tuple[Path, str] | None = None
     if rules is not None:
         rule_root, rule_files, classification = _held_rules(Path(rules))
-    capture_root, pcaps = _captures(Path(captures))
+    capture_root, pcaps, capture_facts = _captures(Path(captures))
     addresses = _addresses(home_net)
     output_root = _prepare_output(Path(output), capture_root, rule_root)
-    command = _docker_command(
-        image,
-        capture_root,
-        addresses,
-        output_root,
-        rule_root,
-        rule_files,
-        classification,
-    )
-    try:
-        output_root.chmod(0o733)
-    except OSError as error:
-        raise SuricataError(f"the Suricata output folder cannot be made writable: {error}") from error
-    try:
+    expected_packets = sum(facts["packets"] for facts in capture_facts.values())
+    with tempfile.TemporaryDirectory(prefix="bluefire-suricata-pcaps-") as staged_text:
+        staged = Path(staged_text)
         try:
-            completed = runner(command, float(timeout))
+            _stage_captures(pcaps, capture_facts, staged)
+            with tempfile.TemporaryDirectory(prefix="bluefire-suricata-supervisor-") as supervisor_text:
+                supervisor = Path(supervisor_text)
+                container_name = CONTAINER_PREFIX + secrets.token_hex(12)
+                cidfile = supervisor / "container.cid"
+                command = _docker_command(
+                    image,
+                    staged,
+                    addresses,
+                    output_root,
+                    container_name,
+                    cidfile,
+                    rule_root,
+                    rule_files,
+                    classification,
+                )
+                try:
+                    completed = _run_container(
+                        command,
+                        output_root,
+                        container_name,
+                        cidfile,
+                        runner,
+                        float(timeout),
+                    )
+                except subprocess.TimeoutExpired as error:
+                    raise SuricataError(f"offline Suricata took longer than {timeout:g} seconds") from error
+                except OSError as error:
+                    raise SuricataError(f"offline Suricata could not be started: {error}") from error
         finally:
-            output_root.chmod(0o700)
-    except subprocess.TimeoutExpired as error:
-        raise SuricataError(f"offline Suricata took longer than {timeout:g} seconds") from error
-    except OSError as error:
-        raise SuricataError(f"offline Suricata could not be started: {error}") from error
+            try:
+                staged.chmod(0o700)
+            except OSError:
+                pass
     if completed.returncode != 0:
         detail = (
             (_completed_text(completed.stderr) or _completed_text(completed.stdout)).strip().splitlines()[-1:]
@@ -717,10 +889,22 @@ def _evaluate(
     version, loaded, failed, load_errors = _engine_result(output_root, rules is not None)
     stats = read_stats(output_root)
     read = stats["decoder.pkts"]
+    if read != expected_packets:
+        raise SuricataError(
+            f"Suricata decoded {read} packets, but the retained PCAP parser counted {expected_packets}"
+        )
+    covered = {record["pcap_filename"] for record in records}
+    missing = sorted(allowed - covered)
+    if missing:
+        raise SuricataError(
+            "Suricata wrote no canonical network event for "
+            + ", ".join(PurePosixPath(name).name for name in missing)
+        )
     relative_rules = [relative for _, relative in rule_files]
     read_counts = {
         "capture files": len(pcaps),
         "packets": read,
+        "independently counted packets": expected_packets,
         "eve records": len(records) + len(alerts),
         "network records": len(records),
         "alerts": len(alerts),

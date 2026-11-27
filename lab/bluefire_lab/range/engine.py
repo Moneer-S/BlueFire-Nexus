@@ -63,7 +63,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import activity, atomics, build, ossec, packets, plants, rulesets, score, seal, sigma, wazuh
+from . import activity, atomics, build, ossec, packets, plants, rulesets, score, seal, sigma, suricata, wazuh
 from . import path as range_path
 from . import recording as range_recording
 from .spec import Spec, SpecError, load, parse, read
@@ -2374,9 +2374,16 @@ def rescore(
     another spec file whose defenses and rule sets judge the run in place of
     its own, as for a run made before the spec named any: its rule sets must be
     in the run's folder (`range rules`), and are checked against the lock
-    beside that spec. Nothing is started or fetched.
+    beside that spec. No range is started and nothing is fetched or given network access; the supplied
+    offline rule engines are started over the retained files.
     """
 
+    if suricata_image is not None and not suricata.valid_image(suricata_image):
+        print(
+            "the Suricata image must have a tag and immutable sha256 digest",
+            file=sys.stderr,
+        )
+        return 2
     try:
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         text = manifest["spec"]["text"]
@@ -2555,6 +2562,9 @@ def run(
     *,
     suricata_image: str | None = None,
 ) -> int:
+    if suricata_image is not None and not suricata.valid_image(suricata_image):
+        print("bluefire-lab range: the Suricata image must have a tag and immutable sha256 digest")
+        return EXIT_REFUSED
     try:
         spec = load(spec_path)
     except (OSError, SpecError) as error:

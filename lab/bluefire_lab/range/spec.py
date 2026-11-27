@@ -559,6 +559,11 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
         raise SpecError(
             f"a defense with sensor {PACKET_CAPTURE} needs at least one host with capture: packets"
         )
+    if wazuh is None and any(PACKET_CAPTURE in defense.sensors for defense in defenses):
+        raise SpecError(
+            f"a defense with sensor {PACKET_CAPTURE} also needs defense.wazuh, because scoring starts "
+            "from the manager's copied logs"
+        )
     for host in capture_hosts:
         for network in host.networks:
             if not any(other.name != host.name and network in other.networks for other in hosts.values()):
@@ -1201,9 +1206,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 or len(version) > 100
             ):
                 raise SpecError(f"{where}: version must be one short line")
-            found.append(
-                RuleSet(name, entry["kind"], source_file=source, sha256=digest, version=version)
-            )
+            found.append(RuleSet(name, entry["kind"], source_file=source, sha256=digest, version=version))
             continue
         if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
             raise SpecError(f"{where}: repo must be a GitHub repository, as in SigmaHQ/sigma")

@@ -1,6 +1,7 @@
 """Offline Suricata reads held PCAPs and rules without inventing network evidence."""
 
 import json
+import re
 import struct
 import subprocess
 from pathlib import Path
@@ -113,7 +114,21 @@ def output_folder(arguments: list[str]) -> Path:
     return Path(source)
 
 
-def successful_output(arguments: list[str], lines: list[dict], loaded: int = 2) -> None:
+def capture_folder(arguments: list[str]) -> Path:
+    mount = next(
+        arguments[index + 1]
+        for index, value in enumerate(arguments)
+        if value == "--mount" and "target=/captures" in arguments[index + 1]
+    )
+    source = next(part.removeprefix("source=") for part in mount.split(",") if part.startswith("source="))
+    return Path(source)
+
+
+def option(arguments: list[str], name: str) -> str:
+    return arguments[arguments.index(name) + 1]
+
+
+def successful_output(arguments: list[str], lines: list[dict], loaded: int = 2, packets: int = 1) -> None:
     output = output_folder(arguments)
     write_eve(output / "eve.json", lines)
     (output / "suricata.log").write_text(
@@ -122,7 +137,7 @@ def successful_output(arguments: list[str], lines: list[dict], loaded: int = 2) 
     )
     (output / "stats.log").write_text(
         "Counter | TM Name | Value\n"
-        "decoder.pkts | Total | 6\n"
+        f"decoder.pkts | Total | {packets}\n"
         "decoder.bytes | Total | 900\n"
         "flow.memuse | Total | 1,024\n"
     )
@@ -134,13 +149,20 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
     captures = tmp_path / "captures"
     captures.mkdir()
     write_pcap(captures / "eth0.pcap")
+    (captures / "eth0.log").write_text("1 packet captured\n")
     output = tmp_path / "engine"
     calls: list[tuple[list[str], float]] = []
     modes: list[int] = []
+    staged: list[Path] = []
+    cidfiles: list[Path] = []
 
     def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append((arguments, timeout))
         modes.append(output_folder(arguments).stat().st_mode & 0o777)
+        staged.append(capture_folder(arguments))
+        cidfiles.append(Path(option(arguments, "--cidfile")))
+        assert [path.name for path in capture_folder(arguments).iterdir()] == ["eth0.pcap"]
+        assert (capture_folder(arguments).stat().st_mode & 0o777) == 0o555
         successful_output(arguments, [network("flow", tx_id=None), network(), alert()])
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
@@ -153,10 +175,19 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
         runner=runner,
     )
 
+    command = calls[0][0]
+    container_name = option(command, "--name")
+    cidfile = Path(option(command, "--cidfile"))
+    staged_folder = capture_folder(command)
+    assert re.fullmatch(r"bluefire-suricata-[0-9a-f]{24}", container_name)
     expected = [
         "docker",
         "run",
         "--rm",
+        "--name",
+        container_name,
+        "--cidfile",
+        str(cidfile),
         "--network",
         "none",
         "--pull",
@@ -171,13 +202,14 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m",
         "--mount",
-        f"type=bind,source={captures.resolve()},target=/captures,readonly",
+        f"type=bind,source={staged_folder},target=/captures,readonly",
         "--mount",
         f"type=bind,source={rules.resolve()},target=/rules,readonly",
         "--mount",
         f"type=bind,source={output.resolve()},target=/output",
-        suricata.IMAGE,
+        "--entrypoint",
         "/usr/bin/suricata",
+        suricata.IMAGE,
         "-c",
         "/etc/suricata/suricata.yaml",
         "-r",
@@ -231,17 +263,22 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
     assert calls == [(expected, 900.0)]
     assert modes == [0o733]
     assert output.stat().st_mode & 0o777 == 0o700
+    assert staged == [staged_folder] and not staged_folder.exists()
+    assert cidfiles == [cidfile] and not cidfile.parent.exists()
+    assert (captures / "eth0.log").is_file()
     assert "--privileged" not in expected and "--cap-add" not in expected
+    assert expected[expected.index(suricata.IMAGE) + 1] == "-c"
     assert found["engine"] == {
         "name": "Suricata",
         "version": "8.0.8",
         "image": suricata.IMAGE,
     }
     assert found["rule files"] == ["nested/two.rules", "one.rules"]
-    assert (found["loaded"], found["read"], found["stats"]["decoder.bytes"]) == (2, 6, 900)
+    assert (found["loaded"], found["read"], found["stats"]["decoder.bytes"]) == (2, 1, 900)
+    assert found["read counts"]["independently counted packets"] == 1
     assert found["home_net"] == ["10.9.0.3", "10.9.0.4"]
     assert found["records"][1] == network() and found["alerts"] == [alert()]
-    assert found["alert event keys"] == [["transaction", "eth0.pcap", "1:stable-community", "http", 3]]
+    assert found["alert event keys"] == [list(suricata.event_key(network()))]
 
 
 def test_telemetry_is_a_rule_independent_canonical_pass(tmp_path: Path) -> None:
@@ -274,6 +311,45 @@ def test_telemetry_is_a_rule_independent_canonical_pass(tmp_path: Path) -> None:
         suricata.event_key(found["records"][0]),
         suricata.event_key(found["records"][1]),
     ]
+
+
+def test_decoder_packet_count_must_equal_the_independent_pcap_count(tmp_path: Path) -> None:
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    write_pcap(captures / "eth0.pcap")
+
+    def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        successful_output(arguments, [network("flow", tx_id=None)], loaded=0, packets=2)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    with pytest.raises(suricata.SuricataError, match="decoded 2 packets.*counted 1"):
+        suricata.telemetry(
+            suricata.IMAGE,
+            captures,
+            ["10.9.0.3"],
+            tmp_path / "telemetry",
+            runner=runner,
+        )
+
+
+def test_every_nonempty_pcap_must_have_a_canonical_network_event(tmp_path: Path) -> None:
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    write_pcap(captures / "eth0.pcap")
+    write_pcap(captures / "eth1.pcap")
+
+    def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        successful_output(arguments, [network("flow", tx_id=None)], loaded=0, packets=2)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    with pytest.raises(suricata.SuricataError, match="no canonical network event for eth1.pcap"):
+        suricata.telemetry(
+            suricata.IMAGE,
+            captures,
+            ["10.9.0.3"],
+            tmp_path / "telemetry",
+            runner=runner,
+        )
 
 
 def test_eve_is_strict_but_preserves_raw_network_and_alert_records(tmp_path: Path) -> None:
@@ -354,14 +430,14 @@ def test_an_unknown_alert_capture_links_to_one_real_flow_without_rewriting_it() 
 
 
 def test_an_unknown_alert_capture_refuses_an_ambiguous_or_missing_flow() -> None:
-    raw_alert = {**alert(tx_id=None), "pcap_filename": "unknown"}
-    first = network("flow", tx_id=None)
+    raw_alert = {**alert(), "pcap_filename": "unknown"}
+    first = network()
     second = {
         **network("flow", tx_id=None),
         "pcap_filename": "/captures/eth1.pcap",
     }
 
-    with pytest.raises(suricata.SuricataError, match="more than one flow record"):
+    with pytest.raises(suricata.SuricataError, match="spans more than one input capture"):
         suricata.link_alert(raw_alert, [first, second])
     with pytest.raises(suricata.SuricataError, match="no real non-alert record"):
         suricata.link_alert(raw_alert, [])
@@ -388,11 +464,18 @@ def test_flow_ids_can_change_between_passes_without_changing_alert_identity() ->
     second_alert = alert(flow_id=99, tx_id=4)
 
     assert suricata.alert_event_key(first_alert, [canonical]) == (
-        "transaction",
+        "network",
         "eth0.pcap",
         "1:stable-community",
         "http",
         4,
+        None,
+        "tcp",
+        "10.9.0.2",
+        44_444,
+        "10.9.0.3",
+        80,
+        "2026-11-26T20:00:00.200000Z",
     )
     assert suricata.alert_event_key(first_alert, [canonical]) == suricata.alert_event_key(
         second_alert, [judged]
@@ -403,20 +486,54 @@ def test_flow_fallback_key_normalizes_direction_time_and_addresses() -> None:
     first = network(
         "flow",
         flow_id=7,
-        community_id="1:first-pass",
+        community_id="1:stable-community",
         tx_id=None,
         timestamp="2026-11-26T20:00:00+00:00",
     )
     second = network(
         "flow",
         flow_id=999,
-        community_id="1:second-pass",
+        community_id="1:stable-community",
         tx_id=None,
         timestamp="2026-11-26T14:00:00-06:00",
         reverse=True,
     )
 
     assert suricata.event_key(first) == suricata.event_key(second)
+
+
+def test_dns_query_and_response_of_one_transaction_have_distinct_occurrences() -> None:
+    query = {
+        **network("dns", tx_id=8, timestamp="2026-11-26T20:00:00.100000+00:00"),
+        "dns": {"type": "query", "id": 42, "rrname": "web"},
+    }
+    response = {
+        **network(
+            "dns",
+            tx_id=8,
+            timestamp="2026-11-26T20:00:00.200000+00:00",
+            reverse=True,
+        ),
+        "dns": {"type": "answer", "id": 42, "rrname": "web"},
+    }
+    query_alert = {
+        **alert(tx_id=8),
+        "app_proto": "dns",
+        "timestamp": query["timestamp"],
+    }
+    response_alert = {
+        **alert(tx_id=8),
+        "app_proto": "dns",
+        "timestamp": response["timestamp"],
+        "src_ip": response["src_ip"],
+        "src_port": response["src_port"],
+        "dest_ip": response["dest_ip"],
+        "dest_port": response["dest_port"],
+    }
+
+    assert suricata.event_key(query) != suricata.event_key(response)
+    assert suricata.link_alert(query_alert, [query, response]) is query
+    assert suricata.link_alert(response_alert, [query, response]) is response
 
 
 def test_stable_keys_keep_identical_transactions_on_two_interfaces_distinct() -> None:
@@ -483,10 +600,19 @@ def test_output_permissions_are_restored_when_the_engine_times_out(tmp_path: Pat
     captures.mkdir()
     write_pcap(captures / "eth0.pcap")
     output = tmp_path / "engine"
+    calls: list[list[str]] = []
+    transient: list[Path] = []
+    container_id = "a" * 64
 
     def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-        assert output_folder(arguments).stat().st_mode & 0o777 == 0o733
-        raise subprocess.TimeoutExpired(arguments, timeout)
+        calls.append(arguments)
+        if arguments[1] == "run":
+            assert output_folder(arguments).stat().st_mode & 0o777 == 0o733
+            transient.extend((capture_folder(arguments), Path(option(arguments, "--cidfile")).parent))
+            Path(option(arguments, "--cidfile")).write_text(container_id)
+            raise subprocess.TimeoutExpired(arguments, timeout)
+        assert arguments == ["docker", "rm", "--force", container_id]
+        return subprocess.CompletedProcess(arguments, 0, "", "")
 
     with pytest.raises(suricata.SuricataError, match="took longer"):
         suricata.telemetry(
@@ -498,6 +624,36 @@ def test_output_permissions_are_restored_when_the_engine_times_out(tmp_path: Pat
         )
 
     assert output.stat().st_mode & 0o777 == 0o700
+    assert len(calls) == 2
+    assert all(not path.exists() for path in transient)
+
+
+def test_start_failure_removes_only_the_unique_named_container(tmp_path: Path) -> None:
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    write_pcap(captures / "eth0.pcap")
+    calls: list[list[str]] = []
+    transient: list[Path] = []
+
+    def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        if arguments[1] == "run":
+            transient.extend((capture_folder(arguments), Path(option(arguments, "--cidfile")).parent))
+            raise OSError("made-up Docker start failure")
+        assert arguments == ["docker", "rm", "--force", option(calls[0], "--name")]
+        return subprocess.CompletedProcess(arguments, 1, "", "not found")
+
+    with pytest.raises(suricata.SuricataError, match="could not be started"):
+        suricata.telemetry(
+            suricata.IMAGE,
+            captures,
+            ["10.9.0.3"],
+            tmp_path / "engine",
+            runner=runner,
+        )
+
+    assert len(calls) == 2
+    assert all(not path.exists() for path in transient)
 
 
 def test_capture_files_refuses_a_link_even_when_it_points_to_a_classic_pcap(

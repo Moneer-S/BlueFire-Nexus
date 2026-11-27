@@ -219,7 +219,8 @@ def network(manifest: dict, spec: dict, rules: list[dict]) -> dict:
                     "name": "Packet capture",
                     "host": host,
                     "records": (
-                        f"network flows and HTTP, TLS, SSH and DNS activity on {host}'s range interfaces"
+                        f"every packet {host} sent or received on its captured range interfaces, except "
+                        "Wazuh agent traffic to the manager on ports 1514 and 1515"
                     ),
                 }
             )
@@ -724,8 +725,7 @@ def build(folder: Path) -> dict:
     topology = network(manifest, spec, found)
     when = {entry["id"]: entry["when"] for entry in found}
     views = [
-        view(entry, steps, path, kept_events, kept_alerts, alerts, when, alert_level)
-        for entry in judged
+        view(entry, steps, path, kept_events, kept_alerts, alerts, when, alert_level) for entry in judged
     ]
     # The top level is the recording as its first defense sees it.
     first = views[0]
@@ -745,7 +745,7 @@ def build(folder: Path) -> dict:
         ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
         ("Wazuh manager", defense.get("wazuh_version"), "rule engine"),
     ]
-    capture_hosts = list(((manifest.get("packet_capture") or {}).get("hosts") or {}))
+    capture_hosts = list((manifest.get("packet_capture") or {}).get("hosts") or {})
     if capture_hosts:
         tools.append(("tcpdump", installed(folder, capture_hosts, "tcpdump"), "sensor"))
     network_result = (manifest.get("ecs") or {}).get("network") or {}

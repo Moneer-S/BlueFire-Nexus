@@ -204,7 +204,7 @@ def test_a_packet_capture_starts_on_every_non_loopback_interface_before_the_serv
     lines = script.splitlines()
     command = next(line for line in lines if "tcpdump -i" in line)
 
-    assert 'for path in /sys/class/net/*; do' in lines
+    assert "for path in /sys/class/net/*; do" in lines
     assert '  iface=${path##*/}; [ "$iface" = lo ] && continue' in lines
     assert '-i "$iface" -p -nn -s 0 -U -Z tcpdump' in command
     assert build.CAPTURE_FILTER in command
@@ -216,8 +216,8 @@ def test_a_packet_capture_starts_on_every_non_loopback_interface_before_the_serv
     assert "    stopping=0" in lines
     assert any("forward_term() { stopping=1;" in line for line in lines)
     assert any("forward_int() { stopping=1;" in line for line in lines)
-    assert '    trap forward_term TERM' in lines
-    assert '    trap forward_int INT' in lines
+    assert "    trap forward_term TERM" in lines
+    assert "    trap forward_int INT" in lines
     stopping_checks = [
         number for number, line in enumerate(lines) if line == '    if [ "$stopping" -ne 0 ]; then'
     ]
@@ -232,7 +232,9 @@ def test_a_packet_capture_starts_on_every_non_loopback_interface_before_the_serv
     assert '    printf "%s\\n" "$code" > "$status_file.partial"' in lines
     assert '    mv "$status_file.partial" "$status_file"' in lines
     normal_wait = next(
-        number for number, line in enumerate(lines) if line == '    wait "$child"' and number > lines.index(armed)
+        number
+        for number, line in enumerate(lines)
+        if line == '    wait "$child"' and number > lines.index(armed)
     )
     assert (
         lines.index("    trap forward_term TERM")
