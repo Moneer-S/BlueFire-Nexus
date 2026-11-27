@@ -67,7 +67,7 @@ jobs:
           echo "OUT=$RUNNER_TEMP/retained-packet-run" >> "$GITHUB_ENV"
           docker version
 
-      - name: Render the three images
+      - name: Render the host images
         id: render
         run: |
           "$LAB" range render "$SPEC" --out range-build
