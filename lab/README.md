@@ -828,16 +828,19 @@ the rule. What it asks for:
   `writes` lists the files a job writes, by pattern. [Ordinary
   activity](#range-one-ordinary-activity) gives the rules that keep jobs
   apart from each other and from the path.
-- **Rule sets.** `rule_sets` maps a name to a pinned public or tracked rule
-  set. A public set has `kind` (`sigma` or `suricata`), `repo`, `commit`,
+- **Rule sets.** `rule_sets` maps a name to a pinned rule set. A repository set
+  has `kind` (`sigma` or `suricata`), `repo`, `commit`,
   `folders`, `licence` and `lock`. A commit is either its full lower-case
   40-hex string or exactly five quoted 8-hex chunks. No listed folder may
   contain another. The licence is fetched and
   kept with the selected files. The lock beside the spec records every file
   SHA-256; sets may share it, but it is not the `atomic_red_team` lock. A
   tracked set instead names a repository-local `SHA256SUMS` under `source`,
-  its `sha256` and a `version`.
-  A public set may select only executable rules with `include: rules`,
+  its `sha256` and a `version`. Its optional `repository_authored` is `true`
+  for rules written in this repository and `false` for published third-party
+  rules; an older tracked spec that omits it is described without an
+  authorship claim.
+  A repository set may select only executable rules with `include: rules`,
   restrict discovery with `rule_paths` (where `*` is one whole path part),
   and name exact files under `exclude`. A Sigma set may name exact
   `pipelines` made only of `value_placeholders` transformations. A Suricata

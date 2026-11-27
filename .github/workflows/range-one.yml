@@ -571,6 +571,16 @@ jobs:
             (.score.defenses | length > 0 and all(.judged == true))
             and ((.score."rule sets" // {}) | all(.evaluated == true and .loaded > 0))
             and (.score."rule sets"."et-open" |
+              ."source type" == "tracked" and ."repository authored" == false)
+            and (.score."rule sets"."ordered-credential" |
+              .kind == "sigma"
+              and ."source type" == "tracked"
+              and ."repository authored" == true)
+            and ([.score."rule sets" | to_entries[]
+              | select(.value."source type" == "repository") | .key] | sort) == [
+                "agentic-sigma", "agentic-suricata", "aipt-sigma", "aipt-suricata", "sigma"
+              ]
+            and (.score."rule sets"."et-open" |
               .kind == "suricata"
               and .evaluated == true
               and (.loaded | type == "number" and . > 0)
@@ -587,6 +597,17 @@ jobs:
           jq -r '.score.defenses[] | "\(.id): \(.outcomes.alerted) alerted, \(.outcomes.seen) seen, \(.outcomes.unseen) unseen"' \
             "$OUT/run/manifest.json"
           jq -e '[.defenses[].id] == [input.score.defenses[].id]' "$OUT/run/recording.json" "$OUT/run/manifest.json" > /dev/null
+          jq -e '
+            any(.network.detectors[];
+              .id == "ordered-credential"
+              and (.name | startswith("Repository-authored Sigma rules (lab/rules/ordered-credential/SHA256SUMS at 1)")))
+            and any(.network.detectors[];
+              .id == "et-open"
+              and (.name | startswith("Published packet rules (lab/rules/et-open/SHA256SUMS at 11342)")))
+            and any(.notes[];
+              startswith("The detector ordered-credential is the repository-authored rule set lab/rules/ordered-credential/SHA256SUMS at version 1,"))
+            and all(.notes[]; contains("The detector ordered-credential is the public rule set") | not)
+          ' "$OUT/run/recording.json" > /dev/null
 
       # Measure after replay.html and all score artifacts exist: this is the folder uploaded below.
       - name: The complete run artifact stays bounded
