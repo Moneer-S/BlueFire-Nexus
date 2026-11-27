@@ -12,8 +12,8 @@ The archive itself is not committed. Each file listed in `SHA256SUMS` compares
 byte for byte with the member of the same name in that archive. The three
 upstream licence files are included unchanged.
 
-The subset contains 2,028 enabled rules in nine complete category files,
-totalling 1,851,134 bytes:
+The subset contains 1,553 enabled rules in eight complete category files,
+totalling 1,337,494 bytes:
 
 | Category file | Enabled rules | Coverage |
 | --- | ---: | --- |
@@ -25,7 +25,6 @@ totalling 1,851,134 bytes:
 | `emerging-sql.rules` | 191 | SQL protocol activity and input patterns |
 | `emerging-telnet.rules` | 8 | Telnet protocol activity |
 | `emerging-user_agents.rules` | 280 | HTTP user-agent patterns |
-| `emerging-web_client.rules` | 475 | HTTP client activity |
 
 `classification.config` is included because Suricata uses its classifications
 when it reports alert priority. No other category, IP reputation feed,

@@ -1790,8 +1790,8 @@ same name with another lock, which then needs a name of its own. The folder of
 any other rule set it empties before it fetches, so that the folder holds the
 files of the lock and no others.
 
-**The packet rule set, kept verbatim.** `lab/rules/et-open/` contains 2,028
-enabled rules in nine complete network-relevant category files from Emerging
+**The packet rule set, kept verbatim.** `lab/rules/et-open/` contains 1,553
+enabled rules in eight complete network-relevant category files from Emerging
 Threats Open version 11342, plus its classifications and complete licence
 files. `SOURCE.md` names the source archive, its SHA-256, the exact included
 and excluded coverage, and how to reproduce the subset; `SHA256SUMS` pins

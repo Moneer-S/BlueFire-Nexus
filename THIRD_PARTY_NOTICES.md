@@ -15,7 +15,7 @@ repository, and BlueFire's license does not replace its terms.
 
 The repository keeps a verbatim subset of the published Emerging Threats Open
 rules, version 11342, under `lab/rules/et-open/`. Its source archive SHA-256,
-each retained file's SHA-256, and the exact nine-category coverage are in
+each retained file's SHA-256, and the exact eight-category coverage are in
 `lab/rules/et-open/SOURCE.md`; the archive itself is not committed. The subset
 comes from `https://rules.emergingthreats.net/open/suricata-7.0.3/emerging.rules.tar.gz`,
 whose SHA-256 is
