@@ -3,15 +3,18 @@ live-view-first-alert.png), the picture of the Overview (app-overview.png)
 and the pages docs/live-view/attack-path.html and
 docs/live-view/replay.html are copied unchanged from the artifact
 live-view-pictures of the CI run
-https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45808754840
-made from the commit 9d0efdcd4798ff92831fb23dcee5d61164294908, the head
-commit of the pull request whose run that is.
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45986289599
+(artifact 15191424422; ZIP SHA-256
+c7cf9da42cc5a8fbc9400596f20df27128670b0da1f234e5602f9148bfac5c4b).
+The workflow checked out the GitHub merge commit
+b4b018fd568b4ea4c77538742d7107798d169398, whose second parent is the
+pull-request head 7cc38d9ab3b9653f8b9b2ce269b3d36c26510985.
 
 They show the two recordings shipped with BlueFire:
-20261125T054314Z-037227 (bluefire/data/recordings/lab-range-one-path.json),
+20261127T084854Z-640926 (bluefire/data/recordings/lab-range-one-path.json),
 the attack path, which the range one workflow (.github/workflows/range-one.yml)
 recorded in the CI run
-https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45555332964
+https://github.com/Moneer-S/BlueFire-Nexus/actions/runs/45968323688
 and 175a3a26 (bluefire/data/recordings/lab-linux-host.json), the run on one
 Linux machine, which the lab workflow (.github/workflows/lab.yml) recorded in
 the CI run
