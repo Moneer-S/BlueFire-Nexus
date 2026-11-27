@@ -268,6 +268,7 @@ def test_the_shipped_path_through_range_one_is_listed_and_served_as_its_ci_run_w
         for defense in whole["defenses"]
     ] == expected
     assert all(defense["score"]["false_alerts"] == 0 for defense in whole["defenses"])
+    assert all(defense["ordinary"]["events"] > 0 for defense in whole["defenses"])
 
 
 def test_a_recording_is_imported_listed_and_read_back_whole(

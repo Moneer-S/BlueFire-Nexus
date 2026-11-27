@@ -10,7 +10,7 @@ also reads which accounts and addresses the path uses. The other sections (the
 sentence, the executor and the rest of the path) are accepted here and read by
 the parts of the lab that use them.
 
-`rule_sets` names public rule sets, each pinned to a commit of its repository
+`rule_sets` names pinned rule sets, each pinned to a commit of its repository
 or carried as tracked files pinned by a SHA-256 manifest. `defenses` names the
 defenses that judge a run: each one the kinds of sensor it records with and
 the rules it runs, which are the rules the Wazuh manager runs live (`wazuh`)
@@ -192,11 +192,13 @@ class Atomics:
 
 @dataclass(frozen=True)
 class RuleSet:
-    """A pinned public rule set.
+    """A pinned rule set.
 
     Repository sets use ``repo`` through ``lock``. A tracked set keeps those
     positional fields in place for compatibility and uses ``source_file``,
-    ``sha256`` and ``version`` for its repository-relative manifest.
+    ``sha256`` and ``version`` for its repository-relative manifest. Its
+    optional ``repository_authored`` distinguishes project-authored rules from
+    published third-party rules; old specs without it are described neutrally.
     """
 
     name: str
@@ -214,6 +216,7 @@ class RuleSet:
     exclude: tuple[str, ...] = ()
     pipelines: tuple[str, ...] = ()
     hash_files: tuple[str, ...] = ()
+    repository_authored: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -386,7 +389,7 @@ class Spec:
     folder: Path | None = None
     # The ordinary activity beside the path (see `activity`), when the spec has one.
     activity: object = None
-    # The public rule sets the spec pins, and the named defenses that judge a run, in the spec's order.
+    # The pinned rule sets the spec names, and the defenses that judge a run, in the spec's order.
     rule_sets: tuple[RuleSet, ...] = ()
     defenses: tuple[Defense, ...] = ()
 
@@ -1203,7 +1206,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
     repository_keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
     selection_keys = {"rule_paths", "include", "exclude", "pipelines", "hash_files"}
-    manifest_keys = {"kind", "source", "sha256", "version"}
+    manifest_keys = {"kind", "source", "sha256", "version", "repository_authored"}
     found = []
     for name, settings in value.items():
         if not isinstance(name, str) or not NAME.match(name) or len(name) > 64:
@@ -1225,7 +1228,7 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
             raise SpecError(f"{where} must be a mapping")
         local = "source" in settings or "sha256" in settings or "version" in settings
         allowed = manifest_keys if local else repository_keys | selection_keys
-        required = manifest_keys if local else repository_keys
+        required = manifest_keys - {"repository_authored"} if local else repository_keys
         entry = _mapping(settings, where, allowed, required)
         if entry["kind"] not in RULE_KINDS:
             raise SpecError(
@@ -1268,7 +1271,19 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 or len(version) > 100
             ):
                 raise SpecError(f"{where}: version must be one short line")
-            found.append(RuleSet(name, entry["kind"], source_file=source, sha256=digest, version=version))
+            repository_authored = entry.get("repository_authored")
+            if repository_authored is not None and not isinstance(repository_authored, bool):
+                raise SpecError(f"{where}: repository_authored must be true or false")
+            found.append(
+                RuleSet(
+                    name,
+                    entry["kind"],
+                    source_file=source,
+                    sha256=digest,
+                    version=version,
+                    repository_authored=repository_authored,
+                )
+            )
             continue
         if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
             raise SpecError(f"{where}: repo must be a GitHub repository, as in SigmaHQ/sigma")

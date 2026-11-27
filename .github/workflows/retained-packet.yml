@@ -355,6 +355,7 @@ jobs:
                 "ordered-credential"
               ]
               and (.score.defenses | all(.judged == true))
+              and (.score.defenses | all(.ordinary.scored == false))
               and .score.scored == false
               and (.score."not scored" | contains("no ordinary activity"))
               and ($sets | keys) == [
@@ -429,7 +430,14 @@ jobs:
             and [.defenses[].id] == [
               "wazuh-stock", "sigma-public", "packets-et-open", "ai-tool-packs", "ordered-credential"
             ]
+            and (.score | has("false_alerts") | not)
+            and (.defenses | all(.score | has("false_alerts") | not))
           ' "$REJUDGED/recording.json" > /dev/null
+          grep -F "Ordinary day of retained-packet: not scored:" "$REJUDGED/score.md" > /dev/null
+          if grep -F "0 false alerts" "$REJUDGED/score.md" > /dev/null; then
+            echo "score.md reported an unscored ordinary day as zero false alerts"
+            exit 1
+          fi
           test -s "$REJUDGED/recording.json"
           test -s "$REJUDGED/replay.html"
           git diff --exit-code -- "$FIXTURE"

@@ -538,11 +538,20 @@ jobs:
       # pass, or the race is not a result and the job fails rather than show it.
       - name: Every step is scored, and the recording plays
         run: |
-          if ! jq -e '
+          if ! jq -e --slurpfile recording "$OUT/run/recording.json" '
             (.score.path.steps | length) == (.path.planned | length)
             and (.score.path.race | has("says"))
             and .score.path.clock.agree == true
             and .recording.error == null
+            and .score.scored == true
+            and (.score.defenses | all(.ordinary.scored == true))
+            and ([.score.defenses[] | {
+              id, events: .ordinary.events, false_alerts: .ordinary."false alerts"
+            }] == [$recording[0].defenses[] | {
+              id, events: .ordinary.events, false_alerts: .score.false_alerts
+            }])
+            and $recording[0].ordinary.events == .score.defenses[0].ordinary.events
+            and $recording[0].score.false_alerts == .score.defenses[0].ordinary."false alerts"
           ' "$OUT/run/manifest.json" > /dev/null; then
             jq '{recording, race: .score.path.race, clock: .score.path.clock}' "$OUT/run/manifest.json"
             exit 1

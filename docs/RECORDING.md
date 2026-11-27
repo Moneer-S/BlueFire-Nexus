@@ -339,6 +339,8 @@ Optional: `{ "events", "matches" }`, both always there when `ordinary` is, and
 ordinary activity outside the attack steps: the ordinary administration the run
 did at its own positions in `order`, and the host's own background work (the
 runner, system services and the test driver) outside every step's window.
+The observations can be present when the ordinary day could not be scored; in
+that case `score.false_alerts` is absent, so an unknown result is not reported as zero.
 `matches` lists `{ "rule", "level", "count" }` for the published rules that
 matched any of those events, each rule once: `rule` is the rule's title, and
 `count` the number of events it matched, not more than `events`. Two published
