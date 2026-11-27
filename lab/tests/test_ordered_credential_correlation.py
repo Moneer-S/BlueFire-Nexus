@@ -13,7 +13,7 @@ from bluefire_lab.range import sigma
 
 LAB = Path(__file__).resolve().parents[1]
 RULES = LAB / "rules"
-FOLDERS = ["linux/process_creation/ordered_credential_access"]
+FOLDERS = ["ordered-credential"]
 CORRELATION_ID = "cd5a0e6f-d3b5-42ec-bff3-a9a0a36365dd"
 ATOMIC_FIELDS = {"Image", "CommandLine", "CurrentDirectory"}
 CORRELATION_FIELDS = {"Computer", "User"}
@@ -89,6 +89,13 @@ def correlations(result: dict) -> list[dict]:
 
 def evaluated(engine: Path, tmp_path: Path, events: list[dict]) -> dict:
     return sigma.evaluate_set(engine, RULES, FOLDERS, events, tmp_path / "engine")
+
+
+def test_the_range_only_set_stays_out_of_the_legacy_one_host_rule_tree() -> None:
+    ordered = (RULES / FOLDERS[0]).resolve()
+
+    assert ordered.is_dir()
+    assert not ordered.is_relative_to((RULES / "linux").resolve())
 
 
 def test_the_published_set_uses_only_observed_process_and_correlation_fields() -> None:

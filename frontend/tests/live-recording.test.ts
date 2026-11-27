@@ -13,9 +13,21 @@ function valid() {
 
 function correlation(): Recording {
   const value = valid();
+  value.events.splice(1, 0, event("1-2", "1", 10.2));
   Object.assign(value.events[0] ?? {}, { user: "lab" });
-  Object.assign(value.events[2] ?? {}, { user: "lab" });
-  Object.assign(value.alerts[0] ?? {}, { events: ["1-1", "2-2"] });
+  Object.assign(value.events[1] ?? {}, { user: "lab" });
+  Object.assign(value.events[3] ?? {}, { user: "lab" });
+  Object.assign(value.alerts[0] ?? {}, { events: ["1-1", "1-2", "2-2"] });
+  return value;
+}
+
+function laterStepCorrelation(): Recording {
+  const value = recording({
+    steps: [step("1", 10, 11), step("2", 20, 20.4), step("3", 20.4, 22)],
+    events: [event("1-1", "1", 10.1), event("3-1", "3", 20.4), event("2-1", "2", 20.4)],
+    alerts: [alert("a1", "2", 20.4, ["1-1", "3-1", "2-1"])],
+  });
+  value.events.forEach((item) => Object.assign(item, { user: "lab" }));
   return value;
 }
 
@@ -68,7 +80,7 @@ describe("reading a recording", () => {
 
   it("keeps an after-run correlation's earlier-step evidence and terminal event", () => {
     const read = readRecording(correlation());
-    expect(read.alerts[0]?.events).toEqual(["1-1", "2-2"]);
+    expect(read.alerts[0]?.events).toEqual(["1-1", "1-2", "2-2"]);
     expect(read.alerts[0]?.step).toBe("2");
   });
 
@@ -85,9 +97,19 @@ describe("reading a recording", () => {
       'Alert "a1" names evidence after its terminal event.',
     ],
     [
+      "reversed precursor order",
+      (value: Recording) => Object.assign(value.alerts[0] ?? {}, { events: ["1-2", "1-1", "2-2"] }),
+      'Alert "a1" does not name its evidence in nondecreasing time order.',
+    ],
+    [
       "another observed user",
-      (value: Recording) => Object.assign(value.events[2] ?? {}, { user: "another-user" }),
+      (value: Recording) => Object.assign(value.events[1] ?? {}, { user: "another-user" }),
       'Alert "a1" names events of different observed users.',
+    ],
+    [
+      "a raised time from an after-run detector",
+      (value: Recording) => Object.assign(value.alerts[0] ?? {}, { raised: at(20.4) }),
+      'Alert "a1" has raised, but its detector\'s rules ran after the run.',
     ],
     [
       "a live cross-step match",
@@ -101,6 +123,18 @@ describe("reading a recording", () => {
     const value = correlation();
     change(value);
     expect(() => readRecording(value)).toThrow(message);
+  });
+
+  it("refuses equal-time evidence assigned to a later step", () => {
+    expect(() => readRecording(laterStepCorrelation())).toThrow('Alert "a1" names evidence from a later step: 3.');
+  });
+
+  it("keeps notes at the service limit and refuses a longer one", () => {
+    const value = valid();
+    value.notes = ["x".repeat(2_000)];
+    expect(() => readRecording(value)).not.toThrow();
+    value.notes = ["x".repeat(2_001)];
+    expect(() => readRecording(value)).toThrow("Note 1 is longer than 2000 characters.");
   });
 
   it("refuses two steps with the same id", () => {

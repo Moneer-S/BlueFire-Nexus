@@ -90,6 +90,8 @@ def test_a_flow_is_packet_sensor_telemetry_with_directional_and_total_counts() -
         },
         app_proto="http",
     )
+    # Offline analysis can flush a flow long after its last captured packet.
+    raw["timestamp"] = "2026-11-26T20:12:00.000000+00:00"
 
     mapped = ecs.network_event(
         raw,
@@ -102,7 +104,7 @@ def test_a_flow_is_packet_sensor_telemetry_with_directional_and_total_counts() -
         engine=ENGINE,
     )
 
-    assert mapped["@timestamp"] == "2026-11-26T20:00:00.200000Z"
+    assert mapped["@timestamp"] == "2026-11-26T20:00:01.600000Z"
     assert mapped["event"] == {
         "kind": "event",
         "id": "network-1",
@@ -137,12 +139,31 @@ def test_a_flow_is_packet_sensor_telemetry_with_directional_and_total_counts() -
     assert mapped["message"] == "TCP 10.9.0.2:44444 to 10.9.0.3:80: 3 packets, 140 bytes"
     assert mapped["labels"] == {
         "origin": "step",
-        "time_source": "pcap",
+        "time_source": "pcap-flow-end",
         "sensor": "packet-capture-web",
         "step_id": "s01",
         "tied_by": "endpoint",
     }
     assert mapped["suricata"] == raw and mapped["suricata"] is not raw
+    assert mapped["suricata"]["timestamp"] == "2026-11-26T20:12:00.000000+00:00"
+
+
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [("start", "flow.start"), ("end", "flow.end")],
+)
+def test_a_flow_requires_both_intrinsic_packet_boundaries(missing: str, message: str) -> None:
+    raw = eve(
+        "flow",
+        {
+            "start": "2026-11-26T20:00:00.100000+00:00",
+            "end": "2026-11-26T20:00:01.600000+00:00",
+        },
+    )
+    raw["flow"].pop(missing)
+
+    with pytest.raises(ecs.ConversionError, match=message):
+        ecs.network_event(raw, "web", "eth0", "network-missing-boundary", "unattributed")
 
 
 def test_protocol_records_map_http_tls_ssh_and_dns_evidence() -> None:
@@ -185,6 +206,8 @@ def test_protocol_records_map_http_tls_ssh_and_dns_evidence() -> None:
     dns_raw.update(proto="UDP", src_port=53, dest_port=53_000)
     dns = ecs.network_event(dns_raw, "web", "eth0", "network-dns", "ordinary", engine=ENGINE)
 
+    assert all(document["@timestamp"] == "2026-11-26T20:00:00.200000Z" for document in (http, tls, ssh, dns))
+    assert all(document["labels"]["time_source"] == "pcap" for document in (http, tls, ssh, dns))
     assert http["event"]["type"] == ["protocol"]
     assert http["http"] == {
         "request": {"method": "GET"},

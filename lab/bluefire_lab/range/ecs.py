@@ -20,7 +20,11 @@ and `labels.time_source`, which says where `@timestamp` comes from:
   start of the line (nginx, dpkg, MariaDB), taken as written; a time without a
   zone is the container's, which is UTC;
 - `manager`: the manager's own time of the event, for lines with no time of
-  their source, such as file integrity events.
+  their source, such as file integrity events;
+- `pcap`: the captured packet time on a Suricata protocol record;
+- `pcap-flow-end`: the validated last-packet time in a Suricata flow summary.
+  The later offline-engine emission time remains unchanged under
+  `suricata.timestamp`.
 
 `step` writes one line for each step of the path, at the Docker daemon's time
 of its test's start (`daemon`), or the engine's own where the daemon's was not
@@ -615,7 +619,11 @@ def _network_fields(raw: dict, document: dict) -> tuple[str, int | None, str, in
     return source_ip, source_port, destination_ip, destination_port
 
 
-def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, str, int | None]) -> str:
+def _flow_fields(
+    raw: dict,
+    document: dict,
+    endpoints: tuple[str, int | None, str, int | None],
+) -> tuple[str, datetime]:
     flow = raw.get("flow")
     if not isinstance(flow, dict):
         raise ConversionError("a Suricata flow line has no flow object")
@@ -632,18 +640,21 @@ def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, st
     _put(document, "network.packets", sum(packet_parts) if packet_parts else None)
     _put(document, "network.bytes", sum(byte_parts) if byte_parts else None)
 
-    start = _suricata_moment(flow["start"], "flow.start") if "start" in flow else None
-    end = _suricata_moment(flow["end"], "flow.end") if "end" in flow else None
-    _put(document, "event.start", iso(start) if start else None)
-    _put(document, "event.end", iso(end) if end else None)
-    if start is not None and end is not None:
-        elapsed = end - start
-        if elapsed.total_seconds() < 0:
-            raise ConversionError("a Suricata flow ends before it starts")
-        duration = (
-            elapsed.days * 86_400_000_000_000 + elapsed.seconds * 1_000_000_000 + elapsed.microseconds * 1_000
-        )
-        _put(document, "event.duration", duration)
+    if "start" not in flow:
+        raise ConversionError("a Suricata flow line has no flow.start")
+    if "end" not in flow:
+        raise ConversionError("a Suricata flow line has no flow.end")
+    start = _suricata_moment(flow["start"], "flow.start")
+    end = _suricata_moment(flow["end"], "flow.end")
+    _put(document, "event.start", iso(start))
+    _put(document, "event.end", iso(end))
+    elapsed = end - start
+    if elapsed.total_seconds() < 0:
+        raise ConversionError("a Suricata flow ends before it starts")
+    duration = (
+        elapsed.days * 86_400_000_000_000 + elapsed.seconds * 1_000_000_000 + elapsed.microseconds * 1_000
+    )
+    _put(document, "event.duration", duration)
 
     source_ip, source_port, destination_ip, destination_port = endpoints
     transport = document["network"]["transport"].upper()
@@ -657,7 +668,7 @@ def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, st
     summary = (
         f"{transport} {_endpoint(source_ip, source_port)} to {_endpoint(destination_ip, destination_port)}"
     )
-    return summary + (f": {', '.join(details)}" if details else "")
+    return summary + (f": {', '.join(details)}" if details else ""), end
 
 
 def _http_fields(raw: dict, document: dict) -> str:
@@ -833,8 +844,14 @@ def network_event(
     _put(document, "observer.version", _engine_version(engine))
     _put(document, "observer.ingress.interface.name", device)
     endpoints = _network_fields(raw, document)
+    time_source = "pcap"
     if kind == "flow":
-        message = _flow_fields(raw, document, endpoints)
+        message, flow_end = _flow_fields(raw, document, endpoints)
+        # Offline Suricata emits remaining flow summaries when a capture closes. The raw
+        # emission time remains under suricata.timestamp; replay uses the last captured
+        # packet, when the complete flow counters exist.
+        document["@timestamp"] = iso(flow_end)
+        time_source = "pcap-flow-end"
     elif kind == "http":
         message = _http_fields(raw, document)
     elif kind == "tls":
@@ -848,7 +865,7 @@ def network_event(
         document,
         origin,
         job,
-        "pcap",
+        time_source,
         sensor=f"packet-capture-{host}",
         step_id=step,
         tied_by=tied_by,
@@ -946,6 +963,9 @@ def network_alert(
     _put(document, "message", _bounded_message(f"{signature} ({rule_id}) on {transport} {endpoints}"))
     document["labels"] = {
         **copy.deepcopy(parent_labels),
+        # An alert's own Suricata timestamp is its captured packet time even when
+        # its linked full-flow summary uses that flow's intrinsic end.
+        "time_source": "pcap",
         "event_id": event_id,
         "level": level,
     }

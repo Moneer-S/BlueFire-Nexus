@@ -91,7 +91,7 @@ rule_sets:                         # rule sets, each file pinned before use
     lock: range-one.rules.lock
   ordered-credential:
     kind: sigma
-    source: lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS
+    source: lab/rules/ordered-credential/SHA256SUMS
     sha256: [d489218c, 3a2cd098, a23e04a7, 902f0a23, 53f2fca0, 2efd37cf, bda141a9, 5ce47b41]
     version: "1"
 defenses:                          # each judges the same run; the first is the baseline

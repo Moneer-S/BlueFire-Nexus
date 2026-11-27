@@ -588,7 +588,10 @@ export function readRecording(value: unknown, options: { running?: boolean } = {
 
   ordinaryAndScore(top);
   if (top.defenses !== undefined) defensesShape(top.defenses, sensorIds, detectorIds, stepIds);
-  array(top.notes, "The recording's notes").forEach((note, index) => text(note, `Note ${index + 1}`));
+  array(top.notes, "The recording's notes").forEach((note, index) => {
+    const value = text(note, `Note ${index + 1}`);
+    if ([...value].length > 2_000) fail(`Note ${index + 1} is longer than 2000 characters.`);
+  });
 
   const recording = value as Recording;
   noControls(recording);
@@ -777,12 +780,14 @@ function agree(recording: Recording): void {
 
   // An alert comes after the first event it names, at its moment, on the host of those events. An
   // after-run correlation ends with its terminal event; earlier evidence may belong to earlier steps.
+  const stepPosition = new Map(steps.map((step, index) => [step.id, index]));
   const eventTime = new Map(events.map((event) => [event.id, timeOf(event.time)]));
   const eventHost = new Map(events.map((event) => [event.id, event.host]));
   const eventStep = new Map(events.map((event) => [event.id, event.step]));
   const eventUser = new Map(events.map((event) => [event.id, event.user]));
   const detectorWhen = new Map(recording.network.detectors.map((detector) => [detector.id, detector.when]));
   for (const alert of alerts) {
+    if (detectorWhen.get(alert.detector) === "after the run" && alert.raised !== undefined) fail(`Alert ${JSON.stringify(alert.id)} has raised, but its detector's rules ran after the run.`);
     if (alert.events.length === 0) continue;
     if (alert.events.some((id) => eventHost.get(id) !== alert.host)) fail(`Alert ${JSON.stringify(alert.id)} is on the host ${JSON.stringify(alert.host)}, but an event it matched is on another host: an alert is on the host of its events.`);
     const times = alert.events.map((id) => eventTime.get(id) ?? Number.POSITIVE_INFINITY);
@@ -794,6 +799,12 @@ function agree(recording: Recording): void {
       if (eventStep.get(terminalId) !== alert.step) fail(`Alert ${JSON.stringify(alert.id)} does not end with a terminal event of its step ${JSON.stringify(alert.step)}.`);
       if (timeOf(alert.time) !== terminal) fail(`Alert ${JSON.stringify(alert.id)} has the time ${alert.time}, not the time of its terminal event.`);
       if (maximum(times) > terminal) fail(`Alert ${JSON.stringify(alert.id)} names evidence after its terminal event.`);
+      if (times.some((time, index) => index > 0 && (times[index - 1] ?? Number.NEGATIVE_INFINITY) > time)) fail(`Alert ${JSON.stringify(alert.id)} does not name its evidence in nondecreasing time order.`);
+      const alertPosition = stepPosition.get(alert.step) ?? Number.POSITIVE_INFINITY;
+      const laterSteps = [...new Set(alert.events
+        .map((id) => eventStep.get(id))
+        .filter((stepId): stepId is string => stepId !== undefined && stepId !== alert.step && (stepPosition.get(stepId) ?? Number.POSITIVE_INFINITY) >= alertPosition))];
+      if (laterSteps.length > 0) fail(`Alert ${JSON.stringify(alert.id)} names evidence from a later step: ${laterSteps.join(", ")}.`);
       const users = new Set(alert.events.map((id) => eventUser.get(id)).filter((user): user is string => user !== undefined && user !== ""));
       if (users.size > 1) fail(`Alert ${JSON.stringify(alert.id)} names events of different observed users.`);
     } else if (crossStep) {

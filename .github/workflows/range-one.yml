@@ -533,6 +533,9 @@ jobs:
             jq '{recording, race: .score.path.race, clock: .score.path.clock}' "$OUT/run/manifest.json"
             exit 1
           fi
+          python3 -c \
+            'import json, sys; from pathlib import Path; from bluefire.recordings import validate_recording; validate_recording(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))' \
+            "$OUT/run/recording.json"
           "$LAB" replay "$OUT/run/recording.json" --template bluefire/ui/replay.html \
             --out "$OUT/run/replay.html"
 

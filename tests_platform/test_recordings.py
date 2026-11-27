@@ -122,11 +122,12 @@ def correlated_recording(recording_id: str = "rec-correlation") -> dict[str, Any
     terminal["visibility"]["answer"] = "alert"
     terminal["outcome"] = "alerted"
     terminal["first_alert"] = "2026-11-17T17:07:22.100Z"
+    value["events"][1]["user"] = "lab"
     value["events"][2]["user"] = "lab"
     value["alerts"][0].update(
         time="2026-11-17T17:07:22.100Z",
         step="2",
-        events=["1-1", "2-1"],
+        events=["1-1", "1-2", "2-1"],
     )
     return value
 
@@ -1039,6 +1040,23 @@ def test_an_after_run_correlation_keeps_earlier_step_evidence_and_ends_on_its_te
     assert service.recording(recording["id"])["recording"]["alerts"][0] == recording["alerts"][0]
 
 
+def _put_later_step_evidence_at_the_terminal_time(value: dict[str, Any]) -> None:
+    first, second = value["steps"]
+    first.update(ended="2026-11-17T17:07:21.100Z", outcome="alerted")
+    first["visibility"]["answer"] = "alert"
+    first["first_alert"] = "2026-11-17T17:07:21.100Z"
+    second.update(first_event="2026-11-17T17:07:21.100Z", outcome="seen")
+    second["visibility"]["answer"] = "telemetry only"
+    second.pop("first_alert")
+    for event in value["events"]:
+        event["time"] = "2026-11-17T17:07:21.100Z"
+    value["alerts"][0].update(
+        time="2026-11-17T17:07:21.100Z",
+        step="1",
+        events=["2-1", "1-1"],
+    )
+
+
 @pytest.mark.parametrize(
     ("change", "problem"),
     [
@@ -1057,6 +1075,14 @@ def test_an_after_run_correlation_keeps_earlier_step_evidence_and_ends_on_its_te
             ),
             "alerts[0].events names an event at 2026-11-17T17:07:22.100Z after its terminal event "
             "at 2026-11-17T17:07:21.100Z.",
+        ),
+        (
+            lambda value: value["alerts"][0].update(events=["1-2", "1-1", "2-1"]),
+            "alerts[0].events does not name its evidence in nondecreasing time order.",
+        ),
+        (
+            _put_later_step_evidence_at_the_terminal_time,
+            "alerts[0].events names evidence from a later step: 2.",
         ),
         (
             lambda value: value["events"][2].update(user="another-user"),
