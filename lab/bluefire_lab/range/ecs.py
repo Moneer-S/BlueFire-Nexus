@@ -23,6 +23,9 @@ the archive; and `labels.time_source`, which says where `@timestamp` comes from:
 `step` writes one line for each step of the path, at the Docker daemon's time
 of its test's start (`daemon`), or the engine's own where the daemon's was not
 matched (`engine clock`).
+
+`match` writes a match of a rule that was evaluated after the run (see
+`sigma`) in the same shape as an alert, at the time of the event it matched.
 """
 
 from __future__ import annotations
@@ -87,6 +90,7 @@ FIELDS = {
     "related.hash": "keyword",
     "related.hosts": "keyword",
     "process.command_line": "wildcard",
+    "process.executable": "keyword",
     "process.args": "keyword",
     "process.exit_code": "long",
     "process.working_directory": "keyword",
@@ -105,6 +109,10 @@ FIELDS = {
     "url.original": "wildcard",
     "rule.id": "keyword",
     "rule.description": "keyword",
+    "rule.name": "keyword",
+    "rule.ruleset": "keyword",
+    "rule.author": "keyword",
+    "rule.reference": "keyword",
     "threat.framework": "keyword",
     "threat.technique.id": "keyword",
     "threat.technique.subtechnique.id": "keyword",
@@ -175,6 +183,24 @@ def _number(value: object) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+def executable(data: dict) -> str | None:
+    """The path of the program a snoopy line is about: `exe`, the file its exec call named.
+
+    A shell that found the program on its search path named it in full. A path
+    given relative to the working folder, as in `./tool`, is joined to that
+    folder, which is the folder the kernel resolved it from. None for a line
+    without one: a run made before snoopy's line held it.
+    """
+
+    path = data.get("exe")
+    if not isinstance(path, str) or not path or path.startswith("("):
+        return None
+    folder = data.get("cwd")
+    if path.startswith("/") or not isinstance(folder, str) or not folder.startswith("/"):
+        return path
+    return "/".join([folder.rstrip("/"), *(part for part in path.split("/") if part not in ("", "."))])
+
+
 def _put(document: dict, name: str, value: object) -> None:
     """Set a dotted ECS field in a nested document, leaving out empty values."""
 
@@ -226,8 +252,10 @@ def _common(raw: dict, document: dict) -> None:
     categories: list[str] = []
     types: list[str] = []
     if decoder == SNOOPY_DECODER:
-        # snoopy logs each program start, with the account that started it.
+        # snoopy logs each program start, with the account that started it. A run made before
+        # snoopy's line held the program's path has no `exe`.
         _put(document, "process.command_line", data.get("command"))
+        _put(document, "process.executable", executable(data))
         _put(document, "process.working_directory", data.get("cwd"))
         _put(document, "user.id", data.get("uid"))
         _put(document, "user.effective.id", data.get("euid"))
@@ -342,6 +370,53 @@ def alert(
     _put(document, "message", (raw.get("rule") or {}).get("description"))
     _common(raw, document)
     _labels(document, origin, job, "manager", step_id=step, tied_by=tied_by, event_id=event_id)
+    return checked(document)
+
+
+def match(
+    raw: dict,
+    rule: dict,
+    ruleset: str,
+    origin: str,
+    job: str | None = None,
+    step: str | None = None,
+    tied_by: str | None = None,
+    event_id: str | None = None,
+) -> dict:
+    """A match of a rule that was evaluated after the run, as an ECS alert at the time of its event.
+
+    `raw` is the archived event the rule matched and `rule` the rule's `id`,
+    `title`, `level`, `author` and `reference`. The line holds the event's own
+    fields again, without `wazuh.*` and without a rule the manager matched on
+    it; `labels.event_id` names the event, `labels.level` gives the rule's own
+    level, and there is no `event.created`: nothing raised this alert while the
+    run lasted.
+    """
+
+    moment, time_source = chosen_time(raw)
+    document: dict = {"@timestamp": iso(moment)}
+    _put(document, "ecs.version", VERSION)
+    _put(document, "event.kind", "alert")
+    _put(document, "message", rule.get("title"))
+    _common({key: value for key, value in raw.items() if key != "rule"}, document)
+    del document["wazuh"]
+    _put(document, "event.dataset", "sigma.matches")
+    _put(document, "event.module", "sigma")
+    _put(document, "rule.id", rule.get("id"))
+    _put(document, "rule.name", rule.get("title"))
+    _put(document, "rule.ruleset", ruleset)
+    _put(document, "rule.author", rule.get("author"))
+    _put(document, "rule.reference", rule.get("reference"))
+    _labels(
+        document,
+        origin,
+        job,
+        time_source,
+        step_id=step,
+        tied_by=tied_by,
+        event_id=event_id,
+        level=rule.get("level"),
+    )
     return checked(document)
 
 

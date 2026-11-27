@@ -1,0 +1,17 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - A Page That Is Not There
+id: 00000000-0000-4000-8000-000000000008
+status: test
+description: Matches a GET for a path with a given word that the server answered with 404.
+author: The lab's tests
+logsource:
+    category: webserver
+detection:
+    selection:
+        cs-method: 'GET'
+        cs-uri-query|contains: '/admin'
+        sc-status: 404
+    filter:
+        cs-user-agent|contains: 'curl/'
+    condition: selection and not filter
+level: medium

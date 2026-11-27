@@ -1,0 +1,15 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - File Written In Tmp
+id: 00000000-0000-4000-8000-000000000004
+status: test
+description: Matches a file written under /tmp with a .txt name.
+author: The lab's tests
+logsource:
+    product: linux
+    category: file_event
+detection:
+    selection:
+        TargetFilename|startswith: '/tmp/'
+        TargetFilename|endswith: '.txt'
+    condition: selection
+level: medium

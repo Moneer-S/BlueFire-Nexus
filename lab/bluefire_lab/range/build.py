@@ -76,11 +76,13 @@ auth,authpriv.*                 /var/log/auth.log
 
 # snoopy logs every program start made through the C library's exec calls. The tag is the
 # BLUEFIRE_TAG of the process, which the lab sets on everything it runs. snoopy 2.5.1 has no data
-# source of its own for the SSH connection, so the line takes it from SSH_CONNECTION.
+# source of its own for the SSH connection, so the line takes it from SSH_CONNECTION. `exe` is the
+# file the exec call names, which the command line does not hold: a shell that finds `grep` on its
+# search path starts /usr/bin/grep with the command line `grep ...`.
 SNOOPY_INI = """\
 ; snoopy on a range host: one line to syslog for every program start.
 [snoopy]
-message_format = "[login:%{login} ssh:(%{env:SSH_CONNECTION}) sid:%{sid} uid:%{uid} euid:%{euid} cwd:%{cwd} tag:%{env:BLUEFIRE_TAG}]: %{cmdline}"
+message_format = "[login:%{login} ssh:(%{env:SSH_CONNECTION}) sid:%{sid} uid:%{uid} euid:%{euid} cwd:%{cwd} exe:%{filename} tag:%{env:BLUEFIRE_TAG}]: %{cmdline}"
 output = devlog
 syslog_ident = snoopy
 syslog_facility = AUTHPRIV
@@ -93,7 +95,7 @@ SNOOPY_DECODER = """\
      the range's hosts. It reads the fields of the line and raises no alert.
 
      A snoopy line, after the syslog header:
-     [login:root ssh:((undefined)) sid:1 uid:0 euid:0 cwd:/ tag:engine:mark]: uname -r
+     [login:root ssh:((undefined)) sid:1 uid:0 euid:0 cwd:/ exe:/usr/bin/uname tag:engine:mark]: uname -r
 -->
 <decoder name="bluefire-snoopy">
   <program_name>^snoopy$</program_name>
@@ -101,8 +103,8 @@ SNOOPY_DECODER = """\
 
 <decoder name="bluefire-snoopy-fields">
   <parent>bluefire-snoopy</parent>
-  <regex type="pcre2">^\\[login:(\\S*) ssh:\\((.*?)\\) sid:(\\S*) uid:(\\S*) euid:(\\S*) cwd:(.*?) tag:(\\S*)\\]: (.*)$</regex>
-  <order>login, ssh, sid, uid, euid, cwd, tag, command</order>
+  <regex type="pcre2">^\\[login:(\\S*) ssh:\\((.*?)\\) sid:(\\S*) uid:(\\S*) euid:(\\S*) cwd:(.*?) exe:(.*?) tag:(\\S*)\\]: (.*)$</regex>
+  <order>login, ssh, sid, uid, euid, cwd, exe, tag, command</order>
 </decoder>
 """
 

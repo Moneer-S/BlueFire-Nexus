@@ -1,0 +1,15 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - Started By A Web Server
+id: 00000000-0000-4000-8000-000000000002
+status: test
+description: Asks for the parent of a program, which the range's sensor does not record.
+author: The lab's tests
+logsource:
+    product: linux
+    category: process_creation
+detection:
+    selection:
+        ParentImage|endswith: '/nginx'
+        Image|endswith: '/sh'
+    condition: selection
+level: high
