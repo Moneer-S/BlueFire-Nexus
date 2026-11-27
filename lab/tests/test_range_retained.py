@@ -8,6 +8,7 @@ from bluefire_lab.__main__ import main
 from bluefire_lab.range import recording, retained
 
 RANGE_ONE = Path(__file__).parents[1] / "range" / "range-one.yaml"
+SURICATA_IMAGE = "registry.example/suricata:8.0.8@sha256:" + "a" * 64
 
 
 def _bytes(value: object) -> bytes:
@@ -241,8 +242,8 @@ def test_rejudge_uses_only_a_copy_and_publishes_recording_and_replay(tmp_path, m
         called.append(("rules", spec, folder))
         return 0
 
-    def rescore(folder, program, defenses):
-        called.append(("score", defenses, folder, program))
+    def rescore(folder, program, defenses, *, suricata_image=None):
+        called.append(("score", defenses, folder, program, suricata_image))
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["spec"]["file"] == "range-one.yaml"
         assert manifest["spec"]["text"] == RANGE_ONE.read_text(encoding="utf-8")
@@ -259,8 +260,19 @@ def test_rejudge_uses_only_a_copy_and_publishes_recording_and_replay(tmp_path, m
     monkeypatch.setattr(retained.engine, "rescore", rescore)
     monkeypatch.setattr(retained.replay_page, "main", replay)
 
-    assert retained.rejudge(source, RANGE_ONE, out, template, rule_engine) == 0
+    assert (
+        retained.rejudge(
+            source,
+            RANGE_ONE,
+            out,
+            template,
+            rule_engine,
+            suricata_image=SURICATA_IMAGE,
+        )
+        == 0
+    )
     assert [entry[0] for entry in called] == ["rules", "score", "replay"]
+    assert called[1][-1] == SURICATA_IMAGE
     assert (out / "recording.json").read_text(encoding="utf-8") == '{"recording":"new"}\n'
     assert (out / "replay.html").read_text(encoding="utf-8") == "replay\n"
     assert source_hashes(source) == before
@@ -268,7 +280,12 @@ def test_rejudge_uses_only_a_copy_and_publishes_recording_and_replay(tmp_path, m
 
 def test_range_rejudge_command_passes_every_named_input(monkeypatch):
     called = []
-    monkeypatch.setattr(retained, "rejudge", lambda *arguments: called.append(arguments) or 7)
+
+    def rejudge(*arguments, suricata_image=None):
+        called.append((arguments, suricata_image))
+        return 7
+
+    monkeypatch.setattr(retained, "rejudge", rejudge)
 
     assert (
         main(
@@ -280,6 +297,8 @@ def test_range_rejudge_command_passes_every_named_input(monkeypatch):
                 "later.yaml",
                 "--engine",
                 "Zircolite",
+                "--suricata-image",
+                SURICATA_IMAGE,
                 "--template",
                 "replay-template.html",
                 "--out",
@@ -290,13 +309,44 @@ def test_range_rejudge_command_passes_every_named_input(monkeypatch):
     )
     assert called == [
         (
-            Path("held"),
-            Path("later.yaml"),
-            Path("new-evaluation"),
-            Path("replay-template.html"),
-            Path("Zircolite"),
+            (
+                Path("held"),
+                Path("later.yaml"),
+                Path("new-evaluation"),
+                Path("replay-template.html"),
+                Path("Zircolite"),
+            ),
+            SURICATA_IMAGE,
         )
     ]
+
+
+def test_range_rejudge_does_not_invent_a_suricata_image(monkeypatch):
+    called = []
+
+    def rejudge(*arguments, suricata_image=None):
+        called.append(suricata_image)
+        return 0
+
+    monkeypatch.setattr(retained, "rejudge", rejudge)
+
+    assert (
+        main(
+            [
+                "range",
+                "rejudge",
+                "held",
+                "--defenses",
+                "later.yaml",
+                "--template",
+                "replay-template.html",
+                "--out",
+                "new-evaluation",
+            ]
+        )
+        == 0
+    )
+    assert called == [None]
 
 
 def test_rejudge_failure_leaves_no_output_or_partial_folder(tmp_path, monkeypatch):
@@ -338,7 +388,7 @@ def test_rejudge_discards_a_copied_recording_and_requires_a_new_one(tmp_path, mo
     replayed = []
     monkeypatch.setattr(retained.engine, "rules", lambda *_: 0)
 
-    def rescore_without_output(folder, *_):
+    def rescore_without_output(folder, *_, **__):
         assert not (folder / "recording.json").exists()
         return 0
 
@@ -362,7 +412,7 @@ def test_rejudge_catches_a_same_size_source_edit_before_publish(tmp_path, monkey
     out = tmp_path / "parent/rejudged"
     monkeypatch.setattr(retained.engine, "rules", lambda *_: 0)
 
-    def rescore(folder, *_):
+    def rescore(folder, *_, **__):
         (folder / "recording.json").write_text('{"recording":"new"}\n', encoding="utf-8")
         return 0
 

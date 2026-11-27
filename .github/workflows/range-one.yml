@@ -256,6 +256,7 @@ jobs:
       # The rule engine, the same program at the same address and digest as in lab.yml.
       ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
       ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
+      SURICATA_IMAGE: jasonish/suricata:8.0.8@sha256:d5a3a1785299ab40918d465e54fedf8e3afeeedba76bb64b0cc74dbc20bda2c3
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -323,12 +324,18 @@ jobs:
         if: always()
         run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
+      # Offline scoring never pulls an evaluator. Preload the exact image that the run records
+      # and gives to its network-telemetry and packet-rule passes.
+      - name: Preload the packet rule engine
+        run: docker pull "$SURICATA_IMAGE"
+
       # The path runs between the activity's warm-up and its tail, so the ordinary activity runs
       # for as long as the path, which is long enough for cron to start each cron job. With the
       # rule engine, the defenses whose rules run after the run judge it too.
       - name: Run the range
         run: |
-          "$LAB" range run "$SPEC" --out "$OUT/run" --engine "$ENGINE"
+          "$LAB" range run "$SPEC" --out "$OUT/run" --engine "$ENGINE" \
+            --suricata-image "$SURICATA_IMAGE"
 
       # Every planned step ran and was attempted, nothing stopped the path, the last step took
       # effect and the goal check passed.
@@ -375,6 +382,70 @@ jobs:
             exit 1
           fi
 
+      # Every ready interface has a retained, non-empty capture with tcpdump's final counters.
+      # Packet traffic is the run artifact's only newly unbounded part: keep it under 128 MiB.
+      - name: Every packet reached a bounded capture artifact
+        run: |
+          manifest="$OUT/run/manifest.json"
+          if ! jq -e '
+            .packet_capture as $capture
+            | $capture != null
+              and $capture.analysed == true
+              and $capture.delivery_gap == false
+              and ($capture | has("collect_error") | not)
+              and ($capture.hosts | type == "object" and length > 0)
+              and ($capture.hosts | all(
+                .started == true
+                and .stopped.cleanly == true
+                and .collected.copied == true
+                and (.ready | type == "array" and length > 0
+                  and all(.seen == true and (.interface | type == "string" and length > 0)))
+                and (([.ready[].interface + ".pcap"] | unique | sort) == (.files | keys | sort))
+                and (.files | type == "object" and length > 0 and all(
+                  (.file | type == "string"
+                    and test("^raw/hosts/[a-z0-9-]+/var/log/bluefire/packets/[A-Za-z0-9_.-]+[.]pcap$"))
+                  and (.packets | type == "number" and . > 0)
+                  and (.bytes | type == "number" and . > 0)
+                  and (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+                  and .tcpdump."dropped by kernel" == 0
+                ))
+              ))
+          ' "$manifest" > /dev/null; then
+            jq '{result, reason, packet_capture: (.packet_capture | {
+              analysed, delivery_gap, delivery_findings, collect_error,
+              hosts: (.hosts | map_values({started, ready, stopped, collected, files}))
+            })}' "$manifest"
+            exit 1
+          fi
+
+          packet_bytes=0
+          while IFS=$'\t' read -r relative declared declared_sha; do
+            file="$OUT/run/$relative"
+            if [ ! -f "$file" ]; then
+              echo "packet capture is missing: $relative"
+              exit 1
+            fi
+            actual=$(stat -c %s "$file")
+            if [ "$actual" -ne "$declared" ]; then
+              echo "$relative is $actual bytes, while manifest.json records $declared"
+              exit 1
+            fi
+            actual_sha=$(sha256sum -- "$file")
+            actual_sha=${actual_sha%% *}
+            if [ "$actual_sha" != "$declared_sha" ]; then
+              echo "$relative has SHA-256 $actual_sha, while manifest.json records $declared_sha"
+              exit 1
+            fi
+            packet_bytes=$((packet_bytes + actual))
+          done < <(jq -r '.packet_capture.hosts[].files[] | [.file, .bytes, .sha256] | @tsv' "$manifest")
+
+          packet_limit=$((128 * 1024 * 1024))
+          echo "Packet captures: $packet_bytes bytes."
+          if [ "$packet_bytes" -gt "$packet_limit" ]; then
+            echo "packet captures exceeded their CI size limit"
+            exit 1
+          fi
+
       # Each job of the ordinary activity ran at least once, counted from the logs of the host
       # it acts on, and the line of at least one of its runs reached the manager's archive.
       - name: Every job of the ordinary activity ran and reached the archive
@@ -394,10 +465,24 @@ jobs:
       # gives the reason. This step checks the counts of a run that ended sealed.
       - name: Every archived event and alert is an ECS line, and the ordinary day is scored
         run: |
-          if ! jq -e '
+          if ! jq -e --arg image "$SURICATA_IMAGE" '
             .ecs.error == null
-            and (.ecs.files | keys) == ["alerts.ecs.ndjson", "events.ecs.ndjson", "steps.ecs.ndjson"]
+            and (.ecs.files | keys) == [
+              "alerts.ecs.ndjson",
+              "events.ecs.ndjson",
+              "events.network.ecs.ndjson.gz",
+              "steps.ecs.ndjson"
+            ]
             and (.ecs.files | all(."raw lines" == ."ECS lines" and ."raw lines" > 0))
+            and .ecs.network.evaluated == true
+            and .ecs.network.file == "events.network.ecs.ndjson.gz"
+            and (.ecs.network.lines | type == "number" and . > 0)
+            and (.ecs.network.bytes | type == "number" and . > 0)
+            and (.ecs.network.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+            and .ecs.network.engine.image == $image
+            and (.packet_capture.home_net | type == "array" and length > 0)
+            and (.ecs.network.home_net | type == "array" and length > 0)
+            and .ecs.network.home_net == .packet_capture.home_net
             and .score.scored == true
           ' "$OUT/run/manifest.json" > /dev/null; then
             jq '{ecs, score: (.score | {scored, "not scored"})}' "$OUT/run/manifest.json"
@@ -406,6 +491,32 @@ jobs:
           for file in events.ecs.ndjson alerts.ecs.ndjson steps.ecs.ndjson; do
             echo "$file: $(wc -l < "$OUT/run/$file") lines"
           done
+          network_file="$OUT/run/events.network.ecs.ndjson.gz"
+          if [ ! -s "$network_file" ]; then
+            echo "events.network.ecs.ndjson.gz is missing or empty"
+            exit 1
+          fi
+          gzip -t -- "$network_file"
+          network_bytes=$(stat -c '%s' -- "$network_file")
+          declared_network_bytes=$(jq -r '.ecs.network.bytes' "$OUT/run/manifest.json")
+          if [ "$network_bytes" -ne "$declared_network_bytes" ]; then
+            echo "events.network.ecs.ndjson.gz is $network_bytes bytes, while manifest.json records $declared_network_bytes"
+            exit 1
+          fi
+          network_sha=$(sha256sum -- "$network_file")
+          network_sha=${network_sha%% *}
+          declared_network_sha=$(jq -r '.ecs.network.sha256' "$OUT/run/manifest.json")
+          if [ "$network_sha" != "$declared_network_sha" ]; then
+            echo "events.network.ecs.ndjson.gz has SHA-256 $network_sha, while manifest.json records $declared_network_sha"
+            exit 1
+          fi
+          network_lines=$(gzip -cd -- "$network_file" | wc -l)
+          declared_network_lines=$(jq -r '.ecs.network.lines' "$OUT/run/manifest.json")
+          if [ "$network_lines" -ne "$declared_network_lines" ]; then
+            echo "events.network.ecs.ndjson.gz has $network_lines lines, while manifest.json records $declared_network_lines"
+            exit 1
+          fi
+          echo "events.network.ecs.ndjson.gz: $network_lines lines, $network_bytes bytes, SHA-256 $network_sha"
 
       # What the defense made of each step is scored, and recording.json, the run in the format the
       # app's live view plays, was written; the single replay page is made from it, and says this run
@@ -430,9 +541,16 @@ jobs:
       # defense that was not judged is not a defense that alerted on nothing, so it fails the job.
       - name: Every defense of the spec judged the run
         run: |
-          if ! jq -e '
+          if ! jq -e --arg image "$SURICATA_IMAGE" '
             (.score.defenses | length > 0 and all(.judged == true))
             and ((.score."rule sets" // {}) | all(.evaluated == true and .loaded > 0))
+            and (.score."rule sets"."et-open" |
+              .kind == "suricata"
+              and .evaluated == true
+              and (.loaded | type == "number" and . > 0)
+              and .engine.image == $image
+              and .file == "alerts.et-open.ecs.ndjson")
+            and (.score.defenses | any(.id == "packets-et-open" and .judged == true))
             and (.recording.error == null)
           ' "$OUT/run/manifest.json" > /dev/null; then
             jq '{defenses: [.score.defenses[]? | {id, judged, "not judged"}],
@@ -444,6 +562,17 @@ jobs:
             "$OUT/run/manifest.json"
           jq -e '[.defenses[].id] == [input.score.defenses[].id]' "$OUT/run/recording.json" "$OUT/run/manifest.json" > /dev/null
 
+      # Measure after replay.html and all score artifacts exist: this is the folder uploaded below.
+      - name: The complete run artifact stays bounded
+        run: |
+          artifact_limit=$((256 * 1024 * 1024))
+          artifact_bytes=$(du -sb "$OUT/run" | cut -f1)
+          echo "Run artifact: $artifact_bytes bytes."
+          if [ "$artifact_bytes" -gt "$artifact_limit" ]; then
+            echo "the run artifact exceeded its CI size limit"
+            exit 1
+          fi
+
       - name: Summary
         if: always()
         run: |
@@ -451,7 +580,7 @@ jobs:
             echo "Image build, from the end of the builder's set-up: ${BUILD_SECONDS:-?} s."
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for part in path plants activity score defense seal; do
+          for part in path plants activity score defense packets seal; do
             if [ -f "$OUT/run/$part.md" ]; then cat "$OUT/run/$part.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
 

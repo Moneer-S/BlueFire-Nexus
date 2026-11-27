@@ -10,11 +10,11 @@ also reads which accounts and addresses the path uses. The other sections (the
 sentence, the executor and the rest of the path) are accepted here and read by
 the parts of the lab that use them.
 
-`rule_sets` names public rule sets, each pinned to a commit of its repository,
-and `defenses` the named defenses that judge a run: each one the kinds of
-sensor it records with and the rules it runs, which are the rules the Wazuh
-manager runs live (`wazuh`) or a rule set of `rule_sets`, evaluated after the
-run.
+`rule_sets` names public rule sets, each pinned to a commit of its repository
+or carried as tracked files pinned by a SHA-256 manifest. `defenses` names the
+defenses that judge a run: each one the kinds of sensor it records with and
+the rules it runs, which are the rules the Wazuh manager runs live (`wazuh`)
+or a rule set of `rule_sets`, evaluated after the run.
 
 What a host may have planted in it is a closed list: accounts, keys,
 known_hosts, dirs, files, database, sshd, packages, services, serve and
@@ -27,14 +27,25 @@ import hashlib
 import ipaddress
 import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
 KEYS = {"range", "version", "prefix", "docker", "networks", "hosts"}
 READ_KEYS = {"base", "defense", "atomic_red_team", "path", "activity", "rule_sets", "defenses"}
 LATER_KEYS = {"sentence", "executor"}
-HOST_KEYS = {"kind", "role", "networks", "listens", "image", "agent", "watch", "packages", "services"}
+HOST_KEYS = {
+    "kind",
+    "role",
+    "networks",
+    "listens",
+    "image",
+    "agent",
+    "watch",
+    "packages",
+    "services",
+    "capture",
+}
 PLANT_KEYS = {
     "accounts",
     "keys",
@@ -56,6 +67,7 @@ IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?@(sha256:[0-9a-f]{6
 SNAPSHOT = re.compile(r"[0-9]{8}T[0-9]{6}Z\Z")
 PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]+\Z")
 AGENT_VERSION = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+)-[0-9]+\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA512 = re.compile(r"[0-9a-f]{128}\Z")
 # A path Wazuh can watch: absolute, no spaces, no commas (its folder lists are comma separated)
 # and nothing that would need escaping in its XML configuration.
@@ -102,12 +114,13 @@ ENGINE_LOGS = ("/var/log/auth.log", "/var/log/snoopy.log")
 # The kinds of sensor a range can have, and what of the spec gives a range each one. A defense
 # names the kinds it records with.
 WAZUH_AGENT = "wazuh-agent"
-SENSORS = {WAZUH_AGENT: "defense.wazuh"}
+PACKET_CAPTURE = "packet-capture"
+SENSORS = {WAZUH_AGENT: "defense.wazuh", PACKET_CAPTURE: "a host with capture: packets"}
 # The rules the Wazuh manager of defense.wazuh runs live, as a defense names them.
 WAZUH_RULES = "wazuh"
 # The kinds of rule set the lab can give a recorded run to, and the kinds of sensor whose records
 # each kind reads. The live rules read what the agents send.
-RULE_KINDS = {"sigma": (WAZUH_AGENT,)}
+RULE_KINDS = {"sigma": (WAZUH_AGENT,), "suricata": (PACKET_CAPTURE,)}
 LIVE_RULES = {WAZUH_RULES: (WAZUH_AGENT,)}
 # A rule set's name is its detector's id in a recording, where these two ids are taken: `pinned` is
 # the manager's live rules, and `lab` the rules written in this repository.
@@ -179,16 +192,23 @@ class Atomics:
 
 @dataclass(frozen=True)
 class RuleSet:
-    """A public rule set, pinned: the folders the lab takes from a repository at a commit, its licence
-    file, and the lock file beside the spec that gives the SHA-256 of each of those files."""
+    """A pinned public rule set.
+
+    Repository sets use ``repo`` through ``lock``. A tracked set keeps those
+    positional fields in place for compatibility and uses ``source_file``,
+    ``sha256`` and ``version`` for its repository-relative manifest.
+    """
 
     name: str
     kind: str
-    repo: str
-    commit: str
-    folders: tuple[str, ...]
-    licence: str
-    lock: str
+    repo: str = ""
+    commit: str = ""
+    folders: tuple[str, ...] = ()
+    licence: str = ""
+    lock: str = ""
+    source_file: str = ""
+    sha256: str = ""
+    version: str = ""
 
 
 @dataclass(frozen=True)
@@ -308,6 +328,7 @@ class Host:
     watch: Watch = field(default_factory=Watch)
     packages: tuple[str, ...] = ()
     services: tuple[str, ...] = ()
+    capture: str | None = None
     accounts: tuple[Account, ...] = ()
     keys: tuple[Key, ...] = ()
     known_hosts: tuple[KnownHosts, ...] = ()
@@ -533,6 +554,23 @@ def parse(data: object, text: str = "", folder: Path | None = None) -> Spec:
         spec = replace(spec, activity=parse_activity(data["activity"], hosts, data.get("path"), watch))
     rule_sets = _rule_sets(data["rule_sets"], atomics) if "rule_sets" in data else ()
     defenses = _defenses(data["defenses"], rule_sets, wazuh) if "defenses" in data else ()
+    capture_hosts = [host for host in hosts.values() if host.capture == "packets"]
+    if any(PACKET_CAPTURE in defense.sensors for defense in defenses) and not capture_hosts:
+        raise SpecError(
+            f"a defense with sensor {PACKET_CAPTURE} needs at least one host with capture: packets"
+        )
+    if wazuh is None and any(PACKET_CAPTURE in defense.sensors for defense in defenses):
+        raise SpecError(
+            f"a defense with sensor {PACKET_CAPTURE} also needs defense.wazuh, because scoring starts "
+            "from the manager's copied logs"
+        )
+    for host in capture_hosts:
+        for network in host.networks:
+            if not any(other.name != host.name and network in other.networks for other in hosts.values()):
+                raise SpecError(
+                    f"host {host.name}: capture packets needs a peer on network {network}, so capture_ready "
+                    "can mark that interface"
+                )
     unused = [found.name for found in rule_sets if not any(found.name in d.rules for d in defenses)]
     if unused:
         raise SpecError(
@@ -722,7 +760,7 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
 
     if image is None and base is None:
         raise SpecError(f"host {name} has no image, so the lab builds it from base, and the spec has no base")
-    built_keys = sorted(({"agent", "watch", "packages", "services"} | PLANT_KEYS) & set(settings))
+    built_keys = sorted(({"agent", "watch", "packages", "services", "capture"} | PLANT_KEYS) & set(settings))
     if image is not None and built_keys:
         raise SpecError(
             f"host {name} runs the pinned image unchanged, so it cannot have {', '.join(built_keys)}: "
@@ -756,6 +794,13 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
             )
     if len(set(services)) != len(services):
         raise SpecError(f"host {name} lists a service twice")
+    capture = settings.get("capture")
+    if capture not in (None, "packets"):
+        raise SpecError(f"host {name}: capture must be packets when the host records its network traffic")
+    if capture == "packets" and image is not None:
+        raise SpecError(f"host {name}: capture needs a host built from base, not a pinned image")
+    if capture == "packets" and "tcpdump" not in packages:
+        raise SpecError(f"host {name}: capture packets needs the package tcpdump in packages")
     if image is None:
         ports = sorted({port for service in services for port in SERVICE_PORTS.get(service, ())})
         if sorted(listens) != ports:
@@ -774,6 +819,7 @@ def _host(name: str, settings: object, networks: dict, base: Base | None, wazuh:
         watch,
         tuple(packages),
         tuple(services),
+        capture,
     )
     return _plants(host, settings)
 
@@ -1107,7 +1153,8 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
 
     if not isinstance(value, dict) or not value:
         raise SpecError("rule_sets must name at least one rule set, as in sigma: {kind: sigma, ...}")
-    keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    repository_keys = {"kind", "repo", "commit", "folders", "licence", "lock"}
+    manifest_keys = {"kind", "source", "sha256", "version"}
     found = []
     for name, settings in value.items():
         if not isinstance(name, str) or not NAME.match(name) or len(name) > 64:
@@ -1125,12 +1172,56 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 f"rule_sets: a recording names a detector of its own {name}, so a rule set needs another name"
             )
         where = f"rule_sets: {name}"
+        if not isinstance(settings, dict):
+            raise SpecError(f"{where} must be a mapping")
+        local = "source" in settings or "sha256" in settings or "version" in settings
+        keys = manifest_keys if local else repository_keys
         entry = _mapping(settings, where, keys, keys)
         if entry["kind"] not in RULE_KINDS:
             raise SpecError(
                 f"{where}: kind must be one of {', '.join(RULE_KINDS)}: the kinds of rule set the lab can "
                 "give a recorded run to"
             )
+        if local:
+            if entry["kind"] != "suricata":
+                raise SpecError(f"{where}: a tracked rule manifest must have kind suricata")
+            source = entry["source"]
+            if (
+                not isinstance(source, str)
+                or not RELATIVE.match(source)
+                or PurePosixPath(source).name != "SHA256SUMS"
+            ):
+                raise SpecError(
+                    f"{where}: source must be a SHA256SUMS manifest inside the repository, relative to its root"
+                )
+            digest_value = entry["sha256"]
+            if isinstance(digest_value, str):
+                digest = digest_value
+            elif (
+                isinstance(digest_value, list)
+                and len(digest_value) == 8
+                and all(isinstance(part, str) and re.fullmatch(r"[0-9a-f]{8}", part) for part in digest_value)
+            ):
+                digest = "".join(digest_value)
+            else:
+                raise SpecError(
+                    f"{where}: sha256 must be 64 lower-case hex digits, as one string or eight 8-digit chunks"
+                )
+            if not SHA256.match(digest):
+                raise SpecError(
+                    f"{where}: sha256 must be 64 lower-case hex digits, as one string or eight 8-digit chunks"
+                )
+            version = entry["version"]
+            if (
+                not isinstance(version, str)
+                or not version.strip()
+                or version != version.strip()
+                or "\n" in version
+                or len(version) > 100
+            ):
+                raise SpecError(f"{where}: version must be one short line")
+            found.append(RuleSet(name, entry["kind"], source_file=source, sha256=digest, version=version))
+            continue
         if not isinstance(entry["repo"], str) or not GITHUB_REPO.match(entry["repo"]):
             raise SpecError(f"{where}: repo must be a GitHub repository, as in SigmaHQ/sigma")
         if not isinstance(entry["commit"], str) or not COMMIT.match(entry["commit"]):

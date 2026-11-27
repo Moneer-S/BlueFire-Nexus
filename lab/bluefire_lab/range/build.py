@@ -177,6 +177,14 @@ INET_UPLOADS = "/srv/uploads"
 INET_LOG = "/var/log/inet/access.log"
 INET_CERT = "/etc/inet/cert.pem"
 INET_KEY = "/etc/inet/key.pem"
+# A packet capture asked for by a host stays inside that host until collection. One file is written
+# for each of its range interfaces. The Wazuh manager's ports are the defense's own channel, not the
+# shop traffic the packet sensor records.
+CAPTURE_DIR = "/var/log/bluefire/packets"
+CAPTURE_RUN = "/run/bluefire/packets"
+CAPTURE_ARMED_SUFFIX = ".armed"
+CAPTURE_STATUS_SUFFIX = ".status"
+CAPTURE_FILTER = "not (port 1514 or port 1515)"
 HOST_KEY = "/etc/ssh/ssh_host_ed25519_key"
 COMMIT_FILE = f"{atomics.ATOMICS_PATH}/COMMIT"
 LICENSE_IN_CONTEXT = f"atomics/{atomics.LICENSE}"
@@ -193,7 +201,7 @@ class Rendered:
 
 
 def start_script(spec: Spec, host: str) -> str:
-    """The entrypoint of a host built from base: its services, its agent, then nothing but sleep."""
+    """The entrypoint of a host built from base: capture, services, its agent, then sleep."""
 
     settings = spec.hosts[host]
     services = settings.services
@@ -205,6 +213,76 @@ def start_script(spec: Spec, host: str) -> str:
         "mkdir -p /run/bluefire",
         "rsyslogd",
     ]
+    if settings.capture == "packets":
+        lines += [
+            f"install -d -m 0750 -o tcpdump -g tcpdump {CAPTURE_DIR}",
+            f"install -d -m 0755 {CAPTURE_RUN}",
+            "for path in /sys/class/net/*; do",
+            '  iface=${path##*/}; [ "$iface" = lo ] && continue',
+            f'  armed_file="{CAPTURE_RUN}/$iface{CAPTURE_ARMED_SUFFIX}"',
+            f'  pid_file="{CAPTURE_RUN}/$iface.pid"',
+            f'  status_file="{CAPTURE_RUN}/$iface{CAPTURE_STATUS_SUFFIX}"',
+            '  rm -f "$armed_file" "$armed_file.partial" "$pid_file" "$pid_file.partial" '
+            '"$status_file" "$status_file.partial"',
+            "  (",
+            "    child=",
+            "    stopping=0",
+            '    forward_term() { stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || :; }',
+            '    forward_int() { stopping=1; [ -z "$child" ] || kill -INT "$child" 2>/dev/null || :; }',
+            "    trap forward_term TERM",
+            "    trap forward_int INT",
+            '    if [ "$stopping" -ne 0 ]; then',
+            '      printf "125\\n" > "$status_file.partial"',
+            '      mv "$status_file.partial" "$status_file"',
+            "      exit 125",
+            "    fi",
+            f'    tcpdump -i "$iface" -p -nn -s 0 -U -Z tcpdump -w "{CAPTURE_DIR}/$iface.pcap" '
+            f"'{CAPTURE_FILTER}' 2> \"{CAPTURE_DIR}/$iface.log\" &",
+            "    child=$!",
+            '    if [ "$stopping" -ne 0 ]; then',
+            '      kill -TERM "$child" 2>/dev/null || :',
+            "      set +e",
+            '      wait "$child"',
+            '      printf "125\\n" > "$status_file.partial"',
+            '      mv "$status_file.partial" "$status_file"',
+            "      exit 125",
+            "    fi",
+            '    if ! printf "%s\\n" "$child" > "$armed_file.partial" '
+            '|| ! mv "$armed_file.partial" "$armed_file"; then',
+            '      kill -TERM "$child" 2>/dev/null || :',
+            "      set +e",
+            '      wait "$child"',
+            '      printf "125\\n" > "$status_file.partial"',
+            '      mv "$status_file.partial" "$status_file"',
+            "      exit 125",
+            "    fi",
+            "    set +e",
+            '    wait "$child"',
+            "    code=$?",
+            '    if [ "$code" -ge 128 ]; then',
+            '      wait "$child"',
+            "      waited=$?",
+            '      [ "$waited" -eq 127 ] || code=$waited',
+            "    fi",
+            "    set -e",
+            "    trap - TERM INT",
+            '    printf "%s\\n" "$code" > "$status_file.partial"',
+            '    mv "$status_file.partial" "$status_file"',
+            '    exit "$code"',
+            "  ) &",
+            "  pid=$!",
+            '  printf "%s\\n" "$pid" > "$pid_file.partial"',
+            '  mv "$pid_file.partial" "$pid_file"',
+            "  tries=0",
+            f'  while [ ! -s "{CAPTURE_DIR}/$iface.pcap" ] || [ ! -s "$armed_file" ]; do',
+            '    [ ! -e "$status_file" ] || exit 1',
+            '    kill -0 "$pid"',
+            '    tries=$((tries + 1)); [ "$tries" -lt 100 ] || exit 1',
+            "    sleep 0.1",
+            "  done",
+            '  [ -s "$armed_file" ] && [ ! -e "$status_file" ] || exit 1',
+            "done",
+        ]
     if "sshd" in services:
         lines += [
             "mkdir -p /run/sshd",

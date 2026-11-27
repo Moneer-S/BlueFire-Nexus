@@ -360,6 +360,23 @@ def test_a_line_lost_on_the_way_to_the_file_fails_the_conversion(tmp_path: Path,
     assert result is None
 
 
+def test_write_gzip_is_lossless_and_deterministic(tmp_path: Path) -> None:
+    documents = [{"event": {"id": "network-1"}}, {"message": "packet telemetry"}]
+    first = tmp_path / "first.ndjson.gz"
+    second = tmp_path / "second.ndjson.gz"
+
+    assert ecs.write(first, documents) == 2
+    assert ecs.write(second, documents) == 2
+
+    compressed = first.read_bytes()
+    assert compressed == second.read_bytes()
+    assert compressed[:3] == b"\x1f\x8b\x08"
+    assert compressed[3] & 0x08 == 0  # no source filename in the gzip header
+    assert compressed[4:8] == b"\x00\x00\x00\x00"  # deterministic mtime
+    with gzip.open(first, "rt", encoding="utf-8") as source:
+        assert [json.loads(line) for line in source] == documents
+
+
 def test_a_missing_archive_fails_the_conversion(tmp_path: Path) -> None:
     section, _ = score.record(tmp_path, tmp_path / "logs", RUN["run_id"], 12)
 

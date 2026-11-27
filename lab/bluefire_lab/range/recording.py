@@ -32,6 +32,7 @@ the level the format's words count from.
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 from collections import Counter, defaultdict
@@ -41,9 +42,10 @@ from pathlib import Path
 from .. import recording as lab
 from . import ecs, score, sigma
 from . import path as range_path
-from .spec import WAZUH_AGENT, read
+from .spec import PACKET_CAPTURE, WAZUH_AGENT, read
 
 FILE = "recording.json"
+NETWORK_EVENTS_FILE = score.NETWORK_EVENTS_FILE
 # Wazuh's levels in the words of the format: informational, low, medium, high and critical.
 WORDS = ((0, 3, "informational"), (4, 6, "low"), (7, 11, "medium"), (12, 14, "high"), (15, 15, "critical"))
 COUNTING = ("high", "critical")
@@ -64,7 +66,9 @@ def level_word(level: object) -> str:
 def lines(path: Path) -> list[dict]:
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", newline="\n") as source:
+        return [json.loads(line) for line in source if line.rstrip("\r\n")]
 
 
 def nanoseconds(value: int) -> str:
@@ -162,8 +166,24 @@ def detectors(folder: Path, manifest: dict, judged: list[dict]) -> list[dict]:
             )
             continue
         entry = sets[identifier]
-        repo, _, commit = entry["source"].partition("@")
         engine = entry["engine"]
+        if entry.get("kind") == "suricata":
+            source, mark, version = str(entry["source"]).rpartition("@")
+            source = source if mark else str(entry["source"])
+            version = version if mark else str(entry.get("version") or "")
+            at = f" at {version}" if version else ""
+            found.append(
+                {
+                    "id": identifier,
+                    "name": f"Published packet rules ({source}{at}) with "
+                    + lab.named(engine["name"], engine.get("version")),
+                    "rules": entry["loaded"],
+                    "when": score.AFTER,
+                    "digest": entry["digest"],
+                }
+            )
+            continue
+        repo, _, commit = entry["source"].partition("@")
         found.append(
             {
                 "id": identifier,
@@ -202,18 +222,40 @@ def network(manifest: dict, spec: dict, rules: list[dict]) -> dict:
                 links.append({"from": first, "to": second, "label": ", ".join(shared)})
     defense = manifest.get("defense") or {}
     version = defense.get("wazuh_version")
+    sensors = [
+        {
+            "id": sensor_id(agent),
+            "name": lab.named("Wazuh agent", version),
+            "host": agent,
+            "records": records(spec, agent),
+        }
+        for agent in defense.get("agents") or []
+    ]
+    wanted = {
+        sensor
+        for entry in (manifest.get("score") or {}).get("defenses") or []
+        if entry.get("judged")
+        for sensor in entry.get("sensors") or []
+    }
+    capture = manifest.get("packet_capture") or {}
+    for host in capture.get("hosts") or {}:
+        identifier = score.sensor_id(PACKET_CAPTURE, host)
+        if identifier in wanted:
+            sensors.append(
+                {
+                    "id": identifier,
+                    "name": "Packet capture",
+                    "host": host,
+                    "records": (
+                        f"every packet {host} sent or received on its captured range interfaces, except "
+                        "Wazuh agent traffic to the manager on ports 1514 and 1515"
+                    ),
+                }
+            )
     return {
         "hosts": hosts,
         "links": links,
-        "sensors": [
-            {
-                "id": sensor_id(agent),
-                "name": lab.named("Wazuh agent", version),
-                "host": agent,
-                "records": records(spec, agent),
-            }
-            for agent in defense.get("agents") or []
-        ],
+        "sensors": sensors,
         "detectors": rules,
     }
 
@@ -223,9 +265,33 @@ def sensor_id(host: str) -> str:
 
 
 def sensor_of(document: dict) -> str:
-    """The sensor that recorded an ECS line: the Wazuh agent on its host, the one kind of sensor so far."""
+    """The exact sensor that recorded an ECS line, with old Wazuh-only documents as a fallback."""
 
+    explicit = (document.get("labels") or {}).get("sensor")
+    if explicit:
+        return str(explicit)
     return sensor_id((document.get("host") or {}).get("name"))
+
+
+def packet_document(document: dict) -> bool:
+    sensor = (document.get("labels") or {}).get("sensor")
+    return isinstance(sensor, str) and sensor.startswith(f"{PACKET_CAPTURE}-")
+
+
+def host_of(document: dict) -> str:
+    """The host a sensor runs on; a packet's remote endpoints are not that host."""
+
+    if packet_document(document):
+        host = (document.get("observer") or {}).get("name")
+        if not host:
+            raise ValueError("a packet event names its sensor but not its observer host")
+        expected = score.sensor_id(PACKET_CAPTURE, host)
+        if sensor_of(document) != expected:
+            raise ValueError(
+                f"packet sensor {sensor_of(document)} does not run on its observer host {host} ({expected})"
+            )
+        return str(host)
+    return str((document.get("host") or {}).get("name"))
 
 
 def rule_of(document: dict) -> dict:
@@ -278,6 +344,18 @@ def kind_of(document: dict, database_logs: set[str] = frozenset()) -> str:
 
     event = document.get("event") or {}
     categories, types = event.get("category") or [], event.get("type") or []
+    if packet_document(document):
+        protocol = str((document.get("network") or {}).get("protocol") or "").lower()
+        if document.get("http") or protocol in {"http", "http2"}:
+            return "HTTP request"
+        if document.get("tls") or protocol == "tls":
+            return "TLS handshake"
+        suricata = document.get("suricata") or {}
+        if document.get("ssh") or suricata.get("ssh") or protocol == "ssh":
+            return "SSH session"
+        if document.get("dns") or protocol == "dns":
+            return "DNS query"
+        return "network flow"
     if "process" in categories:
         return "process start"
     if "file" in categories:
@@ -293,7 +371,104 @@ def kind_of(document: dict, database_logs: set[str] = frozenset()) -> str:
     return f"{decoder} line" if decoder else "log line"
 
 
+def endpoint_of(document: dict, side: str) -> str:
+    endpoint = document.get(side) or {}
+    address = endpoint.get("domain") or endpoint.get("ip") or endpoint.get("address")
+    if not address:
+        return "unknown"
+    port = endpoint.get("port")
+    return f"{address}:{port}" if port is not None else str(address)
+
+
+def flow_text(document: dict) -> str:
+    network = document.get("network") or {}
+    transport = str(network.get("transport") or "").lower()
+    protocol = str(network.get("protocol") or "").lower()
+    stack = transport
+    if protocol and protocol != transport:
+        stack += f"/{protocol}" if stack else protocol
+    how = f" {stack}" if stack else ""
+    packets = network.get("packets")
+    byte_count = network.get("bytes")
+    totals = []
+    if packets is not None:
+        totals.append(f"{packets} {'packet' if packets == 1 else 'packets'}")
+    if byte_count is not None:
+        totals.append(f"{byte_count} {'byte' if byte_count == 1 else 'bytes'}")
+    counted = f": {', '.join(totals)}" if totals else ""
+    return f"{endpoint_of(document, 'source')} → {endpoint_of(document, 'destination')}{how}{counted}"
+
+
+def packet_text(document: dict) -> str:
+    kind = kind_of(document)
+    if kind == "HTTP request":
+        http = document.get("http") or {}
+        request, response = http.get("request") or {}, http.get("response") or {}
+        method = request.get("method") or http.get("http_method")
+        url = document.get("url") or {}
+        domain = url.get("domain") or (document.get("destination") or {}).get("domain")
+        path = url.get("path")
+        if domain and isinstance(path, str) and path.startswith("/"):
+            target = f"{url.get('scheme') or 'http'}://{domain}{path}"
+        else:
+            target = (
+                url.get("full")
+                or url.get("original")
+                or path
+                or http.get("url")
+                or endpoint_of(document, "destination")
+            )
+        said = " ".join(str(part) for part in (method or "HTTP", target))
+        status = response.get("status_code")
+        return said + (f" returned {status}" if status is not None else "")
+    if kind == "TLS handshake":
+        tls = document.get("tls") or {}
+        client = tls.get("client") or {}
+        target = (
+            client.get("server_name")
+            or tls.get("server_name")
+            or tls.get("sni")
+            or (document.get("destination") or {}).get("domain")
+            or endpoint_of(document, "destination")
+        )
+        version = str(tls.get("version") or "").strip()
+        protocol = version if version.upper().startswith("TLS") else f"TLS {version}" if version else "TLS"
+        return f"{protocol} to {target}"
+    if kind == "SSH session":
+        ssh = document.get("ssh") or (document.get("suricata") or {}).get("ssh") or {}
+        details = []
+        for role in ("client", "server"):
+            party = ssh.get(role) or {}
+            software = party.get("software_version") if isinstance(party, dict) else party
+            if software:
+                details.append(f"{role} {software}")
+        described = f"SSH session {flow_text(document)}"
+        return described + (f"; {'; '.join(details)}" if details else "")
+    if kind == "DNS query":
+        dns = document.get("dns") or {}
+        question = dns.get("question") or {}
+        name = question.get("name") or dns.get("rrname")
+        record_type = question.get("type") or dns.get("rrtype")
+        if name:
+            action = "response" if str(dns.get("type") or "").lower() in {"answer", "response"} else "query"
+            said = " ".join(str(part) for part in (record_type, action, "for", name) if part)
+            answers = []
+            for answer in dns.get("answers") or []:
+                value = answer.get("data") or answer.get("name") if isinstance(answer, dict) else answer
+                if value is not None:
+                    answers.append(str(value))
+            return said + (f": {', '.join(answers)}" if action == "response" and answers else "")
+    if kind == "network flow":
+        return flow_text(document)
+    message = document.get("message")
+    if message:
+        return str(message)
+    return flow_text(document)
+
+
 def text_of(document: dict) -> str:
+    if packet_document(document):
+        return packet_text(document)
     process = (document.get("process") or {}).get("command_line")
     if process:
         return process
@@ -303,25 +478,57 @@ def text_of(document: dict) -> str:
     return str((document.get("event") or {}).get("original") or "")
 
 
+def first_known(*values: object) -> object | None:
+    return next((value for value in values if value is not None), None)
+
+
+def fields_of(document: dict) -> dict:
+    event = document.get("event") or {}
+    if not packet_document(document):
+        wazuh = document.get("wazuh") or {}
+        return lab.known(
+            location=wazuh.get("location"),
+            decoder=(wazuh.get("decoder") or {}).get("name"),
+            srcip=(document.get("source") or {}).get("ip"),
+            ecs_event_id=event.get("id"),
+        )
+    source, destination = document.get("source") or {}, document.get("destination") or {}
+    network, observer = document.get("network") or {}, document.get("observer") or {}
+    ingress = observer.get("ingress") or {}
+    interface = ingress.get("interface") or {}
+    suricata = document.get("suricata") or {}
+    eve = suricata.get("eve") or {}
+    flow_id = first_known(suricata.get("flow_id"), eve.get("flow_id"), document.get("flow_id"))
+    tx_id = first_known(suricata.get("tx_id"), eve.get("tx_id"), document.get("tx_id"))
+    return lab.known(
+        source_ip=source.get("ip"),
+        source_port=source.get("port"),
+        destination_ip=destination.get("ip"),
+        destination_port=destination.get("port"),
+        transport=network.get("transport"),
+        protocol=network.get("protocol"),
+        community_id=network.get("community_id"),
+        interface=interface.get("name"),
+        bytes=network.get("bytes"),
+        packets=network.get("packets"),
+        flow_id=str(flow_id) if flow_id is not None else None,
+        tx_id=str(tx_id) if tx_id is not None else None,
+        ecs_event_id=event.get("id"),
+    )
+
+
 def event_of(document: dict, step: str, number: int, database_logs: set[str] = frozenset()) -> dict:
-    wazuh = document.get("wazuh") or {}
-    host = (document.get("host") or {}).get("name")
     return {
         "id": f"{step}-{number}",
         "time": document["@timestamp"],
-        "host": host,
+        "host": host_of(document),
         "sensor": sensor_of(document),
         "kind": kind_of(document, database_logs),
         "text": text_of(document),
         "step": step,
         "tied_by": document["labels"]["tied_by"],
         **lab.known(user=(document.get("user") or {}).get("name")),
-        "fields": lab.known(
-            location=wazuh.get("location"),
-            decoder=(wazuh.get("decoder") or {}).get("name"),
-            srcip=(document.get("source") or {}).get("ip"),
-            ecs_event_id=(document.get("event") or {}).get("id"),
-        ),
+        "fields": fields_of(document),
     }
 
 
@@ -408,21 +615,32 @@ def build(folder: Path) -> dict:
         )
     defense = manifest.get("defense") or {}
     started, finished = run_times(folder, manifest)
-    sensors = set(defense.get("agents") or [])
     # The defenses that judged the run, the first of which the top level shows, and their detectors:
     # the manager's live rules, and each rule set whose matches were written beside its alerts.
     judged = [entry for entry in (manifest.get("score") or {}).get("defenses") or [] if entry.get("judged")]
     if not judged:
         raise ValueError("no defense judged the run, so there is nothing to record")
+    sensors = {sensor for entry in judged for sensor in entry.get("sensors") or []}
     found = detectors(folder, manifest, judged)
     live = {entry["id"] for entry in found if entry["when"] == score.LIVE}
 
-    events = lines(folder / score.EVENTS_FILE)
+    events = lines(folder / score.EVENTS_FILE) + lines(folder / NETWORK_EVENTS_FILE)
     of_step: dict[str, list[dict]] = defaultdict(list)
+    event_ids: dict[str, str] = {}
     for document in events:
         labels = document.get("labels") or {}
-        if labels.get("origin") == score.STEP and (document.get("host") or {}).get("name") in sensors:
-            of_step[labels["step_id"]].append(document)
+        if labels.get("origin") != score.STEP or sensor_of(document) not in sensors:
+            continue
+        event_id = (document.get("event") or {}).get("id")
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("a sensor event tied to a step has no canonical event.id")
+        if event_id in event_ids:
+            raise ValueError(
+                f"sensor events tied to {event_ids[event_id]} and {labels['step_id']} have the same "
+                f"canonical event.id {event_id}"
+            )
+        event_ids[event_id] = labels["step_id"]
+        of_step[labels["step_id"]].append(document)
     # Each detector's alert lines, in the order: the manager's, then each rule set's matches.
     alerts = {
         entry["id"]: lines(
@@ -446,7 +664,10 @@ def build(folder: Path) -> dict:
     steps, kept_events, kept_alerts, cut, late_cut = [], [], [], 0, 0
     for order, record in enumerate(path.get("steps") or [], start=1):
         step_id = record["id"]
-        mine = sorted(of_step.get(step_id, []), key=lambda d: d["@timestamp"])
+        mine = sorted(
+            of_step.get(step_id, []),
+            key=lambda d: (d["@timestamp"], sensor_of(d), (d.get("event") or {}).get("id")),
+        )
         named = {(d.get("labels") or {}).get("event_id") for _, d in on_step.get(step_id, [])}
         # The cut of a step with very many events is made for each sensor, so that no defense's sensors
         # are cut out by another's: the first of each sensor's events up to its share, and every event
@@ -466,16 +687,19 @@ def build(folder: Path) -> dict:
             rule = rule_of(document)
             event_id = (document.get("labels") or {}).get("event_id")
             linked = placed.get(event_id)
-            if rule["level"] in COUNTING and not linked:
-                # The format needs a counting alert to name the event it was raised on.
+            counts = rule["level"] in COUNTING
+            if (counts or packet_document(document)) and not linked:
+                # Counting alerts, and every packet-rule match retained through the cut, name their event.
                 where = (
                     " is not in the archive (a delivery gap)"
                     if event_id is None
                     else f", {event_id}, is not among the step's events"
                 )
+                consequence = "counts" if counts else "is a packet-rule match"
                 raise ValueError(
-                    f"the alert of rule {rule['id']} at {document['@timestamp']} on {step_id} counts, but the "
-                    f"archived line it was raised on{where}, so no recording is written"
+                    f"the alert of rule {rule['id']} at {document['@timestamp']} on {step_id} {consequence}, but "
+                    "the "
+                    f"sensor event it matched{where}, so no recording is written"
                 )
             time = linked["time"] if linked else document["@timestamp"]
             # The manager's time can run behind the line's (see score.clock): raised is then left out, and
@@ -487,10 +711,10 @@ def build(folder: Path) -> dict:
                 {
                     "time": time,
                     **({"raised": document["@timestamp"]} if late else {}),
-                    "host": (document.get("host") or {}).get("name"),
+                    "host": host_of(document),
                     "detector": detector,
                     "rule": {**rule, "origin": "pinned"},
-                    "counts": rule["level"] in COUNTING,
+                    "counts": counts,
                     "step": step_id,
                     "events": [linked["id"]] if linked else [],
                 }
@@ -526,11 +750,10 @@ def build(folder: Path) -> dict:
     kept_alerts = [{"id": f"alert-{number}", **found} for number, found in enumerate(kept_alerts, start=1)]
 
     goal = path.get("goal") or {}
-    on_host = {sensor_id(agent): agent for agent in defense.get("agents") or []}
+    topology = network(manifest, spec, found)
     when = {entry["id"]: entry["when"] for entry in found}
     views = [
-        view(entry, steps, path, kept_events, kept_alerts, alerts, when, on_host, alert_level)
-        for entry in judged
+        view(entry, steps, path, kept_events, kept_alerts, alerts, when, alert_level) for entry in judged
     ]
     # The top level is the recording as its first defense sees it.
     first = views[0]
@@ -550,6 +773,19 @@ def build(folder: Path) -> dict:
         ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
         ("Wazuh manager", defense.get("wazuh_version"), "rule engine"),
     ]
+    capture_hosts = list((manifest.get("packet_capture") or {}).get("hosts") or {})
+    if capture_hosts:
+        tools.append(("tcpdump", installed(folder, capture_hosts, "tcpdump"), "sensor"))
+    network_result = (manifest.get("ecs") or {}).get("network") or {}
+    network_engine = network_result.get("engine") or {}
+    if network_engine.get("name") and network_engine.get("version"):
+        tools.append((network_engine["name"], network_engine["version"], "rule engine"))
+    for name, entry in ((manifest.get("score") or {}).get("rule sets") or {}).items():
+        if entry.get("kind") != "suricata" or not entry.get("evaluated"):
+            continue
+        source = str(entry.get("source") or "")
+        _, mark, version = source.rpartition("@")
+        tools.append((name, version if mark else source, "rules"))
     made = lab.known(
         schema="bluefire.recording/1",
         id=manifest["run_id"],
@@ -576,7 +812,7 @@ def build(folder: Path) -> dict:
                 or None,
             ),
         ),
-        network=network(manifest, spec, found),
+        network=topology,
         attacker={
             "kind": "scripted",
             "description": " ".join(
@@ -615,7 +851,6 @@ def view(
     alerts: list[dict],
     lines_of: dict[str, list[dict]],
     when: dict[str, str],
-    on_host: dict[str, str],
     alert_level: int,
 ) -> dict:
     """One defense's part of a recording: for every step its own visibility, outcome, first event and first
@@ -625,12 +860,10 @@ def view(
     sensors, only the alerts of its detectors, and every number counted from
     those. `judged` is the defense as the score judged it, `events` and
     `alerts` what the recording holds, `lines_of` each detector's alert lines,
-    `when` whether each detector ran live or after the run, and `on_host` the
-    host of each sensor.
+    and `when` whether each detector ran live or after the run.
     """
 
     sensors, mine = set(judged["sensors"]), set(judged["detectors"])
-    watched = {on_host[sensor] for sensor in sensors if sensor in on_host}
     seen = {entry["id"]: entry for entry in judged["steps"]}
     hosts = {
         step["id"]: record.get("host") for step, record in zip(steps, path.get("steps") or [], strict=True)
@@ -678,7 +911,7 @@ def view(
         for document in lines_of[detector]:
             if (document.get("labels") or {}).get("origin") != score.ORDINARY:
                 continue
-            if (document.get("host") or {}).get("name") not in watched:
+            if sensor_of(document) not in sensors:
                 continue
             rule = rule_of(document)
             rules.setdefault((detector, rule["id"]), {**rule, "events": 0})["events"] += 1
@@ -766,10 +999,15 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
             "the step's and not in the recording; events.ecs.ndjson holds them with the step and tied_by window."
         )
     if cut:
+        complete = (
+            f"{score.EVENTS_FILE} and {NETWORK_EVENTS_FILE} hold them all"
+            if (manifest.get("ecs") or {}).get("network")
+            else f"{score.EVENTS_FILE} holds them all"
+        )
         said.append(
             f"{lab.count(cut, 'step')} had more than {lab.KEPT_EVENTS} events. The recording keeps the first "
             f"{lab.KEPT_EVENTS} of each, shared in equal parts among the sensors that recorded them, and every "
-            "event a rule matched; events.ecs.ndjson holds them all."
+            f"event a rule matched; {complete}."
         )
     said += defense_notes(manifest)
     weaknesses = manifest.get("weaknesses") or []
@@ -781,6 +1019,13 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
         )
     if (manifest.get("defense") or {}).get("delivery_gap"):
         said.append("Not every line of a watched log reached the manager: see delivery in the manifest.")
+    capture = manifest.get("packet_capture") or {}
+    if capture.get("collect_error"):
+        said.append(f"Packet capture could not be collected completely: {capture['collect_error']}.")
+    elif capture.get("delivery_gap"):
+        findings = [str(finding) for finding in capture.get("delivery_findings") or []]
+        detail = ": " + "; ".join(findings[:5]) if findings else ""
+        said.append(f"Packet capture has a delivery gap{detail}; see packet_capture in the manifest.")
     return said
 
 
@@ -847,6 +1092,30 @@ def defense_notes(manifest: dict) -> list[str]:
     used = {name for entry in held for name in entry["detectors"]}
     for name, entry in sets.items():
         if not entry.get("evaluated") or name not in used:
+            continue
+        if entry.get("kind") == "suricata":
+            engine = lab.named(entry["engine"]["name"], entry["engine"].get("version"))
+            said.append(
+                f"The detector {name} is the pinned packet rule set {entry['source']}, evaluated after the run "
+                f"by {engine} over the retained packet captures. Its alerts have the time of their packet event "
+                f"and no raised time, and count from that time. Of its {entry['rules']} rules the engine loaded "
+                f"{entry['loaded']}; a rule it did not load was not evaluated."
+            )
+            matched = entry.get("rules that matched") or []
+            if matched:
+                said.append(
+                    f"The packet rules of {name} that matched in this run: "
+                    + "; ".join(f"{rule['title']} ({rule['rule']})" for rule in matched)
+                    + "."
+                )
+            network_result = (manifest.get("ecs") or {}).get("network") or {}
+            home_net = network_result.get("HOME_NET") or network_result.get("home_net")
+            captures = network_result.get("captures")
+            if home_net or captures:
+                said.append(
+                    f"Suricata used HOME_NET {home_net or 'as recorded in the manifest'} and "
+                    f"{lab.count(captures, 'capture') if isinstance(captures, int) else 'the retained captures'}."
+                )
             continue
         repo, _, commit = entry["source"].partition("@")
         engine = lab.named(entry["engine"]["name"], entry["engine"].get("version"))
