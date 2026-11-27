@@ -30,7 +30,9 @@ matched (`engine clock`).
 
 from __future__ import annotations
 
+import copy
 import gzip
+import io
 import ipaddress
 import json
 import re
@@ -49,7 +51,7 @@ FIM_TYPES = {"added": "creation", "modified": "change", "deleted": "deletion"}
 OBJECTS = ("agent", "manager", "predecoder", "decoder", "data", "rule", "syscheck")
 
 # Every ECS field the mapper writes, with its ECS type. A line with any other field outside
-# `labels` and `wazuh` is refused, so this list is the whole of what the mapper can write.
+# `labels`, `wazuh` and `suricata` is refused, so this list is the whole of what the mapper can write.
 FIELDS = {
     "@timestamp": "date",
     "message": "match_only_text",
@@ -78,9 +80,27 @@ FIELDS = {
     "host.ip": "ip",
     "observer.name": "keyword",
     "observer.vendor": "keyword",
+    "observer.product": "keyword",
+    "observer.type": "keyword",
+    "observer.version": "keyword",
+    "observer.ingress.interface.name": "keyword",
     "log.file.path": "keyword",
     "source.ip": "ip",
     "source.port": "long",
+    "source.domain": "keyword",
+    "source.bytes": "long",
+    "source.packets": "long",
+    "destination.ip": "ip",
+    "destination.port": "long",
+    "destination.domain": "keyword",
+    "destination.bytes": "long",
+    "destination.packets": "long",
+    "network.bytes": "long",
+    "network.packets": "long",
+    "network.transport": "keyword",
+    "network.protocol": "keyword",
+    "network.community_id": "keyword",
+    "network.type": "keyword",
     "user.name": "keyword",
     "user.id": "keyword",
     "user.effective.name": "keyword",
@@ -106,11 +126,27 @@ FIELDS = {
     "file.hash.sha256": "keyword",
     "http.request.method": "keyword",
     "http.response.status_code": "long",
+    "http.version": "keyword",
     "url.original": "wildcard",
+    "url.domain": "keyword",
+    "url.path": "wildcard",
+    "user_agent.original": "keyword",
+    "tls.client.server_name": "keyword",
+    "tls.version": "keyword",
+    "tls.version_protocol": "keyword",
+    "dns.answers": "object",
+    "dns.id": "keyword",
+    "dns.question.class": "keyword",
+    "dns.question.name": "keyword",
+    "dns.question.type": "keyword",
+    "dns.resolved_ip": "ip",
+    "dns.response_code": "keyword",
+    "dns.type": "keyword",
     "rule.id": "keyword",
     "rule.description": "keyword",
     "rule.name": "keyword",
     "rule.ruleset": "keyword",
+    "rule.version": "keyword",
     "rule.author": "keyword",
     "rule.reference": "keyword",
     "threat.framework": "keyword",
@@ -121,8 +157,19 @@ FIELDS = {
 # The values of the categorization fields the mapper sets, each one allowed by ECS for its field.
 CATEGORIES = {
     "event.kind": ("event", "alert"),
-    "event.category": ("authentication", "file", "process", "web"),
-    "event.type": ("info", "creation", "change", "deletion", "start", "access"),
+    "event.category": ("authentication", "file", "intrusion_detection", "network", "process", "web"),
+    "event.type": (
+        "info",
+        "creation",
+        "change",
+        "deletion",
+        "start",
+        "access",
+        "allowed",
+        "connection",
+        "denied",
+        "protocol",
+    ),
     "event.outcome": ("success", "failure", "unknown"),
 }
 # A step's outcome in ECS's words: its effect check passed, failed, or neither was known.
@@ -420,6 +467,450 @@ def match(
     return checked(document)
 
 
+NETWORK_EVENT_TYPES = ("flow", "http", "tls", "ssh", "dns")
+NETWORK_MESSAGE_LIMIT = 500
+
+
+def _required_keyword(value: object, description: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ConversionError(f"a Suricata line has no valid {description}")
+    return value
+
+
+def _suricata_moment(value: object, description: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ConversionError(f"a Suricata line has no {description}")
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ConversionError(f"a Suricata line has no {description} that can be read: {error}") from error
+    if moment.tzinfo is None:
+        raise ConversionError(f"a Suricata line's {description} has no time zone")
+    return moment
+
+
+def _suricata_ip(value: object, description: str) -> str:
+    if not isinstance(value, str):
+        raise ConversionError(f"a Suricata line's {description} is not an address")
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError as error:
+        raise ConversionError(f"a Suricata line's {description} is not an address") from error
+
+
+def _suricata_port(raw: dict, name: str) -> int | None:
+    if name not in raw:
+        return None
+    value = raw[name]
+    if type(value) is not int or not 0 <= value <= 65_535:
+        raise ConversionError(f"a Suricata line's {name} is not a network port")
+    return value
+
+
+def _counter(raw: dict, name: str, description: str) -> int | None:
+    if name not in raw:
+        return None
+    value = raw[name]
+    if type(value) is not int or value < 0:
+        raise ConversionError(f"a Suricata line's {description} is not a non-negative integer")
+    return value
+
+
+def _engine_version(engine: dict | None) -> str | None:
+    if engine is None:
+        return None
+    if not isinstance(engine, dict):
+        raise ConversionError("the Suricata engine description is not an object")
+    version = engine.get("version")
+    return _required_keyword(version, "engine version") if version is not None else None
+
+
+def _optional_keyword(value: object, description: str) -> str | None:
+    return None if value is None else _required_keyword(value, description)
+
+
+def _short(value: object, limit: int = 160) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _bounded_message(value: str) -> str:
+    return value if len(value) <= NETWORK_MESSAGE_LIMIT else value[: NETWORK_MESSAGE_LIMIT - 1] + "…"
+
+
+def _endpoint(address: str, port: int | None) -> str:
+    shown = f"[{address}]" if ipaddress.ip_address(address).version == 6 else address
+    return f"{shown}:{port}" if port is not None else shown
+
+
+def _network_fields(raw: dict, document: dict) -> tuple[str, int | None, str, int | None]:
+    source_ip = _suricata_ip(raw.get("src_ip"), "src_ip")
+    destination_ip = _suricata_ip(raw.get("dest_ip"), "dest_ip")
+    if ipaddress.ip_address(source_ip).version != ipaddress.ip_address(destination_ip).version:
+        raise ConversionError("a Suricata line has endpoints from different IP families")
+    source_port = _suricata_port(raw, "src_port")
+    destination_port = _suricata_port(raw, "dest_port")
+    transport = _required_keyword(raw.get("proto"), "transport protocol").lower()
+    community_id = _required_keyword(raw.get("community_id"), "community_id")
+    kind = raw.get("event_type")
+    application = raw.get("app_proto") or (kind if kind != "flow" else None)
+    if application is not None:
+        application = _required_keyword(application, "application protocol").lower()
+
+    _put(document, "source.ip", source_ip)
+    _put(document, "source.port", source_port)
+    _put(document, "destination.ip", destination_ip)
+    _put(document, "destination.port", destination_port)
+    _put(document, "network.type", f"ipv{ipaddress.ip_address(source_ip).version}")
+    _put(document, "network.transport", transport)
+    _put(document, "network.protocol", application)
+    _put(document, "network.community_id", community_id)
+    _put(document, "related.ip", list(dict.fromkeys((source_ip, destination_ip))))
+    return source_ip, source_port, destination_ip, destination_port
+
+
+def _flow_fields(raw: dict, document: dict, endpoints: tuple[str, int | None, str, int | None]) -> str:
+    flow = raw.get("flow")
+    if not isinstance(flow, dict):
+        raise ConversionError("a Suricata flow line has no flow object")
+    source_packets = _counter(flow, "pkts_toserver", "flow.pkts_toserver")
+    destination_packets = _counter(flow, "pkts_toclient", "flow.pkts_toclient")
+    source_bytes = _counter(flow, "bytes_toserver", "flow.bytes_toserver")
+    destination_bytes = _counter(flow, "bytes_toclient", "flow.bytes_toclient")
+    _put(document, "source.packets", source_packets)
+    _put(document, "source.bytes", source_bytes)
+    _put(document, "destination.packets", destination_packets)
+    _put(document, "destination.bytes", destination_bytes)
+    packet_parts = [value for value in (source_packets, destination_packets) if value is not None]
+    byte_parts = [value for value in (source_bytes, destination_bytes) if value is not None]
+    _put(document, "network.packets", sum(packet_parts) if packet_parts else None)
+    _put(document, "network.bytes", sum(byte_parts) if byte_parts else None)
+
+    start = _suricata_moment(flow["start"], "flow.start") if "start" in flow else None
+    end = _suricata_moment(flow["end"], "flow.end") if "end" in flow else None
+    _put(document, "event.start", iso(start) if start else None)
+    _put(document, "event.end", iso(end) if end else None)
+    if start is not None and end is not None:
+        elapsed = end - start
+        if elapsed.total_seconds() < 0:
+            raise ConversionError("a Suricata flow ends before it starts")
+        duration = (
+            elapsed.days * 86_400_000_000_000 + elapsed.seconds * 1_000_000_000 + elapsed.microseconds * 1_000
+        )
+        _put(document, "event.duration", duration)
+
+    source_ip, source_port, destination_ip, destination_port = endpoints
+    transport = document["network"]["transport"].upper()
+    details = []
+    packets = document["network"].get("packets")
+    byte_count = document["network"].get("bytes")
+    if packets is not None:
+        details.append(f"{packets} packet{'s' if packets != 1 else ''}")
+    if byte_count is not None:
+        details.append(f"{byte_count} byte{'s' if byte_count != 1 else ''}")
+    summary = (
+        f"{transport} {_endpoint(source_ip, source_port)} to {_endpoint(destination_ip, destination_port)}"
+    )
+    return summary + (f": {', '.join(details)}" if details else "")
+
+
+def _http_fields(raw: dict, document: dict) -> str:
+    http = raw.get("http")
+    if not isinstance(http, dict):
+        raise ConversionError("a Suricata HTTP line has no http object")
+    method = _optional_keyword(http.get("http_method"), "HTTP method")
+    path = _optional_keyword(http.get("url"), "HTTP URL")
+    domain = _optional_keyword(http.get("hostname"), "HTTP hostname")
+    user_agent = _optional_keyword(http.get("http_user_agent"), "HTTP user agent")
+    version = _optional_keyword(http.get("protocol"), "HTTP version")
+    if version and version.upper().startswith("HTTP/"):
+        version = version[5:]
+    status = _counter(http, "status", "http.status")
+    _put(document, "http.request.method", method)
+    _put(document, "http.response.status_code", status)
+    _put(document, "http.version", version)
+    _put(document, "url.original", path)
+    _put(document, "url.path", path)
+    _put(document, "url.domain", domain)
+    _put(document, "user_agent.original", user_agent)
+    message = f"HTTP {_short(method) or 'request'} {_short(path, 220) or '/'}"
+    if status is not None:
+        message += f" returned {status}"
+    if user_agent:
+        message += f"; user agent {_short(user_agent, 220)}"
+    return message
+
+
+def _tls_fields(raw: dict, document: dict) -> str:
+    tls = raw.get("tls")
+    if not isinstance(tls, dict):
+        raise ConversionError("a Suricata TLS line has no tls object")
+    server_name = _optional_keyword(tls.get("sni"), "TLS server name")
+    written_version = _optional_keyword(tls.get("version"), "TLS version")
+    version = written_version
+    if version:
+        lower = version.lower()
+        if lower.startswith("tlsv"):
+            version = version[4:]
+        elif lower.startswith("tls "):
+            version = version[4:]
+    _put(document, "tls.client.server_name", server_name)
+    _put(document, "tls.version", version)
+    _put(document, "tls.version_protocol", "tls")
+    message = f"TLS server {_short(server_name)}" if server_name else "TLS session"
+    return message + (f", version {_short(version)}" if version else "")
+
+
+def _ssh_peer(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    parts = [_short(value.get(name)) for name in ("proto_version", "software_version")]
+    return " / ".join(part for part in parts if part) or None
+
+
+def _ssh_fields(raw: dict) -> str:
+    ssh = raw.get("ssh")
+    if not isinstance(ssh, dict):
+        raise ConversionError("a Suricata SSH line has no ssh object")
+    client, server = _ssh_peer(ssh.get("client")), _ssh_peer(ssh.get("server"))
+    parts = []
+    if client:
+        parts.append(f"client {client}")
+    if server:
+        parts.append(f"server {server}")
+    return "SSH " + ("; ".join(parts) if parts else "session")
+
+
+def _dns_fields(raw: dict, document: dict) -> str:
+    dns = raw.get("dns")
+    if not isinstance(dns, dict):
+        raise ConversionError("a Suricata DNS line has no dns object")
+    queries = dns.get("queries")
+    if queries is not None and (
+        not isinstance(queries, list) or any(not isinstance(query, dict) for query in queries)
+    ):
+        raise ConversionError("a Suricata DNS line's queries is not a list of objects")
+    question = queries[0] if queries else dns
+    dns_id = dns.get("id")
+    if isinstance(dns_id, int) and not isinstance(dns_id, bool):
+        if dns_id < 0:
+            raise ConversionError("a Suricata DNS line's id is negative")
+        dns_id = str(dns_id)
+    elif dns_id is not None:
+        dns_id = _required_keyword(dns_id, "dns.id")
+    kind = _optional_keyword(dns.get("type"), "DNS type")
+    name = _optional_keyword(question.get("rrname"), "DNS question name")
+    query_type = _optional_keyword(question.get("rrtype"), "DNS question type")
+    query_class = _optional_keyword(question.get("rrclass"), "DNS question class")
+    response_code = _optional_keyword(dns.get("rcode"), "DNS response code")
+    _put(document, "dns.id", dns_id)
+    _put(document, "dns.type", kind.lower() if kind else None)
+    _put(document, "dns.question.name", name)
+    _put(document, "dns.question.type", query_type)
+    _put(document, "dns.question.class", query_class)
+    _put(document, "dns.response_code", response_code)
+
+    raw_answers = dns.get("answers")
+    if raw_answers is not None and (
+        not isinstance(raw_answers, list) or any(not isinstance(answer, dict) for answer in raw_answers)
+    ):
+        raise ConversionError("a Suricata DNS line's answers is not a list of objects")
+    answers, resolved = [], []
+    for answer in raw_answers or []:
+        data = _optional_keyword(answer.get("rdata"), "DNS answer data")
+        mapped = {
+            field: value
+            for field, value in (
+                ("name", _optional_keyword(answer.get("rrname"), "DNS answer name")),
+                ("type", _optional_keyword(answer.get("rrtype"), "DNS answer type")),
+                ("data", data),
+                ("ttl", _counter(answer, "ttl", "dns.answers.ttl")),
+            )
+            if value is not None
+        }
+        if mapped:
+            answers.append(mapped)
+        if data:
+            try:
+                resolved.append(str(ipaddress.ip_address(data)))
+            except ValueError:
+                pass
+    _put(document, "dns.answers", answers)
+    _put(document, "dns.resolved_ip", list(dict.fromkeys(resolved)))
+    label = "response" if kind and kind.lower() in ("answer", "response") else "query"
+    message = f"DNS {label}"
+    if query_type or name:
+        message += " " + " ".join(_short(value) or "" for value in (query_type, name) if value)
+    if response_code:
+        message += f" ({response_code})"
+    if answers:
+        values = [answer["data"] for answer in answers if answer.get("data")]
+        if values:
+            message += f": {', '.join(_short(value, 120) or '' for value in values)}"
+    return message
+
+
+def network_event(
+    raw: dict,
+    capture_host: str,
+    interface: str,
+    event_id: str,
+    origin: str,
+    job: str | None = None,
+    step: str | None = None,
+    tied_by: str | None = None,
+    engine: dict | None = None,
+) -> dict:
+    """One validated Suricata flow or protocol record as a packet-sensor ECS event."""
+
+    if not isinstance(raw, dict):
+        raise ConversionError("a Suricata line is not an object")
+    kind = raw.get("event_type")
+    if kind not in NETWORK_EVENT_TYPES or not isinstance(raw.get(kind), dict):
+        raise ConversionError(f"a Suricata line is not a supported network event: {kind!r}")
+    host = _required_keyword(capture_host, "capture host")
+    device = _required_keyword(interface, "capture interface")
+    identity = _required_keyword(event_id, "network event id")
+    document: dict = {"@timestamp": iso(_suricata_moment(raw.get("timestamp"), "timestamp"))}
+    _put(document, "ecs.version", VERSION)
+    _put(document, "event.kind", "event")
+    _put(document, "event.id", identity)
+    _put(document, "event.dataset", "suricata.eve")
+    _put(document, "event.module", "suricata")
+    _put(document, "event.category", ["network"])
+    _put(document, "event.type", ["connection" if kind == "flow" else "protocol"])
+    _put(document, "host.name", host)
+    _put(document, "observer.name", host)
+    _put(document, "observer.vendor", "OISF")
+    _put(document, "observer.product", "Suricata")
+    _put(document, "observer.type", "ids")
+    _put(document, "observer.version", _engine_version(engine))
+    _put(document, "observer.ingress.interface.name", device)
+    endpoints = _network_fields(raw, document)
+    if kind == "flow":
+        message = _flow_fields(raw, document, endpoints)
+    elif kind == "http":
+        message = _http_fields(raw, document)
+    elif kind == "tls":
+        message = _tls_fields(raw, document)
+    elif kind == "ssh":
+        message = _ssh_fields(raw)
+    else:
+        message = _dns_fields(raw, document)
+    _put(document, "message", _bounded_message(message))
+    _labels(
+        document,
+        origin,
+        job,
+        "pcap",
+        sensor=f"packet-capture-{host}",
+        step_id=step,
+        tied_by=tied_by,
+    )
+    document["suricata"] = copy.deepcopy(raw)
+    return checked(document)
+
+
+def network_alert(
+    raw_alert: dict,
+    event_document: dict,
+    rule_set: str,
+    engine: dict | None = None,
+) -> dict:
+    """One Suricata rule match tied to the exact canonical packet event it matched."""
+
+    if not isinstance(raw_alert, dict) or raw_alert.get("event_type") != "alert":
+        raise ConversionError("a Suricata alert line is not an alert object")
+    alert = raw_alert.get("alert")
+    if not isinstance(alert, dict):
+        raise ConversionError("a Suricata alert line has no alert object")
+    if not isinstance(event_document, dict):
+        raise ConversionError("a Suricata alert's event is not an ECS object")
+    parent_event = event_document.get("event")
+    parent_labels = event_document.get("labels")
+    if not isinstance(parent_event, dict) or not isinstance(parent_labels, dict):
+        raise ConversionError("a Suricata alert's event has no ECS identity or labels")
+    event_id = _required_keyword(parent_event.get("id"), "parent event id")
+    if not all(isinstance(value, str) for value in parent_labels.values()):
+        raise ConversionError("a Suricata alert's parent labels are not keywords")
+    if not parent_labels.get("sensor"):
+        raise ConversionError("a Suricata alert's parent event has no packet sensor")
+    ruleset = _required_keyword(rule_set, "rule set name")
+    signature_id = _counter(alert, "signature_id", "alert.signature_id")
+    if signature_id is None:
+        raise ConversionError("a Suricata alert has no signature_id")
+    generator_id = _counter(alert, "gid", "alert.gid")
+    revision = _counter(alert, "rev", "alert.rev")
+    priority = _counter(alert, "severity", "alert.severity")
+    if priority is None:
+        raise ConversionError("a Suricata alert has no severity")
+    signature = _required_keyword(alert.get("signature"), "alert signature")
+    rule_id = f"{generator_id if generator_id is not None else 1}:{signature_id}"
+    action = _optional_keyword(alert.get("action"), "alert action")
+    lowered_action = action.lower() if action else ""
+    if lowered_action in ("allowed", "pass", "passed"):
+        event_type = "allowed"
+    elif lowered_action in ("blocked", "deny", "denied", "drop", "dropped", "reject", "rejected"):
+        event_type = "denied"
+    else:
+        event_type = "info"
+    level = {1: "high", 2: "medium", 3: "low"}.get(priority, "informational")
+
+    document: dict = {"@timestamp": iso(_suricata_moment(raw_alert.get("timestamp"), "timestamp"))}
+    _put(document, "ecs.version", VERSION)
+    _put(document, "event.kind", "alert")
+    _put(document, "event.dataset", "suricata.alert")
+    _put(document, "event.module", "suricata")
+    _put(document, "event.category", ["network", "intrusion_detection"])
+    _put(document, "event.type", [event_type])
+    _put(document, "event.action", action)
+    _put(document, "event.severity", priority)
+    for name in (
+        "host",
+        "observer",
+        "source",
+        "destination",
+        "network",
+        "related",
+        "http",
+        "url",
+        "user_agent",
+        "tls",
+        "dns",
+    ):
+        if name in event_document:
+            document[name] = copy.deepcopy(event_document[name])
+    version = _engine_version(engine)
+    if version:
+        document.setdefault("observer", {})["version"] = version
+    _put(document, "rule.id", rule_id)
+    _put(document, "rule.name", signature)
+    _put(document, "rule.description", _optional_keyword(alert.get("category"), "alert category"))
+    _put(document, "rule.ruleset", ruleset)
+    _put(document, "rule.version", str(revision) if revision is not None else None)
+    source = document.get("source") or {}
+    destination = document.get("destination") or {}
+    transport = str((document.get("network") or {}).get("transport") or "network").upper()
+    endpoints = (
+        f"{_endpoint(str(source['ip']), source.get('port'))} to "
+        f"{_endpoint(str(destination['ip']), destination.get('port'))}"
+        if source.get("ip") and destination.get("ip")
+        else "the linked packet event"
+    )
+    _put(document, "message", _bounded_message(f"{signature} ({rule_id}) on {transport} {endpoints}"))
+    document["labels"] = {
+        **copy.deepcopy(parent_labels),
+        "event_id": event_id,
+        "level": level,
+    }
+    document["suricata"] = copy.deepcopy(raw_alert)
+    return checked(document)
+
+
 def nanoseconds(value: int) -> str:
     """A time in nanoseconds since the epoch, to the microsecond, as ECS writes a date."""
 
@@ -504,12 +995,12 @@ def step(record: dict) -> dict:
 
 
 def names(document: dict, prefix: str = "") -> list[str]:
-    """The dotted names of the fields of a document, leaves only; `labels` and `wazuh` as one name each."""
+    """Dotted field names, leaves only; labels and each sensor's raw line are one opaque name."""
 
     found = []
     for key, value in document.items():
         name = f"{prefix}{key}"
-        if isinstance(value, dict) and name not in ("labels", "wazuh"):
+        if isinstance(value, dict) and name not in ("labels", "wazuh", "suricata"):
             found += names(value, name + ".")
         else:
             found.append(name)
@@ -526,7 +1017,9 @@ def checked(document: dict) -> dict:
     ):
         if not value:
             raise ConversionError(f"an ECS line would be written without {name}")
-    unknown = sorted(n for n in names(document) if n not in FIELDS and n not in ("labels", "wazuh"))
+    unknown = sorted(
+        n for n in names(document) if n not in FIELDS and n not in ("labels", "wazuh", "suricata")
+    )
     if unknown:
         raise ConversionError(
             f"an ECS line would hold fields the mapper does not declare: {', '.join(unknown)}"
@@ -575,8 +1068,17 @@ def read(paths: list[Path]) -> tuple[list[dict], list[str]]:
 def write(path: Path, documents: list[dict]) -> int:
     """Write the ECS lines, then count the lines of the file as written."""
 
-    with path.open("w", encoding="utf-8", newline="\n") as target:
-        for document in documents:
-            target.write(json.dumps(document, separators=(",", ":")) + "\n")
-    with path.open(encoding="utf-8", newline="\n") as written:
+    if path.suffix == ".gz":
+        with path.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+                with io.TextIOWrapper(compressed, encoding="utf-8", newline="\n") as target:
+                    for document in documents:
+                        target.write(json.dumps(document, separators=(",", ":")) + "\n")
+        opener = gzip.open
+    else:
+        with path.open("w", encoding="utf-8", newline="\n") as target:
+            for document in documents:
+                target.write(json.dumps(document, separators=(",", ":")) + "\n")
+        opener = open
+    with opener(path, "rt", encoding="utf-8", newline="\n") as written:
         return sum(1 for _ in written)

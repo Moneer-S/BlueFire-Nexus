@@ -195,6 +195,67 @@ def test_the_start_script_starts_syslog_the_services_and_the_agent_without_an_in
         assert not [line for line in script if "systemctl" in line or "systemd" in line]
 
 
+def test_a_packet_capture_starts_on_every_non_loopback_interface_before_the_services() -> None:
+    changed = copy.deepcopy(document())
+    changed["hosts"]["web"]["packages"].append("tcpdump")
+    changed["hosts"]["web"]["capture"] = "packets"
+
+    script = build.start_script(loaded(changed), "web")
+    lines = script.splitlines()
+    command = next(line for line in lines if "tcpdump -i" in line)
+
+    assert "for path in /sys/class/net/*; do" in lines
+    assert '  iface=${path##*/}; [ "$iface" = lo ] && continue' in lines
+    assert '-i "$iface" -p -nn -s 0 -U -Z tcpdump' in command
+    assert build.CAPTURE_FILTER in command
+    assert f'-w "{build.CAPTURE_DIR}/$iface.pcap"' in command
+    assert f'2> "{build.CAPTURE_DIR}/$iface.log" &' in command
+    assert f'  armed_file="{build.CAPTURE_RUN}/$iface{build.CAPTURE_ARMED_SUFFIX}"' in lines
+    assert f'  pid_file="{build.CAPTURE_RUN}/$iface.pid"' in lines
+    assert f'  status_file="{build.CAPTURE_RUN}/$iface{build.CAPTURE_STATUS_SUFFIX}"' in lines
+    assert "    stopping=0" in lines
+    assert any("forward_term() { stopping=1;" in line for line in lines)
+    assert any("forward_int() { stopping=1;" in line for line in lines)
+    assert "    trap forward_term TERM" in lines
+    assert "    trap forward_int INT" in lines
+    stopping_checks = [
+        number for number, line in enumerate(lines) if line == '    if [ "$stopping" -ne 0 ]; then'
+    ]
+    assert len(stopping_checks) == 2
+    before_child, after_child = stopping_checks
+    armed = next(line for line in lines if 'printf "%s\\n" "$child" > "$armed_file.partial"' in line)
+    assert '! mv "$armed_file.partial" "$armed_file"; then' in armed
+    assert '      kill -TERM "$child" 2>/dev/null || :' in lines
+    assert '      wait "$child"' in lines
+    assert lines.index(armed) < lines.index("    set +e")
+    assert '    wait "$child"' in lines
+    assert '    printf "%s\\n" "$code" > "$status_file.partial"' in lines
+    assert '    mv "$status_file.partial" "$status_file"' in lines
+    normal_wait = next(
+        number
+        for number, line in enumerate(lines)
+        if line == '    wait "$child"' and number > lines.index(armed)
+    )
+    assert (
+        lines.index("    trap forward_term TERM")
+        < before_child
+        < lines.index(command)
+        < lines.index("    child=$!")
+        < after_child
+        < lines.index(armed)
+        < normal_wait
+        < lines.index("  pid=$!")
+    )
+    assert lines.index("  pid=$!") < lines.index('  printf "%s\\n" "$pid" > "$pid_file.partial"')
+    assert '  mv "$pid_file.partial" "$pid_file"' in lines
+    assert f'  while [ ! -s "{build.CAPTURE_DIR}/$iface.pcap" ] || [ ! -s "$armed_file" ]; do' in lines
+    assert any(line.strip() == '[ ! -e "$status_file" ] || exit 1' for line in lines)
+    assert '  [ -s "$armed_file" ] && [ ! -e "$status_file" ] || exit 1' in lines
+    assert any(line.strip() == 'kill -0 "$pid"' for line in lines)
+    assert lines.index("rsyslogd") < lines.index(command) < lines.index("/usr/sbin/sshd")
+    assert "--cap-add" not in script
+
+
 def test_the_settings_of_each_agent_are_the_defense_watch_and_then_the_hosts_own() -> None:
     changed = copy.deepcopy(document())
     changed["hosts"]["web"]["watch"] = {
