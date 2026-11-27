@@ -289,6 +289,8 @@ def write_collected(run: Path, manager: str, kind: str, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(path, "wb") as stream:
         stream.write(data)
+    if kind == "alerts":
+        (path.parent / "ossec-alerts-26.log").write_text("expected Wazuh text alert sibling\n")
 
 
 def manifest(run: Path) -> dict:
@@ -327,6 +329,7 @@ def test_exports_identity_bytes_with_derived_hosted_provenance_and_actual_verifi
         for entry in proof.files
     )
     assert set(projected).isdisjoint({"ecs", "score", "recording", "rule_sets", "docker"})
+    assert all("ossec-alerts-26.log" not in entry["run_path"] for entry in document["files"])
     assert projected["recording_clock"] == {
         "started": retain.iso(1_795_643_323_123_456_789),
         "ended": retain.iso(1_795_643_384_987_654_321),
@@ -669,6 +672,17 @@ def test_refuses_a_live_wazuh_stream_that_differs_from_the_collected_logs(tmp_pa
     (run / "live/alerts.json").write_bytes(b"")
 
     with pytest.raises(retain.RetainError, match="live Wazuh alerts stream differs"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
+def test_refuses_an_unexpected_file_in_the_collected_wazuh_log_folders(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    manager = load(spec_path).manager
+    unexpected = run / f"raw/hosts/{manager}/var/ossec/logs/alerts/2026/Nov/unexpected.log"
+    unexpected.write_text("not a Wazuh daily alert log\n")
+
+    with pytest.raises(retain.RetainError, match="exact set of daily JSON gzip files"):
         retain.export(run, spec_path, out, environment)
     assert not out.exists()
 
