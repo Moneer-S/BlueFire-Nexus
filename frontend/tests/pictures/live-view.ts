@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
+import { firstView, readRecording } from "../../src/live/recording";
 import { loopFrames, placeAfterFirstAlert, takeFrames, writeLoop } from "./loop";
 import type { LoopPlan, Place } from "./loop";
 
@@ -57,18 +58,14 @@ interface Shipped {
   alerts: ShippedAlert[];
 }
 
-interface ShippedPath extends Shipped {
-  kind: string;
-  network: { hosts: { id: string; role: string; kind: string }[] };
-  attacker: { goal?: string };
-  score: { first_alert_seconds: number | null; goal_seconds: number | null };
-}
-
 const repository = resolve(process.cwd(), "..");
 const RECORDING = "bluefire/data/recordings/lab-linux-host.json";
 const shipped: Shipped = JSON.parse(readFileSync(join(repository, RECORDING), "utf-8"));
 const PATH_RECORDING = "bluefire/data/recordings/lab-range-one-path.json";
-const path: ShippedPath = JSON.parse(readFileSync(join(repository, PATH_RECORDING), "utf-8"));
+// A recording judged by several defenses holds their events and alerts together.
+// README claims and pictures describe the default, first defense exactly as the
+// app and the standalone replay page initially show it.
+const path = firstView(readRecording(JSON.parse(readFileSync(join(repository, PATH_RECORDING), "utf-8"))));
 /** A step's marks on one side of a comparison: by the published rules, and with the lab's own rules too. */
 interface Marks {
   outcome: string;
@@ -199,8 +196,8 @@ if (!path.alerts.some((alert) => alert.step === pathFirst.id && stock(alert) && 
 if (!(path.source.tools ?? []).some((tool) => tool.role === "rules" && tool.name.startsWith("Wazuh"))) untrue(CAPTION, "its published rules are not Wazuh's");
 const firstAlertSeconds = path.score.first_alert_seconds;
 const goalSeconds = path.score.goal_seconds;
-if (firstAlertSeconds === null || Math.round(firstAlertSeconds / 60) !== 1) untrue(CAPTION, `its first alert came ${firstAlertSeconds ?? "never"} s in, not a minute in`);
-if (goalSeconds === null) untrue(CAPTION, "the attacker did not reach its goal");
+if (firstAlertSeconds === undefined || Math.round(firstAlertSeconds / 60) !== 1) untrue(CAPTION, `its first alert came ${firstAlertSeconds ?? "never"} s in, not a minute in`);
+if (goalSeconds === undefined) untrue(CAPTION, "the attacker did not reach its goal");
 if (Math.round((goalSeconds - firstAlertSeconds) / 60) !== 11) untrue(CAPTION, `the goal was reached ${Math.round(goalSeconds - firstAlertSeconds)} s after the first alert, not about eleven minutes`);
 if (!buildServer || !/signing secret/i.test(path.attacker.goal ?? "") || !(path.attacker.goal ?? "").startsWith(`${buildServer.id}'s`)) untrue(CAPTION, `its goal is "${path.attacker.goal ?? ""}", not the build server's signing secret`);
 if (!internet || pathLast.host !== internet.id || !(path.attacker.goal ?? "").endsWith(internet.id)) untrue(CAPTION, `its last step ran on ${pathLast.host ?? "no host"}, not the stand-in internet the goal names`);
