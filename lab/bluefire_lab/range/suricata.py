@@ -30,6 +30,34 @@ EVE_TYPES = ("alert", "flow", "http", "tls", "ssh", "dns")
 NETWORK_TYPES = EVE_TYPES[1:]
 APP_TYPES = EVE_TYPES[2:]
 COMMUNITY_ID_SEED = 0
+EVE_CONFIG_TARGET = "/tmp/bluefire-eve.yaml"
+EVE_CONFIG = f"""%YAML 1.1
+---
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      pcap-file: yes
+      community-id: yes
+      community-id-seed: {COMMUNITY_ID_SEED}
+      types:
+        - alert:
+            tagged-packets: yes
+        - flow
+        - http:
+            extended: yes
+        - tls:
+            extended: yes
+        - ssh
+        - dns
+  - stats:
+      enabled: yes
+      filename: stats.log
+      append: no
+      totals: yes
+      threads: no
+"""
 CONTAINER_USER = "998:998"
 CONTAINER_PREFIX = "bluefire-suricata-"
 CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}\Z")
@@ -197,6 +225,18 @@ def _mount_source(path: Path) -> str:
     return value
 
 
+def _stage_eve_config(folder: Path) -> Path:
+    """Write the exact YAML sequence that replaces the image's stock outputs."""
+
+    path = folder / "eve.yaml"
+    try:
+        path.write_text(EVE_CONFIG, encoding="utf-8")
+        path.chmod(0o444)
+    except OSError as error:
+        raise SuricataError(f"the Suricata EVE configuration cannot be staged: {error}") from error
+    return path
+
+
 def _overlap(first: Path, second: Path) -> bool:
     return first == second or first.is_relative_to(second) or second.is_relative_to(first)
 
@@ -249,6 +289,7 @@ def _docker_command(
     output: Path,
     container_name: str,
     cidfile: Path,
+    eve_config: Path,
     rules: Path | None = None,
     rule_files: Sequence[tuple[Path, str]] = (),
     classification: tuple[Path, str] | None = None,
@@ -276,6 +317,8 @@ def _docker_command(
         "/tmp:rw,noexec,nosuid,nodev,size=64m",
         "--mount",
         f"type=bind,source={_mount_source(captures)},target=/captures,readonly",
+        "--mount",
+        f"type=bind,source={_mount_source(eve_config)},target={EVE_CONFIG_TARGET},readonly",
     ]
     if rules is not None:
         command.extend(
@@ -293,6 +336,8 @@ def _docker_command(
             image,
             "-c",
             "/etc/suricata/suricata.yaml",
+            "--include",
+            EVE_CONFIG_TARGET,
             "-r",
             "/captures",
             "--pcap-file-recursive",
@@ -317,33 +362,9 @@ def _docker_command(
     command.extend(
         (
             "--set",
-            "outputs.1.eve-log.enabled=yes",
-            "--set",
-            "outputs.1.eve-log.filename=eve.json",
-            "--set",
-            "outputs.1.eve-log.filetype=regular",
-            "--set",
-            "outputs.1.eve-log.pcap-file=yes",
-            "--set",
-            "outputs.1.eve-log.types=[alert,flow,http,tls,ssh,dns]",
-            "--set",
-            "outputs.1.eve-log.types.32.stats.enabled=no",
-            "--set",
-            "outputs.1.eve-log.community-id=yes",
-            "--set",
-            f"outputs.1.eve-log.community-id-seed={COMMUNITY_ID_SEED}",
-            "--set",
             "stats.enabled=yes",
             "--set",
             "stats.interval=1",
-            "--set",
-            "outputs.2.stats.enabled=yes",
-            "--set",
-            "outputs.2.stats.filename=stats.log",
-            "--set",
-            "outputs.2.stats.totals=yes",
-            "--set",
-            "outputs.2.stats.threads=no",
         )
     )
     return command
@@ -843,6 +864,7 @@ def _evaluate(
                 supervisor = Path(supervisor_text)
                 container_name = CONTAINER_PREFIX + secrets.token_hex(12)
                 cidfile = supervisor / "container.cid"
+                eve_config = _stage_eve_config(supervisor)
                 command = _docker_command(
                     image,
                     staged,
@@ -850,6 +872,7 @@ def _evaluate(
                     output_root,
                     container_name,
                     cidfile,
+                    eve_config,
                     rule_root,
                     rule_files,
                     classification,
