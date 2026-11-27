@@ -759,6 +759,36 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     return said
 
 
+def matched_rule_notes(name: str, matched: list[dict]) -> list[str]:
+    """Name every matched rule and its author in notes the recording format can import."""
+
+    opening = f"The rules of {name} that matched in this run, each with its author as the rule gives it: "
+    continuation = f"The matched rules of {name}, continued: "
+    notes, current = [], opening
+    for rule in matched:
+        attribution = f"{rule['title']} ({rule['rule']}), by {rule.get('author') or 'no author named'}"
+        separator = "" if current in (opening, continuation) else "; "
+        candidate = current + separator + attribution + "."
+        if len(candidate) <= lab.KEPT_TEXT:
+            current += separator + attribution
+            continue
+        if current not in (opening, continuation):
+            notes.append(current + ".")
+            current, separator = continuation, ""
+        # Public rules fit as one attribution. Still preserve an unusually long author instead of
+        # silently cutting its credit: carry the exact text into as many bounded notes as it needs.
+        while len(current + attribution + ".") > lab.KEPT_TEXT:
+            suffix = " [continued]"
+            room = lab.KEPT_TEXT - len(current) - len(suffix)
+            notes.append(current + attribution[:room] + suffix)
+            attribution = attribution[room:]
+            current = continuation
+        current += attribution
+    if current not in (opening, continuation):
+        notes.append(current + ".")
+    return notes
+
+
 def defense_notes(manifest: dict) -> list[str]:
     """What a reader must know of the named defenses: which judged the run, and for each rule set that was
     evaluated after the run what its rules were given and what they were not."""
@@ -804,14 +834,7 @@ def defense_notes(manifest: dict) -> list[str]:
         matched = entry.get("rules that matched") or []
         if matched:
             # The rule set's licence asks that what is said of a match keeps the rule's author.
-            said.append(
-                f"The rules of {name} that matched in this run, each with its author as the rule gives it: "
-                + "; ".join(
-                    f"{rule['title']} ({rule['rule']}), by {rule.get('author') or 'no author named'}"
-                    for rule in matched
-                )
-                + "."
-            )
+            said += matched_rule_notes(name, matched)
         groups = [group for group in entry["groups"] if not group.get("not evaluated")]
         given = "; ".join(
             f"{group['log source']}: {', '.join(group['fields given']) or 'the line itself'}, of "
