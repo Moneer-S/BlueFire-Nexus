@@ -223,12 +223,14 @@ jobs:
 
       - name: Scan the exact candidate
         run: |
+          "$RUNNER_TEMP/venv/bin/python" -c 'import sys; from pathlib import Path; from bluefire_lab.range.retained import verify_retained; verify_retained(Path(sys.argv[1]))' "$ARTIFACT_ROOT/$FIXTURE"
           scan="$RUNNER_TEMP/candidate-repository"
           git init -q "$scan"
           mkdir -p "$scan/lab/retained"
           cp -a "$ARTIFACT_ROOT/$FIXTURE" "$scan/lab/retained/"
           git -C "$scan" add lab/retained
           git -C "$scan" -c user.name=range -c user.email=range@example.invalid commit -q -m "Retained packet run"
+          diff -qr "$ARTIFACT_ROOT/$FIXTURE" "$scan/lab/retained/packet-download"
 
           python3 .github/scripts/privacy_scan.py "$scan"
           (
@@ -239,11 +241,22 @@ jobs:
           scanner=detect-
           scanner+=secrets
           "$RUNNER_TEMP/venv/bin/pip" install --quiet "$scanner==1.5.0"
+          candidate_baseline="$RUNNER_TEMP/retained-candidate.secrets.baseline"
+          "$RUNNER_TEMP/venv/bin/python" -m bluefire_lab.range.retained_secret_gate \
+            "$scan" "$scan/$FIXTURE" \
+            --spec "$GITHUB_WORKSPACE/$SPEC" \
+            --script "$GITHUB_WORKSPACE/range-build/atomics/T1105/src/atomic.sh" \
+            --source-head "$GITHUB_SHA" \
+            --tracked-baseline "$GITHUB_WORKSPACE/.secrets.baseline" \
+            --scanner-hook "$RUNNER_TEMP/venv/bin/$scanner-hook" \
+            --out "$candidate_baseline"
+          baseline_sha=$(sha256sum -- "$candidate_baseline")
           (
             cd "$scan"
             git ls-files -z |
-              xargs -0 "$RUNNER_TEMP/venv/bin/$scanner-hook" --baseline "$GITHUB_WORKSPACE/.secrets.baseline"
+              xargs -0 "$RUNNER_TEMP/venv/bin/$scanner-hook" --baseline "$candidate_baseline"
           )
+          echo "$baseline_sha" | sha256sum --check
 
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_DIGEST#sha256:}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
