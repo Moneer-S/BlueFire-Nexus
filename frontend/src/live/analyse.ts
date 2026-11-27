@@ -1,6 +1,6 @@
 // What analyse mode needs about every step, worked out once: pure, no React.
 
-import type { Alert, Outcome, Recording, RecordingEvent, Step, StepRole } from "./recording";
+import type { Alert, Outcome, Recording, RecordingEvent, Rule, Step, StepRole } from "./recording";
 import { alertsByStep, countsAsAlert, countsForScore, eventsByStep } from "./recording";
 import { launcherRules, onlyItsLaunch, plural, stepLabel, unseenWords } from "./format";
 import { stepEnd, stepMatchesInFiringOrder } from "./playback";
@@ -42,8 +42,34 @@ export interface RuleCounts {
   launcher: number;
 }
 
+/** One rule that matched a step, with every match of it there. */
+export interface RuleMatches {
+  rule: Rule;
+  /** Its matches, in the order they came. */
+  alerts: Alert[];
+  /** The different events its matches matched, however many matches share one. */
+  events: number;
+}
+
+/**
+ * Matches grouped by rule, each rule once, in the order of its first match.
+ * A rule engine that raises one match for each event still makes one entry
+ * for the rule. Analyse's detail and the fix page both list rules this way.
+ */
+export function matchesByRule(alerts: readonly Alert[]): RuleMatches[] {
+  const found = new Map<string, RuleMatches>();
+  for (const alert of alerts) {
+    const key = `${alert.rule.origin}:${alert.rule.id}`;
+    const entry = found.get(key);
+    if (entry) entry.alerts.push(alert);
+    else found.set(key, { rule: alert.rule, alerts: [alert], events: 0 });
+  }
+  for (const entry of found.values()) entry.events = new Set(entry.alerts.flatMap((alert) => alert.events)).size;
+  return [...found.values()];
+}
+
 function distinctRules(alerts: readonly Alert[]): number {
-  return new Set(alerts.map((alert) => alert.rule.id)).size;
+  return matchesByRule(alerts).length;
 }
 
 export function ruleCounts(groups: MatchGroups): RuleCounts {

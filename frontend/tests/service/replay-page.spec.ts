@@ -325,6 +325,33 @@ test("the address opens a step's detail, or a moment of a step in watch mode", a
   expect(requests.filter((url) => !url.startsWith(pathToFileURL(shippedPage).href))).toEqual([]);
 });
 
+test("in a short window the map keeps its height when the window changes size while the page is scrolled", async ({ page }) => {
+  // A hardened rerun's words take more room than a window 700 pixels high leaves under the map: the page scrolls to them.
+  const rerun = shipped.steps.find((item) => item.role === "hardened");
+  if (!rerun) throw new Error("The shipped recording has no hardened rerun.");
+  await page.setViewportSize({ width: 1366, height: 700 });
+  const { requests, problems } = await open(page, shippedPage, `?step=${rerun.id}&at=0.95&paused=1`);
+  await expect(caption(page)).toContainText(rerun.title);
+  const map = page.getByRole("region", { name: "Network map", exact: true });
+  const mapHeight = async () => Math.round((await map.boundingBox())?.height ?? 0);
+  // The view settles its plan of the room after a frame or two.
+  await page.waitForTimeout(1500);
+  const atTheTop = await mapHeight();
+
+  // Scrolled down to the step's words, the window is made a little lower and then as high as it was.
+  await page.mouse.move(683, 300);
+  await page.mouse.wheel(0, 4000);
+  await expect.poll(() => page.evaluate(() => document.querySelector("#root")?.scrollTop ?? 0)).toBeGreaterThan(100);
+  await page.setViewportSize({ width: 1366, height: 690 });
+  await page.waitForTimeout(500);
+  await page.setViewportSize({ width: 1366, height: 700 });
+  await page.waitForTimeout(500);
+  expect(await mapHeight()).toBe(atTheTop);
+
+  expect(problems).toEqual([]);
+  expect(requests).toEqual([]);
+});
+
 test("a page that does not say where its recording comes from says so", async ({ page }) => {
   const { requests, problems } = await open(page, unsaidPage, "?paused=1");
 

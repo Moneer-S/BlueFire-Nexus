@@ -262,6 +262,18 @@ function PlayIcon({ playing }: { playing: boolean }) {
 const LOG_UNDER = 10;
 
 /**
+ * Where the view's top stands in the window when the page is at its top.
+ * Whatever scrolls the view, the document in the app and the page's own box on
+ * the single page, is counted back to its start, so the answer is the same
+ * however far the page is scrolled when the view measures its room.
+ */
+function topAtPageTop(view: HTMLElement): number {
+  let top = view.getBoundingClientRect().top;
+  for (let box = view.parentElement; box; box = box.parentElement) top += box.scrollTop;
+  return top;
+}
+
+/**
  * How the watch view shares the height it is given (room.ts): it measures the
  * parts that never give way, and plans how many lines the log holds and the
  * least height of the map. Null until the view is laid out, and outside watch
@@ -283,7 +295,10 @@ function useRoomPlan(view: HTMLElement | null, active: boolean, map: MapHeights 
       const lines = log?.querySelector<HTMLElement>(".lv-log-lines");
       if (!parent || !main || !band || !bar || !log || !lines) return;
       // The room is the box the view is given, and never more than the window: a page that grows with the view still has a fold.
-      const room = Math.min(parent.clientHeight, window.innerHeight);
+      // Where the view grows with what it holds (live.css), its box grows with it and says nothing of the room: the room is then
+      // what the window shows under the view's top at the top of the page, below any page head above the view.
+      const grows = getComputedStyle(view).getPropertyValue("--lv-grows").trim() === "1";
+      const room = grows ? Math.floor(window.innerHeight - topAtPageTop(view)) : Math.min(parent.clientHeight, window.innerHeight);
       if (room <= 0) return;
       const font = Number.parseFloat(getComputedStyle(lines).fontSize) || 15;
       // The log's head as measured now, with or without the room under it that a log of no line drops (live.css).
