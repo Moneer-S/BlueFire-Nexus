@@ -649,6 +649,12 @@ def test_a_run_folders_rules_are_refused_when_an_expected_parent_is_a_link(tmp_p
 
 def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> None:
     spec = range_spec.load(Path(__file__).parents[1] / "range" / "range-one.yaml")
+    manifest_digest = "".join(
+        ("a7b140e3", "95557d19", "a234b0fa", "465f4471", "39ba5071", "7ee6efcb", "0e23df6b", "7c6f30dc")
+    )
+    rule_digest = "".join(
+        ("64294a19", "ec3946f5", "4c5e4cb3", "39a13766", "cd41aa69", "c2021d9f", "dbf7cbe4", "1efcc508")
+    )
 
     sigma, et_open = spec.rule_sets
     locked = rulesets.locked(spec, sigma)
@@ -659,16 +665,14 @@ def test_range_ones_rule_set_and_defenses_are_those_its_spec_and_lock_give() -> 
     assert (et_open.kind, et_open.source_file, et_open.sha256, et_open.version) == (
         "suricata",
         "lab/rules/et-open/SHA256SUMS",
-        "3bea34d2fd30638768191a820e12d5e7c590ec96338bde2f1b01a81abc03842a",
+        manifest_digest,
         "11342",
     )
     et_lock = rulesets.locked(spec, et_open)
-    assert len(et_lock) == 14 and et_lock["SHA256SUMS"] == et_open.sha256
-    assert sum(path.endswith(".rules") for path in et_lock) == 9
-    assert rulesets.record(et_open, et_lock)["files"] == 9
-    assert rulesets.digest(et_open, et_lock) == (
-        "65cc22c6fc8140fe2cfd6c5303f3227923379a27e5ede30206b56914ef3a6e4b"
-    )
+    assert len(et_lock) == 13 and et_lock["SHA256SUMS"] == et_open.sha256
+    assert sum(path.endswith(".rules") for path in et_lock) == 8
+    assert rulesets.record(et_open, et_lock)["files"] == 8
+    assert rulesets.digest(et_open, et_lock) == rule_digest
     assert [(defense.id, defense.sensors, defense.rules) for defense in spec.defenses] == [
         ("wazuh-stock", ("wazuh-agent",), ("wazuh",)),
         ("sigma-public", ("wazuh-agent",), ("sigma",)),

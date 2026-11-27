@@ -566,6 +566,13 @@ def test_a_tracked_manifest_can_publish_sigma_rules() -> None:
     )
 
 
+def test_a_tracked_manifest_sha256_can_be_written_as_eight_short_chunks() -> None:
+    chunks = ["01234567", "89abcdef"] * 4
+    document = manifest_defended(lambda d: d["rule_sets"]["published"].update(sha256=chunks))
+
+    assert range_spec.parse(document).rule_sets[0].sha256 == "".join(chunks)
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -573,6 +580,8 @@ def test_a_tracked_manifest_can_publish_sigma_rules() -> None:
         ({"source": "../SHA256SUMS"}, "source must be a SHA256SUMS manifest"),
         ({"sha256": "A" * 64}, "sha256 must be 64 lower-case hex digits"),
         ({"sha256": "a" * 63}, "sha256 must be 64 lower-case hex digits"),
+        ({"sha256": ["01234567"] * 7}, "sha256 must be 64 lower-case hex digits"),
+        ({"sha256": ["01234567"] * 7 + ["ABCDEFGH"]}, "sha256 must be 64 lower-case hex digits"),
         ({"version": "two\nlines"}, "version must be one short line"),
         ({"version": 7}, "version must be one short line"),
     ],

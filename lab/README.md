@@ -1590,6 +1590,23 @@ bluefire-lab range score <run folder> --engine <path to Zircolite 4.7.1> \
 It reads the spec the run's manifest holds, its raw PCAPs and the rule files
 in its folder.
 
+A hosted run whose raw sensor data is retained in the repository can have its
+exact closure and declared provenance validated, then be copied and judged by
+a later defense without changing the retained source:
+
+```bash
+bluefire-lab range rejudge lab/retained/<run> \
+  --defenses lab/range/<defense-spec>.yaml \
+  --engine <path to Zircolite 4.7.1> \
+  --template bluefire/ui/replay.html \
+  --out .bluefire-runs/rejudged/<run>
+```
+
+The output is a new run folder with the new `recording.json` and a standalone
+`replay.html`. The retained-run layout, declared provenance and its proof
+limits, minimum raw inputs, and refusal rules are in
+[`retained/README.md`](retained/README.md).
+
 **`score.md`** opens with the path's outcome in one sentence (whether it
 reached its goal, and after how long), then a table with a row for each
 defense: its sensors, its rules and whether they ran live or after the run,
@@ -1801,8 +1818,8 @@ same name with another lock, which then needs a name of its own. The folder of
 any other rule set it empties before it fetches, so that the folder holds the
 files of the lock and no others.
 
-**The packet rule set, kept verbatim.** `lab/rules/et-open/` contains 2,028
-enabled rules in nine complete network-relevant category files from Emerging
+**The packet rule set, kept verbatim.** `lab/rules/et-open/` contains 1,553
+enabled rules in eight complete network-relevant category files from Emerging
 Threats Open version 11342, plus its classifications and complete licence
 files. `SOURCE.md` names the source archive, its SHA-256, the exact included
 and excluded coverage, and how to reproduce the subset; `SHA256SUMS` pins

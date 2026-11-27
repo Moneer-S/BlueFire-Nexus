@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from bluefire_lab.range import suricata
 
@@ -124,6 +125,16 @@ def capture_folder(arguments: list[str]) -> Path:
     return Path(source)
 
 
+def eve_config_file(arguments: list[str]) -> Path:
+    mount = next(
+        arguments[index + 1]
+        for index, value in enumerate(arguments)
+        if value == "--mount" and f"target={suricata.EVE_CONFIG_TARGET}" in arguments[index + 1]
+    )
+    source = next(part.removeprefix("source=") for part in mount.split(",") if part.startswith("source="))
+    return Path(source)
+
+
 def option(arguments: list[str], name: str) -> str:
     return arguments[arguments.index(name) + 1]
 
@@ -143,6 +154,45 @@ def successful_output(arguments: list[str], lines: list[dict], loaded: int = 2, 
     )
 
 
+def test_eve_config_is_an_exact_yaml_sequence_of_supported_outputs() -> None:
+    parsed = yaml.safe_load(suricata.EVE_CONFIG)
+
+    assert parsed == {
+        "outputs": [
+            {
+                "eve-log": {
+                    "enabled": True,
+                    "filetype": "regular",
+                    "filename": "eve.json",
+                    "pcap-file": True,
+                    "community-id": True,
+                    "community-id-seed": suricata.COMMUNITY_ID_SEED,
+                    "types": [
+                        {"alert": {"tagged-packets": True}},
+                        "flow",
+                        {"http": {"extended": True}},
+                        {"tls": {"extended": True}},
+                        "ssh",
+                        "dns",
+                    ],
+                }
+            },
+            {
+                "stats": {
+                    "enabled": True,
+                    "filename": "stats.log",
+                    "append": False,
+                    "totals": True,
+                    "threads": False,
+                }
+            },
+        ]
+    }
+    configured = parsed["outputs"][0]["eve-log"]["types"]
+    names = tuple(next(iter(item)) if isinstance(item, dict) else item for item in configured)
+    assert names == suricata.EVE_TYPES
+
+
 def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_path: Path) -> None:
     rules = tmp_path / "held"
     held_rules(rules)
@@ -155,14 +205,18 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
     modes: list[int] = []
     staged: list[Path] = []
     cidfiles: list[Path] = []
+    configs: list[Path] = []
 
     def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append((arguments, timeout))
         modes.append(output_folder(arguments).stat().st_mode & 0o777)
         staged.append(capture_folder(arguments))
         cidfiles.append(Path(option(arguments, "--cidfile")))
+        configs.append(eve_config_file(arguments))
         assert [path.name for path in capture_folder(arguments).iterdir()] == ["eth0.pcap"]
         assert (capture_folder(arguments).stat().st_mode & 0o777) == 0o555
+        assert eve_config_file(arguments).read_text(encoding="utf-8") == suricata.EVE_CONFIG
+        assert eve_config_file(arguments).stat().st_mode & 0o777 == 0o444
         successful_output(arguments, [network("flow", tx_id=None), network(), alert()])
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
@@ -179,6 +233,7 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
     container_name = option(command, "--name")
     cidfile = Path(option(command, "--cidfile"))
     staged_folder = capture_folder(command)
+    config_file = eve_config_file(command)
     assert re.fullmatch(r"bluefire-suricata-[0-9a-f]{24}", container_name)
     expected = [
         "docker",
@@ -204,6 +259,8 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
         "--mount",
         f"type=bind,source={staged_folder},target=/captures,readonly",
         "--mount",
+        f"type=bind,source={config_file},target={suricata.EVE_CONFIG_TARGET},readonly",
+        "--mount",
         f"type=bind,source={rules.resolve()},target=/rules,readonly",
         "--mount",
         f"type=bind,source={output.resolve()},target=/output",
@@ -212,6 +269,8 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
         suricata.IMAGE,
         "-c",
         "/etc/suricata/suricata.yaml",
+        "--include",
+        suricata.EVE_CONFIG_TARGET,
         "-r",
         "/captures",
         "--pcap-file-recursive",
@@ -232,39 +291,16 @@ def test_evaluate_uses_the_exact_offline_security_boundary_and_held_files(tmp_pa
         "--set",
         "classification-file=/rules/classification.config",
         "--set",
-        "outputs.1.eve-log.enabled=yes",
-        "--set",
-        "outputs.1.eve-log.filename=eve.json",
-        "--set",
-        "outputs.1.eve-log.filetype=regular",
-        "--set",
-        "outputs.1.eve-log.pcap-file=yes",
-        "--set",
-        "outputs.1.eve-log.types=[alert,flow,http,tls,ssh,dns]",
-        "--set",
-        "outputs.1.eve-log.types.32.stats.enabled=no",
-        "--set",
-        "outputs.1.eve-log.community-id=yes",
-        "--set",
-        "outputs.1.eve-log.community-id-seed=0",
-        "--set",
         "stats.enabled=yes",
         "--set",
         "stats.interval=1",
-        "--set",
-        "outputs.2.stats.enabled=yes",
-        "--set",
-        "outputs.2.stats.filename=stats.log",
-        "--set",
-        "outputs.2.stats.totals=yes",
-        "--set",
-        "outputs.2.stats.threads=no",
     ]
     assert calls == [(expected, 900.0)]
     assert modes == [0o733]
     assert output.stat().st_mode & 0o777 == 0o700
     assert staged == [staged_folder] and not staged_folder.exists()
     assert cidfiles == [cidfile] and not cidfile.parent.exists()
+    assert configs == [config_file] and not config_file.exists()
     assert (captures / "eth0.log").is_file()
     assert "--privileged" not in expected and "--cap-add" not in expected
     assert expected[expected.index(suricata.IMAGE) + 1] == "-c"
@@ -304,7 +340,8 @@ def test_telemetry_is_a_rule_independent_canonical_pass(tmp_path: Path) -> None:
     assert "--disable-detection" in command
     assert "--init-errors-fatal" not in command
     assert "rule-files=[]" not in command
-    assert "outputs.1.eve-log.types.32.stats.enabled=no" in command
+    assert option(command, "--include") == suricata.EVE_CONFIG_TARGET
+    assert not any(value.startswith("outputs.") for value in command)
     assert not any("target=/rules" in value for value in command)
     assert (found["rules"], found["loaded"], found["alerts"]) == (0, 0, [])
     assert list(suricata.record_index(found["records"])) == [
@@ -370,6 +407,35 @@ def test_eve_is_strict_but_preserves_raw_network_and_alert_records(tmp_path: Pat
         "informational",
         "informational",
     ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload"),
+    [
+        (
+            "fileinfo",
+            {"filename": "/", "gaps": False, "size": 36, "state": "CLOSED", "stored": False, "tx_id": 0},
+        ),
+        (
+            "anomaly",
+            {"event": "APPLAYER_WRONG_DIRECTION_FIRST_DATA", "layer": "proto_detect", "type": "applayer"},
+        ),
+    ],
+    ids=("stock-files-logger", "stock-anomaly-logger"),
+)
+def test_stock_eve_outputs_outside_the_declared_sequence_are_refused(
+    tmp_path: Path, kind: str, payload: dict
+) -> None:
+    path = tmp_path / "eve.json"
+    raw = {**network(), "event_type": kind, kind: payload}
+    raw.pop("tx_id")
+    if kind == "anomaly":
+        raw.pop("app_proto")
+        raw.pop("http")
+    write_eve(path, [raw])
+
+    with pytest.raises(suricata.SuricataError, match=rf"event_type {kind!r}, which was not configured"):
+        suricata.read_eve(path)
 
 
 @pytest.mark.parametrize(
@@ -608,7 +674,13 @@ def test_output_permissions_are_restored_when_the_engine_times_out(tmp_path: Pat
         calls.append(arguments)
         if arguments[1] == "run":
             assert output_folder(arguments).stat().st_mode & 0o777 == 0o733
-            transient.extend((capture_folder(arguments), Path(option(arguments, "--cidfile")).parent))
+            transient.extend(
+                (
+                    capture_folder(arguments),
+                    eve_config_file(arguments),
+                    Path(option(arguments, "--cidfile")).parent,
+                )
+            )
             Path(option(arguments, "--cidfile")).write_text(container_id)
             raise subprocess.TimeoutExpired(arguments, timeout)
         assert arguments == ["docker", "rm", "--force", container_id]
@@ -638,7 +710,13 @@ def test_start_failure_removes_only_the_unique_named_container(tmp_path: Path) -
     def runner(arguments: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
         if arguments[1] == "run":
-            transient.extend((capture_folder(arguments), Path(option(arguments, "--cidfile")).parent))
+            transient.extend(
+                (
+                    capture_folder(arguments),
+                    eve_config_file(arguments),
+                    Path(option(arguments, "--cidfile")).parent,
+                )
+            )
             raise OSError("made-up Docker start failure")
         assert arguments == ["docker", "rm", "--force", option(calls[0], "--name")]
         return subprocess.CompletedProcess(arguments, 1, "", "not found")

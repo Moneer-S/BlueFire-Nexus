@@ -70,6 +70,7 @@ ALERT_LEVELS = evaluate.ALERT_LEVELS
 ENGINE_SECONDS = 900
 # What the engine writes in its log, and then exits 1, when it could convert none of the rules.
 NONE_CONVERTED = "No rules to execute"
+PROVENANCE_FILES = {"SHA256SUMS", "SOURCE"}
 # What snoopy writes for a value it does not have.
 UNKNOWN = ("", "(unknown)", "(undefined)", "(none)")
 # A line of nginx's access log in the combined format: the client's address, the request, the
@@ -748,6 +749,8 @@ def evaluate_set(
         seen: set[str] = set()
         for path in sorted((folder / name).rglob("*")):
             if not path.is_file() or path.is_symlink():
+                continue
+            if path.name in PROVENANCE_FILES:
                 continue
             file = path.relative_to(folder).as_posix()
             if file in pipelines:

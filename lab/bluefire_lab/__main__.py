@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import atomic, compare, evaluate, pair, recording, replay, report, run
 from .range import engine as range_engine
+from .range import retained as range_retained
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -190,6 +191,32 @@ def main(arguments: list[str] | None = None) -> int:
         help="a pinned Suricata image already present locally: with it, packet rule sets judge the retained "
         "captures offline; the evaluator never pulls it or joins a network",
     )
+    rejudging = actions.add_parser(
+        "rejudge",
+        help=(
+            "validate a retained run's exact files and declared provenance, copy its raw files, "
+            "judge the copy by another spec, and write replay.html"
+        ),
+    )
+    rejudging.add_argument("retained", type=Path, help="folder with provenance.json and the retained files")
+    rejudging.add_argument(
+        "--defenses", type=Path, required=True, help="spec whose defenses and rule sets judge the copied run"
+    )
+    rejudging.add_argument(
+        "--engine", type=Path, help="the Zircolite program; required when the judging spec has rule sets"
+    )
+    rejudging.add_argument(
+        "--suricata-image",
+        metavar="IMAGE",
+        help="a pinned Suricata image already present locally: with it, packet rule sets judge the retained "
+        "captures offline; the evaluator never pulls it or joins a network",
+    )
+    rejudging.add_argument(
+        "--template", type=Path, required=True, help="the app's page template, bluefire/ui/replay.html"
+    )
+    rejudging.add_argument(
+        "--out", type=Path, required=True, help="new folder for the rejudged run and replay"
+    )
 
     options = parser.parse_args(arguments)
     if options.command == "range":
@@ -200,6 +227,15 @@ def main(arguments: list[str] | None = None) -> int:
                 options.folder,
                 rule_engine=options.engine,
                 defenses=options.defenses,
+                suricata_image=options.suricata_image,
+            )
+        if options.action == "rejudge":
+            return range_retained.rejudge(
+                options.retained,
+                options.defenses,
+                options.out,
+                options.template,
+                options.engine,
                 suricata_image=options.suricata_image,
             )
         if options.action == "render":

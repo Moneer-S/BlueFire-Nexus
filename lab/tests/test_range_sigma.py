@@ -437,6 +437,23 @@ def test_a_run_without_the_path_of_its_programs_gives_no_image_and_the_rule_that
     assert found["groups"][0]["fields the rules name that are not given"] == {"Image": 2, "ParentImage": 1}
 
 
+def test_a_held_set_does_not_offer_its_provenance_files_to_the_engine(engine: Path, tmp_path: Path) -> None:
+    folder = tmp_path / "set"
+    folder.mkdir()
+    source = RULE_SET / "rules/linux/process_creation/proc_creation_lnx_made_up_uname.yml"
+    (folder / source.name).write_bytes(source.read_bytes())
+    (folder / "SHA256SUMS").write_text("the fetched manifest stays beside its rules\n")
+    (folder / "SOURCE").write_text("example/rules@" + "b" * 40 + "\n")
+
+    found = sigma.evaluate_set(engine, folder, ["."], [snoopy("uname -a")], tmp_path / "engine")
+
+    assert (found["rules"], found["loaded"]) == (1, 1)
+    assert found["files that are not a rule"] == []
+    assert [(match["event"], match["rule"]["title"]) for match in found["matches"]] == [
+        (0, "Made Up - System Name Asked")
+    ]
+
+
 def correlation_matches(found: dict, title: str = "Made Up - Three Stages In Order") -> list[dict]:
     return [match for match in found["matches"] if match["rule"]["title"] == title]
 
