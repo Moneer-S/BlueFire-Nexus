@@ -46,6 +46,7 @@ PCAP_MAGIC = {
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 PLAIN = re.compile(r"[^\x00-\x1f\x7f]+\Z")
+INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 RULES_LOADED = re.compile(r"Total rules enabled: '([0-9]+)'")
 
 
@@ -495,8 +496,10 @@ def _defense(manifest: dict, spec: Spec) -> dict:
     if not isinstance(delivery, dict) or set(delivery) != set(spec.agents):
         raise RetainError("the source Wazuh delivery must cover every agent")
     for host, rows in delivery.items():
-        if not isinstance(rows, list) or any(
-            not isinstance(row, dict) or row.get("missing") != 0 for row in rows
+        if (
+            not isinstance(rows, list)
+            or not rows
+            or any(not isinstance(row, dict) or row.get("missing") != 0 for row in rows)
         ):
             raise RetainError(f"the source Wazuh delivery for {host} is incomplete")
     return {
@@ -546,7 +549,10 @@ def _pcap(path: Path) -> dict:
         if order is None:
             raise RetainError(f"{path.name}: the file is not classic PCAP")
         endian, resolution = order
-        major, minor, _zone, _accuracy, snaplen, link_type = struct.unpack(endian + "HHIIII", header[4:])
+        try:
+            major, minor, _zone, _accuracy, snaplen, link_type = struct.unpack(endian + "HHIIII", header[4:])
+        except struct.error as error:
+            raise RetainError(f"{path.name}: the PCAP global header cannot be read") from error
         if (major, minor) != (2, 4) or snaplen <= 0:
             raise RetainError(f"{path.name}: the PCAP header is not supported")
         packets = captured = wire = 0
@@ -557,7 +563,10 @@ def _pcap(path: Path) -> dict:
                 break
             if len(record) != 16:
                 raise RetainError(f"{path.name}: packet {packets + 1}'s header is truncated")
-            _seconds, fraction, included, original = struct.unpack(endian + "IIII", record)
+            try:
+                _seconds, fraction, included, original = struct.unpack(endian + "IIII", record)
+            except struct.error as error:
+                raise RetainError(f"{path.name}: packet {packets + 1}'s header cannot be read") from error
             limit = 1_000_000_000 if resolution == "nanoseconds" else 1_000_000
             if fraction >= limit or included > snaplen or included > original:
                 raise RetainError(f"{path.name}: packet {packets + 1}'s header is invalid")
@@ -631,11 +640,16 @@ def _packet_files(
         or capture.get("collect_error")
     ):
         raise RetainError("the source packet capture is incomplete, has a delivery gap, or was not analysed")
+    _plain(capture.get("filter"), "packet_capture.filter")
     hosts = capture.get("hosts")
     if not isinstance(hosts, dict) or not hosts:
         raise RetainError("the source packet capture names no host")
     if not set(hosts).issubset(spec.hosts):
         raise RetainError("the source packet capture names a host outside the tracked spec")
+    if all(hasattr(settings, "capture") for settings in spec.hosts.values()):
+        declared = {host for host, settings in spec.hosts.items() if settings.capture == "packets"}
+        if set(hosts) != declared:
+            raise RetainError("the source packet capture hosts differ from the tracked spec")
     home_hosts = sorted(set(spec.agents) | set(hosts))
     if capture.get("home_hosts") != home_hosts:
         raise RetainError("packet_capture.home_hosts differs from the agents and capture hosts")
@@ -677,7 +691,7 @@ def _packet_files(
                 raise RetainError(f"packet capture on {host} has an unseen ready mark")
             interface = _plain(mark.get("interface"), f"packet capture on {host}'s ready interface")
             token = _plain(mark.get("token"), f"packet capture on {host}'s ready token")
-            if "/" in interface or interface in (".", ".."):
+            if not INTERFACE.fullmatch(interface):
                 raise RetainError(f"packet capture on {host} has an unsafe interface name")
             expected_interfaces.add(interface)
             marks_by_interface.setdefault(interface, []).append({**mark, "token": token})
@@ -774,7 +788,7 @@ def _wazuh_files(run: Path, spec: Spec, snapshots: dict[Path, Snapshot]) -> list
     for source_relative, run_path, role in mappings:
         path = _source_path(run, source_relative, role)
         snapshot, data = _remember(snapshots, path, role, content=True)
-        if snapshot.bytes == 0:
+        if snapshot.bytes == 0 and run_path.name != "alerts.json":
             raise RetainError(f"{role} is empty")
         if run_path.name == "ossec.log":
             try:

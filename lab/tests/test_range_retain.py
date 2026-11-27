@@ -470,6 +470,25 @@ def test_calls_the_real_retained_verifier_before_atomic_publish(tmp_path, monkey
     assert out.is_dir()
 
 
+def test_an_empty_but_complete_alert_stream_is_retained(tmp_path):
+    environment, spec_path, run, out = source_run(tmp_path)
+    (run / "live/alerts.json").write_bytes(b"")
+
+    retain.export(run, spec_path, out, environment)
+    assert (
+        out / f"files/raw/hosts/{load(spec_path).manager}/var/ossec/logs/alerts/alerts.json"
+    ).read_bytes() == b""
+
+
+def test_refuses_packet_identity_bytes_above_the_fixed_limit(tmp_path, monkeypatch):
+    environment, spec_path, run, out = source_run(tmp_path)
+    monkeypatch.setattr(retain, "MAX_PCAP_BYTES", 1)
+
+    with pytest.raises(retain.RetainError, match="above the 1-byte limit"):
+        retain.export(run, spec_path, out, environment)
+    assert not out.exists()
+
+
 def test_file_plan_rejects_stored_run_and_artifact_collisions():
     payload = b"x"
     first = retain.PlannedFile(PurePosixPath("files/a"), PurePosixPath("raw/a"), "one", payload=payload)
