@@ -54,9 +54,9 @@ export function sameMoment(from: Timeline, to: Timeline, time: number): number {
   const frame = frameAt(from, time);
   const source = frame.segment;
   if (!source) return 0;
-  if (frame.ended) return to.duration;
   const target = to.segments[source.index];
   if (!target) return 0;
+  if (frame.ended) return frame.gap ? realToScreen(to, frame.real) : target.end;
   const share = (value: number, low: number, high: number): number => (high > low ? Math.min(1, Math.max(0, (value - low) / (high - low))) : 1);
   if (frame.time <= source.bodyStart) return target.start + (target.bodyStart - target.start) * share(frame.time, source.start, source.bodyStart);
   if (frame.time <= source.bodyEnd) {

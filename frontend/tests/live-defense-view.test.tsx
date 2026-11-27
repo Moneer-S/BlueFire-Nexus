@@ -133,6 +133,35 @@ describe("one run judged by several defenses", () => {
     expect(screenToReal(withoutLateAlert.timeline, switched)).toBeCloseTo(recordedClock, 3);
   });
 
+  it("keeps terminal silence ahead when another defense has a trailing alert", () => {
+    const value = judgedTwice();
+    const stock = value.defenses?.[0];
+    if (!stock) throw new Error("fixture");
+
+    value.alerts.push(alert("tail", "2", 3.5, ["e2"], { raised: at(8) }));
+    stock.steps["2"] = {
+      ...stock.steps["2"]!,
+      visibility: { answer: "alert", basis: "the stock rule matched after the step", events: 1 },
+      outcome: "alerted",
+      first_alert: at(3.5),
+    };
+    stock.score = { ...stock.score, alerted: 2, seen: 0 };
+
+    const [withTrailingAlert, withoutTrailingAlert] = judgeAll(value);
+    if (!withTrailingAlert || !withoutTrailingAlert) throw new Error("fixture");
+    const last = withTrailingAlert.timeline.segments.at(-1);
+    if (!last) throw new Error("fixture");
+    const tail = withTrailingAlert.timeline.gaps.find((item) => item.after === last.index);
+    if (!tail) throw new Error("fixture");
+
+    const switched = sameMoment(withoutTrailingAlert.timeline, withTrailingAlert.timeline, withoutTrailingAlert.timeline.duration);
+
+    expect(tail.realEnd).toBe(Date.parse(at(8)));
+    expect(switched).toBe(tail.start);
+    expect(screenToReal(withTrailingAlert.timeline, switched)).toBe(Date.parse(at(4)));
+    expect(switched).toBeLessThan(withTrailingAlert.timeline.duration);
+  });
+
   it("keeps Analyse totals to scored tests while marking diagnostic steps", () => {
     const value = judgedTwice();
     const canary = step("3", 5, 6, {
