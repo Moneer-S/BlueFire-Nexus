@@ -1,0 +1,14 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - System Name Asked
+id: 00000000-0000-4000-8000-000000000003
+status: test
+description: Matches a command line that starts with uname, whatever the program's path.
+author: The lab's tests
+logsource:
+    product: linux
+    category: process_creation
+detection:
+    selection:
+        CommandLine|startswith: 'uname'
+    condition: selection
+level: low

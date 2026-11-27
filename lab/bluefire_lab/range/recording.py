@@ -12,7 +12,13 @@ log (how many rules it loaded).
 The network is the spec's hosts and the links between those that share a
 network; the sensors are the Wazuh agents; the detector `pinned` is the
 manager's stock rules, which ran live, so an alert has the time of its event
-and the time the manager raised it. A step's events are the archived events
+and the time the manager raised it. A rule set that was evaluated after the
+run is a detector of its own, named after the set: its alerts have the time of
+their event and no time of being raised. When the spec names its defenses, the
+recording has `defenses`: for each one that judged the run, its sensors, its
+detectors and its own answer for every step, its ordinary day and its score,
+which is the recording as that defense alone sees it. The top level is the
+first defense's. A step's events are the archived events
 tied to it by its session, an account only the path uses, the address of the
 host it ran on or a path it was given (`score`); one that only falls inside
 its window is not the step's, and is not in the recording. A step that went to
@@ -31,9 +37,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .. import recording as lab
-from . import ecs, score
+from . import ecs, score, sigma
 from . import path as range_path
-from .spec import read
+from .spec import WAZUH_AGENT, read
 
 FILE = "recording.json"
 # Wazuh's levels in the words of the format: informational, low, medium, high and critical.
@@ -110,7 +116,43 @@ def records(spec: dict, host: str) -> str:
     )
 
 
-def network(manifest: dict, spec: dict, rules: int) -> dict:
+def detectors(folder: Path, manifest: dict, judged: list[dict]) -> list[dict]:
+    """The detectors of the defenses that judged the run: the manager's stock rules, which ran live, and each
+    rule set that was evaluated after the run, with the rules its engine loaded and the digest of its files."""
+
+    defense = manifest.get("defense") or {}
+    sets = (manifest.get("score") or {}).get("rule sets") or {}
+    found = []
+    for identifier in dict.fromkeys(name for entry in judged for name in entry["detectors"]):
+        if identifier == score.PINNED:
+            found.append(
+                {
+                    "id": identifier,
+                    "name": lab.named("Wazuh", defense.get("wazuh_version"))
+                    + " stock rules with the lab's decoder for snoopy, on "
+                    + str(defense.get("manager")),
+                    "rules": rules_loaded(folder, defense.get("manager") or "manager"),
+                    "when": score.LIVE,
+                }
+            )
+            continue
+        entry = sets[identifier]
+        repo, _, commit = entry["source"].partition("@")
+        engine = entry["engine"]
+        found.append(
+            {
+                "id": identifier,
+                "name": f"Published Sigma rules ({repo} at {commit[:12]}) with "
+                + lab.named(engine["name"], engine.get("version")),
+                "rules": entry["loaded"],
+                "when": score.AFTER,
+                "digest": entry["digest"],
+            }
+        )
+    return found
+
+
+def network(manifest: dict, spec: dict, rules: list[dict]) -> dict:
     hosts = []
     for name, settings in spec["hosts"].items():
         container = (manifest.get("containers") or {}).get(name) or {}
@@ -147,21 +189,52 @@ def network(manifest: dict, spec: dict, rules: int) -> dict:
             }
             for agent in defense.get("agents") or []
         ],
-        "detectors": [
-            {
-                "id": "pinned",
-                "name": lab.named("Wazuh", version)
-                + " stock rules with the lab's decoder for snoopy, on "
-                + str(defense.get("manager")),
-                "rules": rules,
-                "when": "live",
-            }
-        ],
+        "detectors": rules,
     }
 
 
 def sensor_id(host: str) -> str:
-    return f"wazuh-agent-{host}"
+    return score.sensor_id(WAZUH_AGENT, host)
+
+
+def sensor_of(document: dict) -> str:
+    """The sensor that recorded an ECS line: the Wazuh agent on its host, the one kind of sensor so far."""
+
+    return sensor_id((document.get("host") or {}).get("name"))
+
+
+def rule_of(document: dict) -> dict:
+    """The rule of an alert line in the format's words: its id, its title and its level.
+
+    A rule that was evaluated after the run carries its own level and title;
+    the manager's rule has a number for a level, and its description for a title.
+    """
+
+    rule, labels = document.get("rule") or {}, document.get("labels") or {}
+    if "level" in labels:
+        level = labels["level"] if labels["level"] in sigma.LEVELS else sigma.LEVELS[0]
+        return {"id": str(rule.get("id")), "title": rule.get("name") or str(rule.get("id")), "level": level}
+    level = level_word((((document.get("wazuh") or {}).get("rule")) or {}).get("level"))
+    return {
+        "id": str(rule.get("id")),
+        "title": rule.get("description") or str(rule.get("id")),
+        "level": level,
+    }
+
+
+def shares(counts: dict[str, int], room: int) -> dict[str, int]:
+    """How many events of each sensor a step keeps, of `room` in all: an equal share each, and what a sensor
+    with fewer events leaves of its share goes to the others in equal parts again."""
+
+    kept = dict.fromkeys(counts, 0)
+    while room > 0 and any(counts[sensor] > kept[sensor] for sensor in counts):
+        short = sorted(sensor for sensor in counts if counts[sensor] > kept[sensor])
+        part = max(room // len(short), 1)
+        for sensor in short:
+            more = min(part, counts[sensor] - kept[sensor], room)
+            kept[sensor] += more
+            room -= more
+    return kept
 
 
 def error_logs(spec: dict) -> set[str]:
@@ -212,7 +285,7 @@ def event_of(document: dict, step: str, number: int, database_logs: set[str] = f
         "id": f"{step}-{number}",
         "time": document["@timestamp"],
         "host": host,
-        "sensor": sensor_id(host),
+        "sensor": sensor_of(document),
         "kind": kind_of(document, database_logs),
         "text": text_of(document),
         "step": step,
@@ -237,8 +310,15 @@ def output(folder: Path, step: str) -> str | None:
     return text or None
 
 
-def basis(entry: dict, alert_level: int) -> str:
-    """What a step's visibility rests on, in a sentence."""
+def basis(entry: dict, alert_level: int, live: bool = True) -> str:
+    """What a step's visibility rests on, in a sentence.
+
+    `live` is false when the step's first alert is of rules that were
+    evaluated after the run: it was never raised, and its level is the rule's
+    own word. `alerts` counts the matches of live rules below the alert level,
+    and `matches after the run` those of rules evaluated after the run, below
+    the level whose word counts.
+    """
 
     if entry["visibility"] == "not applicable":
         return "the test did not start, so nothing could be tied to it"
@@ -251,13 +331,23 @@ def basis(entry: dict, alert_level: int) -> str:
             "address: " + "; ".join(shown)
         )
     first = entry.get("first_alert")
-    if first:
+    if first and live:
         said += (
             f"; rule {first['rule']} at level {first['level']}, an alert at level {alert_level} or higher, "
             f"raised at {first['raised']}"
         )
-    elif entry["alerts"]:
-        said += f"; {lab.count(entry['alerts'], 'rule match', 'rule matches')} below level {alert_level}"
+    elif first:
+        said += (
+            f"; the rule {first['title']} at level {first['level']}, which counts as an alert, matched an "
+            f"event of {first['raised']}, when the rules were evaluated after the run"
+        )
+    else:
+        for matches, level in (
+            (entry["alerts"], alert_level),
+            (entry.get("matches after the run"), sigma.ALERT_LEVELS[0]),
+        ):
+            if matches:
+                said += f"; {lab.count(matches, 'rule match', 'rule matches')} below level {level}"
     if entry["coincident events"]:
         said += (
             f"; {entry['coincident events']} more fell only inside the step's time span, from its start to "
@@ -294,46 +384,64 @@ def build(folder: Path) -> dict:
     defense = manifest.get("defense") or {}
     started, finished = run_times(folder)
     sensors = set(defense.get("agents") or [])
+    # The defenses that judged the run, the first of which the top level shows, and their detectors:
+    # the manager's live rules, and each rule set whose matches were written beside its alerts.
+    judged = [entry for entry in (manifest.get("score") or {}).get("defenses") or [] if entry.get("judged")]
+    if not judged:
+        raise ValueError("no defense judged the run, so there is nothing to record")
+    found = detectors(folder, manifest, judged)
+    live = {entry["id"] for entry in found if entry["when"] == score.LIVE}
 
     events = lines(folder / score.EVENTS_FILE)
-    alerts = lines(folder / score.ALERTS_FILE)
     of_step: dict[str, list[dict]] = defaultdict(list)
     for document in events:
         labels = document.get("labels") or {}
         if labels.get("origin") == score.STEP and (document.get("host") or {}).get("name") in sensors:
             of_step[labels["step_id"]].append(document)
-    on_step: dict[str, list[dict]] = defaultdict(list)
-    for document in alerts:
-        labels = document.get("labels") or {}
-        if labels.get("origin") == score.STEP:
-            on_step[labels["step_id"]].append(document)
+    # Each detector's alert lines, in the order: the manager's, then each rule set's matches.
+    alerts = {
+        entry["id"]: lines(
+            folder / (score.ALERTS_FILE if entry["id"] in live else score.MATCHES_FILE.format(entry["id"]))
+        )
+        for entry in found
+    }
+    on_step: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+    for detector, documents in alerts.items():
+        for document in documents:
+            labels = document.get("labels") or {}
+            if labels.get("origin") == score.STEP:
+                on_step[labels["step_id"]].append((detector, document))
 
     plain = {
         step.get("id"): step.get("plain")
         for step in ((spec.get("path") or {}).get("steps") or [])
         if isinstance(step, dict)
     }
-    scores = {entry["id"]: entry for entry in scored["steps"]}
     databases = error_logs(spec)
     steps, kept_events, kept_alerts, cut, late_cut = [], [], [], 0, 0
     for order, record in enumerate(path.get("steps") or [], start=1):
-        step_id, entry = record["id"], scores[record["id"]]
+        step_id = record["id"]
         mine = sorted(of_step.get(step_id, []), key=lambda d: d["@timestamp"])
-        named = {(d.get("labels") or {}).get("event_id") for d in on_step.get(step_id, [])}
+        named = {(d.get("labels") or {}).get("event_id") for _, d in on_step.get(step_id, [])}
+        # The cut of a step with very many events is made for each sensor, so that no defense's sensors
+        # are cut out by another's: the first of each sensor's events up to its share, and every event
+        # a rule matched.
+        room = shares(Counter(sensor_of(d) for d in mine), lab.KEPT_EVENTS)
         placed: dict[str, dict] = {}
         for number, document in enumerate(mine, start=1):
-            if number <= lab.KEPT_EVENTS or (document.get("event") or {}).get("id") in named:
+            sensor = sensor_of(document)
+            if room[sensor] > 0 or (document.get("event") or {}).get("id") in named:
                 placed[(document.get("event") or {}).get("id")] = event_of(
                     document, step_id, number, databases
                 )
+            room[sensor] -= 1
         kept_events += placed.values()
-        held_alerts = []
-        for document in on_step.get(step_id, []):
-            rule = document.get("rule") or {}
-            level = level_word((((document.get("wazuh") or {}).get("rule")) or {}).get("level"))
+        cut += len(placed) < len(mine)
+        for detector, document in on_step.get(step_id, []):
+            rule = rule_of(document)
             event_id = (document.get("labels") or {}).get("event_id")
             linked = placed.get(event_id)
-            if level in COUNTING and not linked:
+            if rule["level"] in COUNTING and not linked:
                 # The format needs a counting alert to name the event it was raised on.
                 where = (
                     " is not in the archive (a delivery gap)"
@@ -341,38 +449,29 @@ def build(folder: Path) -> dict:
                     else f", {event_id}, is not among the step's events"
                 )
                 raise ValueError(
-                    f"the alert of rule {rule.get('id')} at {document['@timestamp']} on {step_id} counts, but the "
+                    f"the alert of rule {rule['id']} at {document['@timestamp']} on {step_id} counts, but the "
                     f"archived line it was raised on{where}, so no recording is written"
                 )
-            host = (document.get("host") or {}).get("name")
             time = linked["time"] if linked else document["@timestamp"]
             # The manager's time can run behind the line's (see score.clock): raised is then left out, and
-            # the alert counts from its line's time, as score.raised_at does.
-            late = document["@timestamp"] >= time
-            late_cut += not late
-            held_alerts.append(
+            # the alert counts from its line's time, as score.raised_at does. A rule that was evaluated
+            # after the run was never raised.
+            late = detector in live and document["@timestamp"] >= time
+            late_cut += detector in live and not late
+            kept_alerts.append(
                 {
                     "time": time,
                     **({"raised": document["@timestamp"]} if late else {}),
-                    "host": host,
-                    "detector": "pinned",
-                    "rule": {
-                        "id": str(rule.get("id")),
-                        "title": rule.get("description") or str(rule.get("id")),
-                        "level": level,
-                        "origin": "pinned",
-                    },
-                    "counts": level in COUNTING,
+                    "host": (document.get("host") or {}).get("name"),
+                    "detector": detector,
+                    "rule": {**rule, "origin": "pinned"},
+                    "counts": rule["level"] in COUNTING,
                     "step": step_id,
                     "events": [linked["id"]] if linked else [],
                 }
             )
-        kept_alerts += held_alerts
         to = record.get("to") or []
         daemon = ecs.step_clock(record) == "daemon"
-        counting = [a.get("raised", a["time"]) for a in held_alerts if a["counts"]]
-        held = len(placed)
-        cut += held < entry["events"]
         argv = record.get("argv") or []
         steps.append(
             lab.known(
@@ -395,64 +494,37 @@ def build(folder: Path) -> dict:
                 command=argv[-1] if argv else None,
                 output=output(folder, step_id),
                 happened={"answer": record.get("happened"), "basis": record.get("why")},
-                visibility=lab.known(
-                    answer=entry["visibility"],
-                    basis=basis(entry, alert_level),
-                    events=None if entry["visibility"] == "not applicable" else entry["events"],
-                    kept=held if held < entry["events"] else None,
-                ),
-                outcome=entry["outcome"],
-                first_event=min((e["time"] for e in placed.values()), default=None),
-                first_alert=min(counting, default=None),
             )
         )
     kept_events.sort(key=lambda found: found["time"])
     kept_alerts.sort(key=lambda found: found["time"])
     kept_alerts = [{"id": f"alert-{number}", **found} for number, found in enumerate(kept_alerts, start=1)]
 
-    ordinary_rules: dict[str, dict] = {}
-    for document in alerts:
-        if (document.get("labels") or {}).get("origin") != score.ORDINARY:
-            continue
-        rule = document.get("rule") or {}
-        level = (((document.get("wazuh") or {}).get("rule")) or {}).get("level")
-        entry = ordinary_rules.setdefault(
-            str(rule.get("id")),
-            {
-                "id": str(rule.get("id")),
-                "title": rule.get("description") or str(rule.get("id")),
-                "level": level_word(level),
-                "events": 0,
-            },
-        )
-        entry["events"] += 1
-    origins = (scored.get("events") or {}).get("of each origin") or {}
-    ordinary = {
-        "events": origins.get(score.ORDINARY, 0),
-        "matches": lab.ordinary_matches(list(ordinary_rules.values())),
-    }
-
+    goal = path.get("goal") or {}
+    on_host = {sensor_id(agent): agent for agent in defense.get("agents") or []}
+    when = {entry["id"]: entry["when"] for entry in found}
+    views = [
+        view(entry, steps, path, kept_events, kept_alerts, alerts, when, on_host, alert_level)
+        for entry in judged
+    ]
+    # The top level is the recording as its first defense sees it.
+    first = views[0]
+    steps = [{**step, **first["steps"][step["id"]]} for step in steps]
     tests = [step for step in steps if step["role"] == "test"]
     # A published test that runs twice, as the port scan does against two hosts, is one test of two steps.
     distinct = {step["test"]["guid"] for step in tests}
-    took = [step for step in tests if step["happened"]["answer"] == "took effect"]
-    words = Counter(step["outcome"] for step in took)
-    totals: dict = {"steps": len(tests), "took_effect": len(took)}
-    totals.update({word: words[word] for word in ("alerted", "seen", "unseen")})
-    totals["stopped"] = sum(1 for step in steps if step["outcome"] == "stopped")
-    goal = path.get("goal") or {}
-    first = steps[0] if steps else {}
-    if "started" in first:
-        alerted = [step["first_alert"] for step in tests if "first_alert" in step]
-        if alerted:
-            totals["first_alert_seconds"] = max(0.0, score.seconds_between(first["started"], min(alerted)))
-        end = next((s.get("ended") for s in steps if s["id"] == goal.get("after")), None)
-        if goal.get("passed") and end:
-            totals["goal_seconds"] = score.seconds_between(first["started"], end)
-    totals["false_alerts"] = sum(1 for match in ordinary["matches"] if match["level"] in COUNTING)
-
     environment = manifest.get("environment") or "containers on a developer machine"
     atomic = manifest.get("atomic_red_team") or {}
+    # Source names what made the run, so it stays byte-for-byte stable when the same telemetry is
+    # judged again by another defense. Post-run rules and their engine belong to detector metadata
+    # and notes; the live Wazuh components stay here even when a selected defense does not use them.
+    tools = [
+        ("Atomic Red Team", atomic.get("commit"), "tests"),
+        ("Wazuh agent", defense.get("wazuh_version"), "sensor"),
+        ("snoopy", installed(folder, defense.get("agents") or [], "snoopy"), "sensor"),
+        ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
+        ("Wazuh manager", defense.get("wazuh_version"), "rule engine"),
+    ]
     made = lab.known(
         schema="bluefire.recording/1",
         id=manifest["run_id"],
@@ -467,16 +539,10 @@ def build(folder: Path) -> dict:
             started=started,
             finished=finished,
             run_url=manifest.get("run_url"),
-            # A tool whose version the run does not hold is left out.
+            # A tool whose version the run does not hold is left out, and one is named once.
             tools=[
                 {"name": name, "version": version, "role": role}
-                for name, version, role in (
-                    ("Atomic Red Team", atomic.get("commit"), "tests"),
-                    ("Wazuh agent", defense.get("wazuh_version"), "sensor"),
-                    ("snoopy", installed(folder, defense.get("agents") or [], "snoopy"), "sensor"),
-                    ("Wazuh ruleset", defense.get("wazuh_version"), "rules"),
-                    ("Wazuh manager", defense.get("wazuh_version"), "rule engine"),
-                )
+                for name, version, role in dict.fromkeys(tools)
                 if version
             ],
             setup=lab.known(
@@ -485,7 +551,7 @@ def build(folder: Path) -> dict:
                 or None,
             ),
         ),
-        network=network(manifest, spec, rules_loaded(folder, defense.get("manager") or "manager")),
+        network=network(manifest, spec, found),
         attacker={
             "kind": "scripted",
             "description": " ".join(
@@ -507,11 +573,127 @@ def build(folder: Path) -> dict:
         steps=steps,
         events=kept_events,
         alerts=kept_alerts,
-        ordinary=ordinary,
-        score=totals,
+        ordinary=first["ordinary"],
+        score=first["score"],
+        # Only a spec that names its defenses gets them in its recording: one that names none is as before.
+        defenses=views if (manifest.get("score") or {}).get("defenses named") else None,
         notes=notes(manifest, scored, path, spec, cut, late_cut),
     )
     return lab.visible(made)
+
+
+def view(
+    judged: dict,
+    steps: list[dict],
+    path: dict,
+    events: list[dict],
+    alerts: list[dict],
+    lines_of: dict[str, list[dict]],
+    when: dict[str, str],
+    on_host: dict[str, str],
+    alert_level: int,
+) -> dict:
+    """One defense's part of a recording: for every step its own visibility, outcome, first event and first
+    alert, then its ordinary day and its score.
+
+    It is the recording as that defense alone sees it: only the events of its
+    sensors, only the alerts of its detectors, and every number counted from
+    those. `judged` is the defense as the score judged it, `events` and
+    `alerts` what the recording holds, `lines_of` each detector's alert lines,
+    `when` whether each detector ran live or after the run, and `on_host` the
+    host of each sensor.
+    """
+
+    sensors, mine = set(judged["sensors"]), set(judged["detectors"])
+    watched = {on_host[sensor] for sensor in sensors if sensor in on_host}
+    seen = {entry["id"]: entry for entry in judged["steps"]}
+    hosts = {
+        step["id"]: record.get("host") for step, record in zip(steps, path.get("steps") or [], strict=True)
+    }
+    answers = {}
+    for step in steps:
+        entry = seen[step["id"]]
+        held = [event for event in events if event["step"] == step["id"] and event["sensor"] in sensors]
+        counting = [
+            alert.get("raised", alert["time"])
+            for alert in alerts
+            if alert["step"] == step["id"] and alert["detector"] in mine and alert["counts"]
+        ]
+        first = entry.get("first_alert")
+        # A defense can run live rules and rules evaluated after the run: its first alert is told as its
+        # own rules ran, and its matches below the alert level are counted apart for each kind of rules.
+        below: Counter = Counter()
+        for rule in entry["rules"]:
+            below[when[rule["detector"]]] += rule["matches"]
+        said = basis(
+            {
+                **entry,
+                "host": hosts[step["id"]],
+                "alerts": below[score.LIVE],
+                "matches after the run": below[score.AFTER],
+                "first_alert": {**first, "raised": first["moment"]} if first else None,
+            },
+            alert_level,
+            when[first["detector"]] == score.LIVE if first else True,
+        )
+        answers[step["id"]] = lab.known(
+            visibility=lab.known(
+                answer=entry["visibility"],
+                basis=said,
+                events=None if entry["visibility"] == "not applicable" else entry["events"],
+                kept=len(held) if len(held) < entry["events"] else None,
+            ),
+            outcome=entry["outcome"],
+            first_event=min((event["time"] for event in held), default=None),
+            first_alert=min(counting, default=None),
+        )
+
+    rules: dict[tuple[str, str], dict] = {}
+    for detector in judged["detectors"]:
+        for document in lines_of[detector]:
+            if (document.get("labels") or {}).get("origin") != score.ORDINARY:
+                continue
+            if (document.get("host") or {}).get("name") not in watched:
+                continue
+            rule = rule_of(document)
+            rules.setdefault((detector, rule["id"]), {**rule, "events": 0})["events"] += 1
+    repeated = Counter(rule["id"] for rule in rules.values())
+    ordinary_rules = [
+        {
+            **rule,
+            "id": f"{detector}:{rule['id']}" if repeated[rule["id"]] > 1 else rule["id"],
+        }
+        for (detector, _), rule in rules.items()
+    ]
+    ordinary = {"events": judged["ordinary"]["events"], "matches": lab.ordinary_matches(ordinary_rules)}
+
+    tests = [step for step in steps if step["role"] == "test"]
+    took = [step for step in tests if step["happened"]["answer"] == "took effect"]
+    words = Counter(answers[step["id"]]["outcome"] for step in took)
+    totals: dict = {"steps": len(tests), "took_effect": len(took)}
+    totals.update({word: words[word] for word in ("alerted", "seen", "unseen")})
+    totals["stopped"] = sum(1 for step in steps if answers[step["id"]]["outcome"] == "stopped")
+    goal = path.get("goal") or {}
+    start = steps[0].get("started") if steps else None
+    if start:
+        alerted = [
+            answers[step["id"]]["first_alert"] for step in tests if "first_alert" in answers[step["id"]]
+        ]
+        if alerted:
+            totals["first_alert_seconds"] = max(0.0, score.seconds_between(start, min(alerted)))
+        end = next((step.get("ended") for step in steps if step["id"] == goal.get("after")), None)
+        if goal.get("passed") and end:
+            totals["goal_seconds"] = score.seconds_between(start, end)
+    totals["false_alerts"] = sum(1 for match in ordinary["matches"] if match["level"] in COUNTING)
+    return {
+        "id": judged["id"],
+        "name": judged["name"],
+        "sensors": judged["sensors"],
+        "detectors": judged["detectors"],
+        "steps": answers,
+        "ordinary": ordinary,
+        "score": totals,
+    }
 
 
 def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind: int) -> list[str]:
@@ -561,8 +743,10 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
     if cut:
         said.append(
             f"{lab.count(cut, 'step')} had more than {lab.KEPT_EVENTS} events. The recording keeps the first "
-            f"{lab.KEPT_EVENTS} of each and every event an alert was raised on; events.ecs.ndjson holds them all."
+            f"{lab.KEPT_EVENTS} of each, shared in equal parts among the sensors that recorded them, and every "
+            "event a rule matched; events.ecs.ndjson holds them all."
         )
+    said += defense_notes(manifest)
     weaknesses = manifest.get("weaknesses") or []
     if weaknesses:
         said.append(
@@ -572,6 +756,115 @@ def notes(manifest: dict, scored: dict, path: dict, spec: dict, cut: int, behind
         )
     if (manifest.get("defense") or {}).get("delivery_gap"):
         said.append("Not every line of a watched log reached the manager: see delivery in the manifest.")
+    return said
+
+
+def defense_notes(manifest: dict) -> list[str]:
+    """What a reader must know of the named defenses: which judged the run, and for each rule set that was
+    evaluated after the run what its rules were given and what they were not."""
+
+    result = manifest.get("score") or {}
+    judged, sets = result.get("defenses") or [], result.get("rule sets") or {}
+    said = []
+    if not result.get("defenses named"):
+        return said
+    held = [entry for entry in judged if entry["judged"]]
+    said.append(
+        f"{lab.count(len(held), 'defense')} judged this one run, each counting only the events of its own "
+        "sensors and the alerts of its own detectors: "
+        + "; ".join(f"{entry['name']} ({entry['id']})" for entry in held)
+        + f". The top level of the recording is the first, {held[0]['id']}. Every event that a rule of any "
+        "of them matched is kept, so a step's kept, in each defense's view, also counts the events beyond the "
+        "step's cut that the rules of another defense matched."
+    )
+    said += [
+        f"The defense {entry['id']} of the spec is not in this recording: it was not judged, since "
+        f"{entry['not judged']}."
+        for entry in judged
+        if not entry["judged"]
+    ]
+    source = manifest.get("judged_by")
+    if source:
+        said.append(
+            f"The defenses are those of the spec {source['file']} (SHA-256 {source['sha256']}), given when the "
+            "run was scored again, and not those of the spec the run ran."
+        )
+    used = {name for entry in held for name in entry["detectors"]}
+    for name, entry in sets.items():
+        if not entry.get("evaluated") or name not in used:
+            continue
+        repo, _, commit = entry["source"].partition("@")
+        engine = lab.named(entry["engine"]["name"], entry["engine"].get("version"))
+        said.append(
+            f"The detector {name} is the public rule set {repo} at commit {commit}, evaluated after the run by "
+            f"{engine} over the events the sensors recorded. Its alerts have the time of their event and no "
+            f"raised time, and count from that time. Of its {entry['rules']} rules the engine loaded "
+            f"{entry['loaded']}; a rule it did not load was not evaluated."
+        )
+        matched = entry.get("rules that matched") or []
+        if matched:
+            # The rule set's licence asks that what is said of a match keeps the rule's author.
+            said.append(
+                f"The rules of {name} that matched in this run, each with its author as the rule gives it: "
+                + "; ".join(
+                    f"{rule['title']} ({rule['rule']}), by {rule.get('author') or 'no author named'}"
+                    for rule in matched
+                )
+                + "."
+            )
+        groups = [group for group in entry["groups"] if not group.get("not evaluated")]
+        given = "; ".join(
+            f"{group['log source']}: {', '.join(group['fields given']) or 'the line itself'}, of "
+            f"{group['given']} {group['events']}"
+            for group in groups
+        )
+        missing = []
+        for group in groups:
+            fields = group.get("fields the rules name that are not given") or {}
+            if fields:
+                missing.append(
+                    f"{group['log source']}: "
+                    + ", ".join(
+                        f"{field} ({lab.count(rules, 'rule names', 'rules name')} it)"
+                        for field, rules in fields.items()
+                    )
+                )
+        said.append(
+            f"The rules of {name} were given, by Sigma log source: {given}. "
+            + (
+                "Fields not given for any event of a log source, although that source's rules name them: "
+                + "; ".join(missing)
+                + ". A rule cannot match on a field it was not given."
+                if missing
+                else "Every field they name was given."
+            )
+        )
+        starts = next((group for group in groups if group["log source"] == sigma.PROCESS.name), None)
+        if starts and "User" in starts["fields given"]:
+            said.append(
+                "A program start's User is the login name snoopy recorded, which is not always the account "
+                "the program ran as."
+            )
+        if starts and "Image" not in starts["fields given"]:
+            said.append(
+                "The run's snoopy lines do not hold the path of the program they log, as in a run made before "
+                f"the hosts' sensor recorded it: its program starts have no Image, and the rules of {name} that "
+                "need one could match nothing."
+            )
+        skipped = [group for group in entry["groups"] if group.get("not evaluated")]
+        if skipped:
+            said.append(
+                f"Not evaluated, of {name}: "
+                + "; ".join(
+                    f"{lab.count(group['rules'], 'rule')} of {group['folder']} ({group['not evaluated']})"
+                    for group in skipped
+                )
+                + "."
+            )
+        said.append(
+            "The file integrity sensor does not know which program wrote a file, and the lab's snoopy line "
+            "names no parent program: a rule that needs either cannot match here."
+        )
     return said
 
 

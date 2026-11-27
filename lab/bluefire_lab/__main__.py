@@ -131,6 +131,12 @@ def main(arguments: list[str] | None = None) -> int:
         choices=range_engine.PLANTS,
         help="plant one break, to show that the seal catches it; the run then fails",
     )
+    bringing.add_argument(
+        "--engine",
+        type=Path,
+        help="the Zircolite program: with it, the rule sets of the spec's defenses judge the run after it; "
+        "without it those defenses are not judged, and score.md says so",
+    )
     removing = actions.add_parser(
         "down",
         help="remove the containers and networks that carry both the spec's prefix and its range label",
@@ -143,27 +149,49 @@ def main(arguments: list[str] | None = None) -> int:
     rendering.add_argument("--out", type=Path, required=True, help="folder for the build context")
     locking = actions.add_parser(
         "lock",
-        help="fetch the published files the spec's hosts carry, at its commit, and write their SHA-256 to its lock",
+        help="fetch the published files the spec's hosts carry and the files of its public rule sets, each at "
+        "its commit, and write their SHA-256 to the spec's locks",
     )
     locking.add_argument("spec", type=Path, help="the range's spec file")
+    fetching = actions.add_parser(
+        "rules",
+        help="fetch a spec's public rule sets by their lock into a folder's rules/, as a run does into its own, "
+        "so that a run folder made without them can be judged by them",
+    )
+    fetching.add_argument("spec", type=Path, help="the range's spec file")
+    fetching.add_argument("--out", type=Path, required=True, help="the folder to fetch into, a run's folder")
     scoring = actions.add_parser(
         "score",
         help="write a run folder's ECS lines, score and recording.json again from its own files; "
         "starts nothing",
     )
     scoring.add_argument("folder", type=Path, help="the folder a run of `range run` wrote")
+    scoring.add_argument(
+        "--engine",
+        type=Path,
+        help="the Zircolite program, which evaluates the rule sets in the run's folder; without it the "
+        "defenses that run them are not judged",
+    )
+    scoring.add_argument(
+        "--defenses",
+        type=Path,
+        help="a spec file whose defenses and rule sets judge the run in place of those of the spec it ran, "
+        "as for a run made before its spec named any",
+    )
 
     options = parser.parse_args(arguments)
     if options.command == "range":
         if options.action == "down":
             return range_engine.down(options.spec)
         if options.action == "score":
-            return range_engine.rescore(options.folder)
+            return range_engine.rescore(options.folder, options.engine, options.defenses)
         if options.action == "render":
             return range_engine.render(options.spec, options.out)
         if options.action == "lock":
             return range_engine.lock(options.spec)
-        return range_engine.run(options.spec, options.out, options.plant, options.hold)
+        if options.action == "rules":
+            return range_engine.rules(options.spec, options.out)
+        return range_engine.run(options.spec, options.out, options.plant, options.hold, options.engine)
     if options.command == "atomic":
         return atomic.write(options.spec, options.atomics, options.out)
     if options.command == "run":

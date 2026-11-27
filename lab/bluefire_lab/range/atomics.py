@@ -26,6 +26,8 @@ from .spec import Spec, SpecError
 
 RAW = "https://raw.githubusercontent.com/{repo}/{commit}/{path}"
 CONTENTS = "https://api.github.com/repos/{repo}/contents/{path}?ref={commit}"
+# The most entries of one folder that GitHub's contents API lists.
+CONTENTS_LIMIT = 1000
 FETCH_SECONDS = 60
 # The folder on a host that holds the published files it carries, as the executor names it.
 ATOMICS_PATH = "/opt/atomics"
@@ -168,17 +170,33 @@ def check_listed(name: str, password: str, listed, data: bytes) -> None:
 def list_folder(spec: Spec, folder: str, get: Fetch) -> list[str]:
     """The files of a folder of the repository at the commit, through GitHub's contents API."""
 
-    url = CONTENTS.format(repo=spec.atomics.repo, commit=spec.atomics.commit, path=folder)
+    return listed(spec.atomics.repo, spec.atomics.commit, folder, get)
+
+
+def listed(repo: str, commit: str, folder: str, get: Fetch) -> list[str]:
+    """The files of a folder of a GitHub repository at a commit, those of its folders too.
+
+    GitHub's contents API lists at most 1,000 entries of a folder and does not say when
+    it left some out, so a folder with that many is refused: a lock made from it could
+    miss files.
+    """
+
+    entries = json.loads(get(CONTENTS.format(repo=repo, commit=commit, path=folder)))
+    if not isinstance(entries, list):
+        raise SpecError(f"{folder} of {repo} at {commit} is not a folder")
+    if len(entries) >= CONTENTS_LIMIT:
+        raise SpecError(
+            f"{folder} of {repo} at {commit} has {CONTENTS_LIMIT} entries or more, and GitHub lists at "
+            f"most {CONTENTS_LIMIT} of a folder: name its folders one by one"
+        )
     found = []
-    for entry in json.loads(get(url)):
+    for entry in entries:
         if entry.get("type") == "dir":
-            found += list_folder(spec, entry["path"], get)
+            found += listed(repo, commit, entry["path"], get)
         elif entry.get("type") == "file":
             found.append(entry["path"])
         else:
-            raise SpecError(
-                f"{entry.get('path')} at {spec.atomics.commit} is a {entry.get('type')}, not a file"
-            )
+            raise SpecError(f"{entry.get('path')} at {commit} is a {entry.get('type')}, not a file")
     return found
 
 

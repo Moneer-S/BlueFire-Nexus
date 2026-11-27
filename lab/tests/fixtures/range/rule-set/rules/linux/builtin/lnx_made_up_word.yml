@@ -1,0 +1,13 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - A Word In Any Line
+id: 00000000-0000-4000-8000-000000000005
+status: test
+description: Looks for a word in any line of a Linux log.
+author: The lab's tests
+logsource:
+    product: linux
+detection:
+    keywords:
+        - 'Accepted password'
+    condition: keywords
+level: medium

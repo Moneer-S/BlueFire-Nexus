@@ -243,14 +243,19 @@ jobs:
   # line with its origin or the step it is tied to, scores the alerts the stock rules raised
   # on the shop's own work and what the defense made of each step of the path, with the race
   # between the first alert and the goal, and writes recording.json and the replay page from
-  # it. The path alone can take about 25 minutes: s01 has a timeout of 600 s, and the two port
-  # scans, which try every port, run to their timeout of 300 s each.
+  # it. Each defense the spec names judges that one run: the run fetches the public rule sets
+  # by their lock into its own folder, and after the run the rule engine evaluates them over
+  # the events the agents recorded. The path alone can take about 25 minutes: s01 has a timeout
+  # of 600 s, and the two port scans, which try every port, run to their timeout of 300 s each.
   range-one:
     name: range one's path, sealed and watched
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       SPEC: lab/range/range-one.yaml
+      # The rule engine, the same program at the same address and digest as in lab.yml.
+      ZIRCOLITE_URL: https://github.com/wagga40/Zircolite/releases/download/v4.7.1/Zircolite-4.7.1-linux-x64.zip
+      ZIRCOLITE_DIGEST: sha256:f09d3ba377ef0bf4899bba71b63ffca38d714f71765a716e46ad3549da5e316a
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -264,6 +269,17 @@ jobs:
           echo "LAB=$RUNNER_TEMP/venv/bin/bluefire-lab" >> "$GITHUB_ENV"
           echo "OUT=$RUNNER_TEMP/range-one" >> "$GITHUB_ENV"
           docker version
+
+      # The program that evaluates the public rule sets after the run. It runs on the runner, over
+      # the files the run collected, and never inside the range.
+      - name: Fetch the rule engine
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zircolite.zip" "$ZIRCOLITE_URL"
+          echo "${ZIRCOLITE_DIGEST#sha256:}  $RUNNER_TEMP/zircolite.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/zircolite.zip" -d "$RUNNER_TEMP/zircolite"
+          engine=$(find "$RUNNER_TEMP/zircolite" -maxdepth 2 -type f -name Zircolite)
+          test -x "$engine"
+          echo "ENGINE=$engine" >> "$GITHUB_ENV"
 
       # Fetches the published files the hosts carry at the spec's commit, checks each against
       # lab/range/range-one.lock, and writes the Dockerfile and the bake file.
@@ -308,10 +324,11 @@ jobs:
         run: echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED ))" >> "$GITHUB_ENV"
 
       # The path runs between the activity's warm-up and its tail, so the ordinary activity runs
-      # for as long as the path, which is long enough for cron to start each cron job.
+      # for as long as the path, which is long enough for cron to start each cron job. With the
+      # rule engine, the defenses whose rules run after the run judge it too.
       - name: Run the range
         run: |
-          "$LAB" range run "$SPEC" --out "$OUT/run"
+          "$LAB" range run "$SPEC" --out "$OUT/run" --engine "$ENGINE"
 
       # Every planned step ran and was attempted, nothing stopped the path, the last step took
       # effect and the goal check passed.
@@ -407,6 +424,25 @@ jobs:
           fi
           "$LAB" replay "$OUT/run/recording.json" --template bluefire/ui/replay.html \
             --out "$OUT/run/replay.html"
+
+      # Every defense the spec names judged the run: each rule set was read from the run's own
+      # folder, where every file had the lock's SHA-256, and the rule engine evaluated it. A
+      # defense that was not judged is not a defense that alerted on nothing, so it fails the job.
+      - name: Every defense of the spec judged the run
+        run: |
+          if ! jq -e '
+            (.score.defenses | length > 0 and all(.judged == true))
+            and ((.score."rule sets" // {}) | all(.evaluated == true and .loaded > 0))
+            and (.recording.error == null)
+          ' "$OUT/run/manifest.json" > /dev/null; then
+            jq '{defenses: [.score.defenses[]? | {id, judged, "not judged"}],
+              rule_sets: ((.score."rule sets" // {}) | map_values({evaluated, "not evaluated", rules, loaded}))}' \
+              "$OUT/run/manifest.json"
+            exit 1
+          fi
+          jq -r '.score.defenses[] | "\(.id): \(.outcomes.alerted) alerted, \(.outcomes.seen) seen, \(.outcomes.unseen) unseen"' \
+            "$OUT/run/manifest.json"
+          jq -e '[.defenses[].id] == [input.score.defenses[].id]' "$OUT/run/recording.json" "$OUT/run/manifest.json" > /dev/null
 
       - name: Summary
         if: always()

@@ -1,0 +1,15 @@
+# Made up for the lab's tests: not a published rule.
+title: Made Up - Find Started
+id: 00000000-0000-4000-8000-000000000001
+status: test
+description: Matches a start of the program find, by its path.
+author: The lab's tests
+logsource:
+    product: linux
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: '/find'
+        CommandLine|contains: 'id_rsa'
+    condition: selection
+level: high

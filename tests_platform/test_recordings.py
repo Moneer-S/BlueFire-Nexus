@@ -1527,9 +1527,61 @@ def test_a_recording_the_lab_writes_from_a_range_run_is_imported(
     assert range_engine.rescore(folder) == 0
 
     written = recordings.parse_recording_bytes((folder / "recording.json").read_bytes())
+    source = copy.deepcopy(written["source"])
     stored = service.import_recording({"recording": written})
 
     assert stored["created"] is True
+
+    # Judge the same immutable telemetry by another spec. Its first defense deliberately runs no
+    # live rule, so source.tools must still name the Wazuh components that were present in the run.
+    # Without an engine the public rules are not judged, but this is already another evaluation.
+    small_range.with_rules(folder)
+    lock = json.loads((folder / "manifest.json").read_text())["rule_sets"]["sigma"]["lock"]
+    commit = "c" * 40
+    alternate = tmp_path / "alternate.yaml"
+    alternate.write_text(
+        small_range.spec_text(
+            f"""\
+rule_sets:
+  sigma:
+    kind: sigma
+    repo: SigmaHQ/sigma
+    commit: {commit}
+    folders: [rules/linux/process_creation]
+    licence: LICENSE
+    lock: alternate.rules.lock
+defenses:
+  - {{id: agents-only, name: The agents with no live rules, sensors: [wazuh-agent], rules: []}}
+  - {{id: alternate-sigma, name: Another Sigma evaluation, sensors: [wazuh-agent], rules: [sigma]}}
+"""
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "alternate.rules.lock").write_text(
+        f"# sigma: SigmaHQ/sigma {commit}\n"
+        + "".join(f"{digest}  {path}\n" for path, digest in sorted(lock.items())),
+        encoding="utf-8",
+    )
+
+    assert range_engine.rescore(folder, defenses=alternate) == 0
+    without_engine = recordings.parse_recording_bytes((folder / "recording.json").read_bytes())
+    assert without_engine["source"] == source
+    stored_without = service.import_recording({"recording": without_engine})
+    assert stored_without["created"] is True and stored_without["another_evaluation"] is True
+
+    # Adding the post-run evaluator changes detector metadata and notes, never source-run identity.
+    program = small_range.matching(monkeypatch, [("a program the test started", small_range.HIGH)])
+    assert range_engine.rescore(folder, program, alternate) == 0
+    with_engine = recordings.parse_recording_bytes((folder / "recording.json").read_bytes())
+    assert with_engine["source"] == source
+    sigma = next(
+        detector for detector in with_engine["network"]["detectors"] if detector["id"] == "sigma"
+    )
+    assert f"SigmaHQ/sigma at {commit[:12]}" in sigma["name"]
+    assert "Zircolite 4.7.1" in sigma["name"] and len(sigma["digest"]) == 64
+    stored_with = service.import_recording({"recording": with_engine})
+    assert stored_with["created"] is True and stored_with["another_evaluation"] is True
+
     kept = service.recording(written["id"])["recording"]
     assert kept["kind"] == "attack path"
     assert [step["outcome"] for step in kept["steps"]] == ["alerted", "seen"]

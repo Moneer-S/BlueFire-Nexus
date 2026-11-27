@@ -66,6 +66,17 @@ the rules from level 7 up to the alert level on ordinary work are a second
 number, for review, never added to the first. Alerts at the alert level on the
 engine's own work and on unattributed events are listed apart: the bench's own
 noise is not the shop's.
+
+A named defense (`defenses` in the spec) is the kinds of sensor it records
+with and the rules it runs. One run is recorded with every sensor on, and each
+defense judges that same run (`judge`): it counts only the events its own
+sensors recorded and only the matches of its own rules. The rules the manager
+ran live are its alerts; a rule set that is evaluated after the run (`sigma`)
+gives matches, each at the time of its event and with no time of being raised,
+which count as alerts when the rule's own level is high or critical. A match
+is tied as an alert is, by the event it is on: to a step, to the ordinary day,
+or, on the engine's own work or an unattributed event, listed apart and never
+counted. The score above stays the detail of the manager's live rules.
 """
 
 from __future__ import annotations
@@ -74,6 +85,7 @@ import math
 import posixpath
 import re
 import shlex
+import shutil
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -81,7 +93,8 @@ from pathlib import Path
 
 from ..recording import outcome as score_word
 from ..report import count
-from . import activity, ecs, wazuh
+from . import activity, ecs, rulesets, sigma, wazuh
+from .spec import WAZUH_AGENT, WAZUH_RULES, Defense, RuleSet, SpecError
 
 ENGINE = "engine"
 CLEANUP = "cleanup"
@@ -106,6 +119,26 @@ SHOWN_LINES = 3
 LINE_CHARACTERS = 240
 EVENTS_FILE = "events.ecs.ndjson"
 ALERTS_FILE = "alerts.ecs.ndjson"
+# The matches of a rule set that was evaluated after the run, by the set's name.
+MATCHES_FILE = "alerts.{}.ecs.ndjson"
+# The manager's live rules as a recording names their detector, and when each kind of rules ran.
+PINNED = "pinned"
+LIVE = "live"
+AFTER = "after the run"
+# The defense of a range whose spec names none: its agents and the rules its manager runs live.
+BASELINE = Defense("wazuh-stock", "Wazuh with its stock rules", (WAZUH_AGENT,), (WAZUH_RULES,))
+
+
+def sensor_id(kind: str, host: str) -> str:
+    """A sensor's id in a recording: its kind and the host it runs on."""
+
+    return f"{kind}-{host}"
+
+
+def detector_id(rules: str) -> str:
+    """The id of a defense's rules as a recording's detector: `pinned` for the manager's live rules, as before."""
+
+    return PINNED if rules == WAZUH_RULES else rules
 
 
 def _tag(event: dict) -> str:
@@ -609,6 +642,8 @@ def race(steps: list[dict], goal: dict | None, agree: bool = True) -> dict:
         if goal and goal.get("passed") and after and after.get("time_source") not in (None, "daemon")
         else "the goal was not reached"
     )
+    if reached is None:
+        found["not reached"] = unreached
     if alert is None:
         found["says"] = "no alert" + ("" if reached is not None else f"; {unreached}")
     elif reached is None:
@@ -622,6 +657,18 @@ def race(steps: list[dict], goal: dict | None, agree: bool = True) -> dict:
     if not agree:
         found["says"] = f"not a result, the clocks are not shown to agree: {found['says']}"
     return found
+
+
+def path_outcome(race_: dict) -> str:
+    """Whether the path reached its goal, and after how long, in one sentence: it is the same for every defense."""
+
+    if race_.get("start") is None:
+        return race_["says"]
+    if "goal_seconds" in race_:
+        said = f"the path reached its goal {race_['goal_seconds']} s after its first step started"
+    else:
+        said = f"the path did not reach its goal ({race_.get('not reached') or 'the goal was not reached'})"
+    return said if race_.get("result") else f"not a result, the clocks are not shown to agree: {said}"
 
 
 def clock(steps: list[Stretch], events: list[dict], found: list[tuple], records: list[dict]) -> dict:
@@ -799,6 +846,286 @@ def path_score(
     }
 
 
+def live_matches(alerts: list[dict], picked: list[tuple], places: list, alert_level: int) -> list[dict]:
+    """The manager's alerts as the judging of a defense reads them: each a match of a rule that ran live,
+    which counts from the moment it was raised, at the alert level or higher."""
+
+    found = []
+    for alert, (origin, job, step, tied_by), place in zip(alerts, picked, places, strict=True):
+        rule = alert.get("rule") or {}
+        level = rule.get("level")
+        found.append(
+            {
+                "detector": PINNED,
+                "rule": str(rule.get("id")),
+                "title": rule.get("description"),
+                "level": level,
+                "counts": isinstance(level, int) and not isinstance(level, bool) and level >= alert_level,
+                "moment": ecs.iso(raised_at(alert)),
+                "host": (alert.get("agent") or {}).get("name"),
+                "event": place,
+                "origin": origin,
+                "job": job,
+                "step": step,
+                "tied_by": tied_by,
+            }
+        )
+    return found
+
+
+def after_the_run(
+    out: Path,
+    rule_set: RuleSet,
+    engine: Path | None,
+    lock: dict[str, str] | None,
+    events: list[dict],
+    ties: list[tuple],
+    ids: list[str],
+) -> tuple[dict, list[dict] | None]:
+    """Give the run's archived events to a rule set from the run's own folder, and write its matches as ECS lines.
+
+    Returns what the score records of the set and its matches, each tied as
+    its event is and at its event's time. Without a rule engine, or when a
+    rule file of the run's folder is missing or is not the file the lock
+    names, or when the engine fails, there are no matches (None) and the
+    record says why: the set was not evaluated, which is not the same as a set
+    that matched nothing.
+    """
+
+    name = MATCHES_FILE.format(rule_set.name)
+    found: dict = {
+        "kind": rule_set.kind,
+        "source": rulesets.source(rule_set),
+        "when": AFTER,
+        "evaluated": False,
+    }
+    try:
+        if engine is None:
+            raise SpecError("no rule engine was given (--engine <path to Zircolite>)")
+        if lock is None:
+            raise SpecError(
+                f"the run did not fetch the rule set: its folder has no {rulesets.FOLDER}/{rule_set.name} "
+                "checked against a lock"
+            )
+        folder = rulesets.held(out, rule_set.name, lock)
+        made = sigma.evaluate_set(
+            engine, folder, list(rule_set.folders), events, out / "engine" / rule_set.name
+        )
+    except (SpecError, sigma.EngineError, OSError) as error:
+        (out / name).unlink(missing_ok=True)
+        found["not evaluated"] = str(error)
+        return found, None
+    matches, documents = [], []
+    for match in made.pop("matches"):
+        index, rule = match["event"], match["rule"]
+        origin, job, step, tied_by = ties[index]
+        reference = f"https://github.com/{rule_set.repo}/blob/{rule_set.commit}/{rule['file']}"
+        documents.append(
+            ecs.match(
+                events[index],
+                {**rule, "reference": reference},
+                rule_set.name,
+                origin,
+                job,
+                step,
+                tied_by,
+                ids[index],
+            )
+        )
+        matches.append(
+            {
+                "detector": detector_id(rule_set.name),
+                "rule": rule["id"],
+                "title": rule["title"],
+                "level": rule["level"],
+                "counts": rule["level"] in sigma.ALERT_LEVELS,
+                "author": rule["author"],
+                # The rules ran after the run: a match counts from the time of its event.
+                "moment": ecs.iso(_when(events[index])),
+                "host": (events[index].get("agent") or {}).get("name"),
+                "event": index,
+                "origin": origin,
+                "job": job,
+                "step": step,
+                "tied_by": tied_by,
+            }
+        )
+    found.update(made)
+    found.update(
+        evaluated=True,
+        digest=rulesets.digest(rule_set, lock),
+        file=name,
+        lines=ecs.write(out / name, documents),
+    )
+    found["rules that matched"] = matched_rules(matches)
+    return found, matches
+
+
+def matched_rules(matches: list[dict]) -> list[dict]:
+    """The distinct rules among matches: each with its level, whether it counts as an alert, how many
+    matches, the first, and the steps, jobs or other origins they fell on. Those that count come first."""
+
+    rules: dict[tuple, dict] = {}
+    for match in matches:
+        entry = rules.setdefault(
+            (match["detector"], match["rule"]),
+            {
+                "detector": match["detector"],
+                "rule": match["rule"],
+                "title": match["title"],
+                "level": match["level"],
+                "counts": match["counts"],
+                **({"author": match["author"]} if match.get("author") else {}),
+                "matches": 0,
+                "first": match["moment"],
+                "on": {},
+            },
+        )
+        entry["matches"] += 1
+        entry["first"] = min(entry["first"], match["moment"])
+        if match["origin"] == STEP:
+            where = match["step"]
+        elif match["origin"] == ORDINARY:
+            where = match["job"] or "no job named"
+        else:
+            where = match["origin"]
+        label = f"{where} ({match['host']})"
+        entry["on"][label] = entry["on"].get(label, 0) + 1
+    return sorted(rules.values(), key=lambda entry: (not entry["counts"], entry["detector"], entry["rule"]))
+
+
+def judge(
+    defense: Defense,
+    hosts: dict[str, list[str]],
+    matches: dict[str, list[dict]],
+    events: list[dict],
+    ties: list[tuple],
+    path: dict | None,
+    started: set[str],
+    agree: bool,
+    day: dict,
+) -> dict:
+    """What one defense made of the run: of each step of the path, the race, and the ordinary day.
+
+    `hosts` gives the hosts with a sensor of each kind and `matches` the rule
+    matches of each detector. The defense counts the events on the hosts of
+    its own sensors and the matches of its own rules on them, by the ties
+    every defense shares. `day` is the ordinary day's score, whose
+    denominators are the run's own.
+    """
+
+    watched = {host for kind in defense.sensors for host in hosts.get(kind, [])}
+    detectors = [detector_id(rules) for rules in defense.rules]
+    mine = [m for detector in detectors for m in matches.get(detector, []) if m["host"] in watched]
+    here = [(event.get("agent") or {}).get("name") in watched for event in events]
+    found: dict = {
+        "id": defense.id,
+        "name": defense.name,
+        "sensors": [sensor_id(kind, host) for kind in defense.sensors for host in hosts.get(kind, [])],
+        "rules": list(defense.rules),
+        "detectors": detectors,
+        "judged": True,
+    }
+    if path and path.get("steps"):
+        steps, timed = [], []
+        for record_ in path["steps"]:
+            step_id = record_["id"]
+            of_step = [
+                (event, tied_by)
+                for event, (_, _, step, tied_by), mine_too in zip(events, ties, here, strict=True)
+                if mine_too and step == step_id
+            ]
+            tied = [event for event, tied_by in of_step if tied_by in COUNTED]
+            by_tie = Counter(tied_by for _, tied_by in of_step if tied_by in COUNTED)
+            on_step = [m for m in mine if m["step"] == step_id and m["tied_by"] in COUNTED]
+            counting = [m for m in on_step if m["counts"]]
+            # The first alert is that of the rule whose first match is the earliest, as `path_score` has it.
+            earliest: dict[tuple, dict] = {}
+            for m in counting:
+                key = (m["detector"], m["rule"])
+                if key not in earliest or m["moment"] < earliest[key]["moment"]:
+                    earliest[key] = m
+            first = min(earliest.values(), key=lambda m: m["moment"]) if earliest else None
+            seen = visibility(step_id in started, len(tied), bool(counting))
+            steps.append(
+                {
+                    "id": step_id,
+                    "visibility": seen,
+                    "outcome": score_word(record_.get("happened"), seen),
+                    "events": len(tied),
+                    "events by tie": dict(by_tie),
+                    "lines tied by address alone": [_line(event) for event in tied[:SHOWN_LINES]]
+                    if set(by_tie) == {"address"}
+                    else [],
+                    "coincident events": sum(1 for _, tied_by in of_step if tied_by == "window"),
+                    "first_event": ecs.iso(min(_when(event) for event in tied)) if tied else None,
+                    "matches": len(on_step),
+                    "rules": matched_rules(on_step),
+                    "first_alert": {
+                        key: first[key] for key in ("moment", "detector", "rule", "title", "level")
+                    }
+                    if first
+                    else None,
+                }
+            )
+            source = ecs.step_clock(record_)
+            told = source != ecs.END_BEFORE_START
+            timed.append(
+                {
+                    "id": step_id,
+                    "started": record_.get("started") if told else None,
+                    "ended": record_.get("ended") if told else None,
+                    "time_source": source,
+                    "first_alert": {"raised": first["moment"], **steps[-1]["first_alert"]} if first else None,
+                }
+            )
+        words = Counter(step["outcome"] for step in steps)
+        raced = race(timed, path.get("goal"), agree)
+        if "first_alert" in raced:
+            # Its moment says when it counts from: the time the manager raised a live rule's alert, the
+            # time of the event for a rule that ran after the run, which was never raised.
+            del raced["first_alert"]["raised"]
+        found["steps"] = steps
+        found["outcomes"] = {
+            word: words[word] for word in ("alerted", "seen", "unseen", "no effect", "inconclusive")
+        }
+        found["race"] = raced
+    ordinary = matched_rules([m for m in mine if m["origin"] == ORDINARY])
+    found["ordinary"] = {
+        "scored": day["scored"],
+        "not scored": day["not scored"],
+        "minutes": day["denominators"]["minutes of activity"],
+        "events": sum(
+            1 for (origin, *_), mine_too in zip(ties, here, strict=True) if mine_too and origin == ORDINARY
+        ),
+        "matches": ordinary,
+        "false alerts": sum(1 for rule in ordinary if rule["counts"]),
+    }
+    found["alerts on the engine's work and unattributed events"] = matched_rules(
+        [m for m in mine if m["counts"] and m["origin"] not in (ORDINARY, STEP)]
+    )
+    return found
+
+
+def not_judged(defense: Defense, hosts: dict[str, list[str]], sets: dict[str, dict]) -> dict:
+    """A defense that did not judge the run, with why: a rule set of its own was not evaluated."""
+
+    why = [
+        f"its rule set {rules} was not evaluated: {sets[rules].get('not evaluated')}"
+        for rules in defense.rules
+        if rules in sets and not sets[rules]["evaluated"]
+    ]
+    return {
+        "id": defense.id,
+        "name": defense.name,
+        "sensors": [sensor_id(kind, host) for kind in defense.sensors for host in hosts.get(kind, [])],
+        "rules": list(defense.rules),
+        "detectors": [detector_id(rules) for rules in defense.rules],
+        "judged": False,
+        "not judged": "; ".join(why) or "one of its rule sets is not a rule set of the spec",
+    }
+
+
 def record(
     out: Path,
     logs: Path,
@@ -810,6 +1137,12 @@ def record(
     path: dict | None = None,
     uses: set[tuple[str, str]] | None = None,
     names: dict[str, str] | None = None,
+    *,
+    defenses: tuple[Defense, ...] = (),
+    rule_sets: tuple[RuleSet, ...] = (),
+    agents: list[str] | None = None,
+    engine: Path | None = None,
+    locks: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict, dict | None]:
     """Write events.ecs.ndjson and alerts.ecs.ndjson from the manager's copied logs, and score the run.
 
@@ -820,6 +1153,13 @@ def record(
     what the defense made of each step and the race (see `path_score`).
     Returns the manifest's `ecs` section, whose `error` says why the conversion
     failed (then the score is None), and the score.
+
+    `defenses` are the spec's named defenses, each of which judges the run
+    (`judge`); a spec that names none has the one its agents and its manager's
+    live rules make. `rule_sets` are the rule sets they run after the run,
+    `agents` the hosts with an agent, `engine` the rule engine's program and
+    `locks` the SHA-256 of each rule set's files, by the set's name: a rule
+    set is evaluated only from files of the run's folder that have them.
     """
 
     section: dict = {
@@ -832,6 +1172,18 @@ def record(
         ),
     }
     try:
+        # A rescore is one current judgment of the run. Remove matches and private engine work from
+        # an earlier judgment before naming the files written by this one.
+        for stale in out.glob("alerts.*.ecs.ndjson"):
+            if stale.is_symlink() or stale.is_file():
+                stale.unlink()
+            elif stale.exists():
+                shutil.rmtree(stale)
+        work = out / "engine"
+        if work.is_symlink() or work.is_file():
+            work.unlink()
+        elif work.exists():
+            shutil.rmtree(work)
         raw = {}
         for kind in ("archives", "alerts"):
             folder = logs / kind
@@ -900,6 +1252,29 @@ def record(
                 "raw lines": len(path["steps"]),
                 "ECS lines": ecs.write(out / STEPS_FILE, written),
             }
+        # Every defense judges the same run: the manager's live alerts, and the matches of each rule
+        # set that is evaluated now, after the run, from the files in the run's folder.
+        matches = {PINNED: live_matches(alerts, picked, places, alert_level)}
+        sets: dict[str, dict] = {}
+        for rule_set in rule_sets:
+            sets[rule_set.name], evaluated = after_the_run(
+                out, rule_set, engine, (locks or {}).get(rule_set.name), events, found, ids
+            )
+            if evaluated is not None:
+                matches[detector_id(rule_set.name)] = evaluated
+        if sets:
+            result["rule sets"] = sets
+        seen = {(event.get("agent") or {}).get("name") for event in events}
+        hosts = {WAZUH_AGENT: list(agents) if agents is not None else sorted(host for host in seen if host)}
+        agree = result["path"]["clock"]["agree"] if "path" in result else True
+        result["defenses"] = [
+            judge(defense, hosts, matches, events, found, path, {s.step for s in steps}, agree, result)
+            if all(detector_id(rules) in matches for rules in defense.rules)
+            else not_judged(defense, hosts, sets)
+            for defense in defenses or (BASELINE,)
+        ]
+        # A spec that names no defense has the one above, and its recording is written as before.
+        result["defenses named"] = bool(defenses)
         return section, result
     except ecs.ConversionError as error:
         section["error"] = str(error)
@@ -1033,14 +1408,205 @@ def summary(manifest: dict) -> str:
 
 
 def markdown(manifest: dict) -> str:
-    """score.md: the path's score first, then the ordinary day's."""
+    """score.md: the path's outcome and what each defense made of it, then the ordinary day of the manager's
+    live rules, then what each rule set that ran after the run was given and what it matched."""
 
     path = path_summary(manifest)
-    return (path + "\n" if path else "") + summary(manifest)
+    text = (path + "\n" if path else "") + summary(manifest)
+    later = ([] if path else defenses_table(manifest)) + rule_sets_summary(manifest)
+    return text + ("\n" + "\n".join(later) if later else "")
+
+
+# A kind of sensor in words, for a table.
+SENSOR_WORDS = {WAZUH_AGENT: "Wazuh agent"}
+
+
+def _sensors(ids: list[str]) -> str:
+    """A defense's sensors in words: each kind with the hosts it is on."""
+
+    said = []
+    for kind, words in SENSOR_WORDS.items():
+        hosts = [found.removeprefix(kind + "-") for found in ids if found.startswith(kind + "-")]
+        if hosts:
+            said.append(f"{words} on {', '.join(hosts)}")
+    return "; ".join(said) or "none"
+
+
+def _rule_words(manifest: dict, defense: dict) -> str:
+    """A defense's rules in words: what they are, and whether they ran live or after the run."""
+
+    sets = (manifest.get("score") or {}).get("rule sets") or {}
+    said = []
+    for rules in defense["rules"]:
+        if rules == WAZUH_RULES:
+            version = (manifest.get("defense") or {}).get("wazuh_version")
+            said.append(f"Wazuh{' ' + version if version else ''} stock rules, {LIVE}")
+            continue
+        entry = sets.get(rules) or {}
+        repo, _, commit = str(entry.get("source") or rules).partition("@")
+        words = f"{repo} at {commit[:8]}, {AFTER}" if commit else f"{repo}, {AFTER}"
+        if entry.get("evaluated"):
+            engine = entry.get("engine") or {}
+            words += (
+                f" ({entry['rules']} rules, {entry['loaded']} loaded by "
+                f"{' '.join(str(part) for part in (engine.get('name'), engine.get('version')) if part)})"
+            )
+        said.append(words)
+    return "; ".join(said) or "none: it only records"
+
+
+def _rule(match: dict) -> str:
+    """A rule that matched, in a few words: the manager's by their number, a rule set's by its title."""
+
+    if match["detector"] == PINNED:
+        return f"rule {match['rule']} ({_cell(match['title'])}, level {match['level']})"
+    return f"{_cell(match['title'])} (level {match['level']})"
+
+
+def defenses_table(manifest: dict) -> list[str]:
+    """One row for each defense: its sensors, its rules, how many steps it alerted on, saw and did not see,
+    its first alert against the goal, and its false alerts on the ordinary day."""
+
+    judged = (manifest.get("score") or {}).get("defenses") or []
+    if not judged:
+        return []
+    lines = [
+        "| Defense | Sensors | Rules | Steps alerted on | Steps seen, no alert | Steps not seen | First alert "
+        "| False alerts on the ordinary day |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for defense in judged:
+        start = f"| {_cell(defense['name'])} (`{defense['id']}`) | {_sensors(defense['sensors'])} | "
+        start += f"{_cell(_rule_words(manifest, defense))} | "
+        if not defense["judged"]:
+            lines.append(start + "not judged | not judged | not judged | not judged | not judged |")
+            continue
+        words, raced = defense.get("outcomes"), defense.get("race") or {}
+        steps = (
+            f"{words['alerted']} | {words['seen']} | {words['unseen']}"
+            if words
+            else "no path | no path | no path"
+        )
+        alert, reached = raced.get("first_alert_seconds"), raced.get("goal_seconds")
+        if alert is None:
+            first = "none"
+        else:
+            first = f"{alert} s after the first step started"
+            if reached is None:
+                first += "; the goal was not reached"
+            elif alert <= reached:
+                first += f", {round(reached - alert, 3)} s before the goal"
+            else:
+                first += f", {round(alert - reached, 3)} s after the goal"
+            first += f": {_rule(raced['first_alert'])} on {raced['first_alert']['step']}"
+            if not raced.get("result"):
+                first += " (not a result: the clocks are not shown to agree)"
+        day = defense["ordinary"]
+        false_alerts = f"{day['false alerts']} in {day['minutes']} minutes" if day["scored"] else "not scored"
+        lines.append(start + f"{steps} | {first} | {false_alerts} |")
+    lines.append("")
+    for defense in judged:
+        if not defense["judged"]:
+            lines += [f"The defense `{defense['id']}` was not judged: {_cell(defense['not judged'])}.", ""]
+    lines += [
+        "Every defense judges the same run and counts only what its own sensors recorded and its own rules "
+        "matched. A match counts as an alert at level high or critical, which for Wazuh's rules is level 12 "
+        "or higher; a rule that ran after the run counts from the time of the event it matched. A false "
+        "alert is a rule that counts and matched ordinary work, whatever the number of its matches.",
+        "",
+    ]
+    return lines
+
+
+def rule_sets_summary(manifest: dict) -> list[str]:
+    """What each rule set that runs after the run was given, how much of it the engine loaded and read, and
+    the rules that matched with where their matches fell."""
+
+    sets = (manifest.get("score") or {}).get("rule sets") or {}
+    lines: list[str] = []
+    for name, entry in sets.items():
+        repo, _, commit = str(entry.get("source") or "").partition("@")
+        title = f"{repo} at {commit}, {AFTER}"
+        if manifest.get("result") != "sealed":
+            # As the path and the ordinary day are: what the run recorded is shown, labelled.
+            title = (
+                f"not a result, the run ended {manifest.get('result')} (exit code {manifest.get('exit_code')}): "
+                + title
+            )
+        lines += [f"### Rule set {name} of {manifest.get('range')}: {title}", ""]
+        if not entry.get("evaluated"):
+            lines += [f"Not evaluated: {_cell(entry.get('not evaluated'))}.", ""]
+            continue
+        engine = entry.get("engine") or {}
+        lines += [
+            f"{engine.get('name')} {engine.get('version')} was given the run's archived events after the run, "
+            f"each rule folder over the events of its log source and no others: {entry['rules']} rules, "
+            f"{entry['loaded']} loaded by the engine. A rule the engine does not load was not evaluated. "
+            f"The matches are in {entry['file']} ({count(entry['lines'], 'line')}), each at the time of its "
+            "event.",
+            "",
+            "| Rule folder | Log source | Events given | Rules | Loaded | Given | Read | Rules that matched | "
+            "Matches | Fields given | Fields rules name that are not given |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for group in entry["groups"]:
+            missing = group.get("fields the rules name that are not given") or {}
+            given = "" if "events" not in group else ", ".join(group.get("fields given") or []) or "the line"
+            lines.append(
+                f"| {group['folder']} | {_cell(group['log source'])} | "
+                f"{_cell(group.get('events') or 'none: ' + group['not evaluated'])} | {group['rules']} | "
+                f"{group['loaded']} | {group['given']} | {group['read']} | {group['rules that matched']} | "
+                f"{group['matches']} | {given} | "
+                + (", ".join(f"{field} ({rules})" for field, rules in missing.items()) or "none")
+                + " |"
+            )
+        lines += [
+            "",
+            "Loaded is what the engine says it loaded of the rules it was given, and read what it says it "
+            "read of the events. In the last column, the number after a field is how many of the rules name "
+            "it: a rule cannot match on a field it was not given.",
+            "",
+        ]
+        skipped = [group for group in entry["groups"] if group.get("not evaluated")]
+        if skipped:
+            lines += [
+                "Not evaluated: "
+                + "; ".join(
+                    f"{count(group['rules'], 'rule')} of {group['folder']} ({_cell(group['not evaluated'])})"
+                    for group in skipped
+                )
+                + ".",
+                "",
+            ]
+        left_out = entry.get("files that are not a rule") or []
+        if left_out:
+            lines += [
+                "Files that are not a rule: "
+                + "; ".join(f"{_cell(item['file'])} ({item['why']})" for item in left_out)
+                + ".",
+                "",
+            ]
+        matched = entry.get("rules that matched") or []
+        lines += [f"Rules that matched: {len(matched)}.", ""]
+        if matched:
+            lines += [
+                "| Rule | Level | Counts as an alert | Author | Matches | On |",
+                "|---|---|---|---|---|---|",
+            ]
+            lines += [
+                f"| {_cell(rule['title'])} (`{rule['rule']}`) | {rule['level']} | "
+                f"{'yes' if rule['counts'] else 'no'} | {_cell(rule.get('author') or '')} | {rule['matches']} | "
+                + _cell(", ".join(f"{where} {number}" for where, number in rule["on"].items()))
+                + " |"
+                for rule in matched
+            ]
+            lines.append("")
+    return lines
 
 
 def path_summary(manifest: dict) -> str:
-    """What the defense made of each step of the path, and the race, as Markdown for a CI job's summary."""
+    """The path's outcome, what each defense made of it and of each step, and the detail of the manager's
+    live rules, as Markdown for a CI job's summary."""
 
     found = (manifest.get("score") or {}).get("path")
     if not found:
@@ -1048,7 +1614,7 @@ def path_summary(manifest: dict) -> str:
     level = found["alert_level"]
     race_ = found["race"]
     day = manifest.get("score") or {}
-    title = f"### Path of {manifest.get('range')}: {race_['says']}"
+    outcome = path_outcome(race_)
     lines = []
     if manifest.get("result") != "sealed":
         lines += [
@@ -1057,11 +1623,48 @@ def path_summary(manifest: dict) -> str:
             "",
             f"Reason: {manifest.get('reason')}",
             "",
-            f"What the run recorded, which is not a score of the range: {race_['says']}.",
+            f"What the run recorded, which is not a score of the range: {outcome}.",
             "",
         ]
     else:
-        lines += [title, ""]
+        lines += [f"### Path of {manifest.get('range')}: {outcome}", ""]
+    lines += defenses_table(manifest)
+    judged = day.get("defenses") or []
+    columns = [
+        (
+            f"`{defense['id']}`",
+            {step["id"]: step["outcome"] for step in defense.get("steps") or []} if defense["judged"] else {},
+        )
+        for defense in judged
+    ]
+    lines += [
+        "| Step | Host | What happened | Recorded | Agents | Ties | Coincident | First alert of the live rules | "
+        + "".join(f"{name} | " for name, _ in columns or [("Outcome", {})])
+        + "Expected live rules missing |",
+        "|---|---|---|---|---|---|---|---|" + "---|" * (len(columns) or 1) + "---|",
+    ]
+    for step in found["steps"]:
+        first = step.get("first_alert")
+        words = [said.get(step["id"], "not judged") for _, said in columns] or [step["outcome"]]
+        lines.append(
+            f"| {step['id']} | {step['host']}{''.join(' to ' + t for t in step['to'])} | {step['happened']} | "
+            f"{step['visibility']} ({count(step['events'], 'event')}) | "
+            + _cell(", ".join(f"{k} {v}" for k, v in step["agents"].items()) or "none")
+            + " | "
+            + _cell(", ".join(f"{k} {v}" for k, v in step["events by tie"].items()) or "none")
+            + f" | {step['coincident events']} | "
+            + (f"{first['rule']} (level {first['level']}) at {first['raised']}" if first else "none")
+            + " | "
+            + "".join(f"{word} | " for word in words)
+            + (", ".join(step["expected rules that did not appear"]) or "none")
+            + " |"
+        )
+    lines += [
+        "",
+        "Recorded, the agents, the ties and the coincident events are the same for every defense that has "
+        "these sensors. The rest of this section is the detail of the Wazuh manager's live rules.",
+        "",
+    ]
     alert = race_.get("first_alert")
     parts = [
         f"First alert at level {level} or higher: "
@@ -1088,26 +1691,6 @@ def path_summary(manifest: dict) -> str:
     else:
         parts.append(f"Beside it, the ordinary day was not scored: {day.get('not scored')}.")
     lines += [" ".join(parts), ""]
-    lines += [
-        "| Step | Host | What happened | Recorded | Agents | Ties | Coincident | First alert | Outcome | "
-        "Expected rules missing |",
-        "|---|---|---|---|---|---|---|---|---|---|",
-    ]
-    for step in found["steps"]:
-        first = step.get("first_alert")
-        lines.append(
-            f"| {step['id']} | {step['host']}{''.join(' to ' + t for t in step['to'])} | {step['happened']} | "
-            f"{step['visibility']} ({count(step['events'], 'event')}) | "
-            + _cell(", ".join(f"{k} {v}" for k, v in step["agents"].items()) or "none")
-            + " | "
-            + _cell(", ".join(f"{k} {v}" for k, v in step["events by tie"].items()) or "none")
-            + f" | {step['coincident events']} | "
-            + (f"{first['rule']} (level {first['level']}) at {first['raised']}" if first else "none")
-            + f" | {step['outcome']} | "
-            + (", ".join(step["expected rules that did not appear"]) or "none")
-            + " |"
-        )
-    lines.append("")
     for step in found["steps"]:
         shown = step.get("lines tied by address alone") or []
         if shown:
