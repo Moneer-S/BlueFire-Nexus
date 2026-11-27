@@ -19,7 +19,7 @@ import { clockTime, count, MARK_WORDS, outcomeClass, outcomeWords, plural, senso
 import { FreeText } from "../live/FreeText";
 import type { StyleVars } from "../live/motion";
 import { buildTimeline } from "../live/playback";
-import { firstView, readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
+import { defensesOf, firstView, judgedBy, readRecording, RecordingError, timeOf, type Recording, type RecordingEvent, type Step } from "../live/recording";
 import { ErrorState, LoadingState } from "../components/Primitives";
 import "../live/live.css";
 import "./RecordedRun.css";
@@ -31,10 +31,12 @@ export function FixStepPage() {
   return <FixStep key={`${recordingId}/${file ?? ""}/${stepId}`} recordingId={recordingId} file={file} stepId={stepId} />;
 }
 
-/** The recording as the run's own page plays it: one with defenses as its first defense judged the run. */
-function read(value: unknown): { recording: Recording } | { problem: string } {
+/** The recording as the run's own page played it, including its chosen defense. */
+function read(value: unknown, defenseId: string | null): { recording: Recording } | { problem: string } {
   try {
-    return { recording: firstView(readRecording(value, { running: true })) };
+    const recording = readRecording(value, { running: true });
+    const defense = defensesOf(recording).find((item) => item.id === defenseId);
+    return { recording: defense ? judgedBy(recording, defense.id) : firstView(recording) };
   } catch (error) {
     return { problem: error instanceof RecordingError ? error.message : "The recording could not be read." };
   }
@@ -42,6 +44,7 @@ function read(value: unknown): { recording: Recording } | { problem: string } {
 
 function FixStep({ recordingId, file, stepId }: { recordingId: string; file?: string; stepId: string }) {
   const [search] = useSearchParams();
+  const defense = search.get("defense");
   const back = backPath(recordingId, file, stepId, search);
   const entry = useQuery({
     queryKey: file ? ["recording-file", recordingId, file] : ["recording", recordingId],
@@ -51,7 +54,7 @@ function FixStep({ recordingId, file, stepId }: { recordingId: string; file?: st
     refetchInterval: (query) => (query.state.data?.summary.running ? RUNNING_POLL_MS : false),
   });
   const data = entry.data;
-  const reading = useMemo(() => (data ? read(data.recording) : null), [data]);
+  const reading = useMemo(() => (data ? read(data.recording, defense) : null), [data, defense]);
   const recording = reading && "recording" in reading ? reading.recording : null;
   const row = useMemo(() => (recording ? stepRows(recording, buildTimeline(recording)).find((item) => item.step.id === stepId) ?? null : null), [recording, stepId]);
 

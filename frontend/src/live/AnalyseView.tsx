@@ -2,6 +2,7 @@
 // step and the chosen step's detail, or the whole run's when none is chosen.
 
 import { useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { Recording } from "./recording";
 import type { Timeline } from "./playback";
 import type { RunFacts } from "./moment";
@@ -24,9 +25,13 @@ interface AnalyseViewProps {
   onSelect: (stepId: string | undefined) => void;
   onWatch: (stepId: string) => void;
   onFix?: (stepId: string) => void;
+  /** The named defense whose run is shown. Absent for the legacy view. */
+  judge?: string;
+  /** Every defense's verdict on the run, above the chosen defense's lanes. */
+  defenses?: ReactNode;
 }
 
-export function AnalyseView({ recording, timeline, facts, colours, select, focusSelected = false, onSelect, onWatch, onFix }: AnalyseViewProps) {
+export function AnalyseView({ recording, timeline, facts, colours, select, focusSelected = false, onSelect, onWatch, onFix, judge, defenses }: AnalyseViewProps) {
   const rows = useMemo(() => stepRows(recording, timeline), [recording, timeline]);
   const numbers = useMemo(() => testNumbers(recording), [recording]);
   const sensors = recording.network.sensors.filter((sensor) => rows.some((row) => row.bySensor.has(sensor.id)));
@@ -70,7 +75,8 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
   };
 
   return (
-    <section className="lv-analyse" aria-label="Analyse" ref={panel}>
+    <section className={`lv-analyse${defenses ? " has-defenses" : ""}`} aria-label="Analyse" ref={panel}>
+      {defenses ? <div className="lv-an-defenses">{defenses}</div> : null}
       <RunLanes recording={recording} timeline={timeline} facts={facts} colours={colours} selected={row?.step.id} onSelect={choose} />
       <div className="lv-an-body">
         <StepTable recording={recording} rows={rows} sensors={sensors} colours={colours} state={table} onState={filterTable} selected={row?.step.id} onSelect={chooseInTable} />
@@ -92,7 +98,7 @@ export function AnalyseView({ recording, timeline, facts, colours, select, focus
               takeFocus={focusDetail}
             />
           ) : (
-            <RunSummary recording={recording} timeline={timeline} facts={facts} onSelect={chooseInTable} />
+            <RunSummary recording={recording} timeline={timeline} facts={facts} judge={judge} onSelect={chooseInTable} />
           )}
         </div>
       </div>

@@ -23,6 +23,16 @@ interface ScrubberProps {
   /** True once the clock has reached the current step's recorded end: from then it is no longer said to be running. */
   ended: boolean;
   onSeek: (time: number) => void;
+  /**
+   * The rows to keep room for, at least: of a recording judged by several defenses, the most any of them has, so that
+   * the timeline keeps one height, and the map above it its place, whichever defense is chosen.
+   */
+  rows?: number;
+}
+
+/** How many quiet rows the scrubber draws for `timeline`: one for the events, if any, and one for the alerts that count, if any. */
+export function quietRows(timeline: Timeline): number {
+  return (timeline.arrivals.length > 0 ? 1 : 0) + (timeline.fires.some(({ alert }) => countsForScore(alert)) ? 1 : 0);
 }
 
 const BINS = 720;
@@ -85,7 +95,7 @@ const ScrubberCells = memo(
   (a, b) => a.recording === b.recording && a.timeline === b.timeline && a.current === b.current && a.revealed === b.revealed && a.lateFired === b.lateFired,
 );
 
-export function Scrubber({ recording, timeline, time, real, revealed, ended, onSeek }: ScrubberProps) {
+export function Scrubber({ recording, timeline, time, real, revealed, ended, onSeek, rows = 0 }: ScrubberProps) {
   const track = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
   const duration = timeline.duration;
@@ -103,7 +113,7 @@ export function Scrubber({ recording, timeline, time, real, revealed, ended, onS
     return rows.map((row, index) => ({ key: row.key, label: row.label, className: row.className, path: lanePath(row.positions, index * (ROW + GAP), ROW) }));
   }, [recording, timeline]);
 
-  const lanesHeight = Math.max(0, lanes.length * (ROW + GAP) - GAP);
+  const lanesHeight = Math.max(0, Math.max(lanes.length, rows) * (ROW + GAP) - GAP);
   const current = segmentIndexAt(timeline, time);
   const segment = timeline.segments[current];
   const longest = useMemo(() => Math.max(0, maxOf(timeline.gaps.map((gap) => (gap.realEnd - gap.realStart) / 1000))), [timeline]);

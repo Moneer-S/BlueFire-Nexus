@@ -52,6 +52,62 @@ const shippedPath = JSON.parse(readFileSync(join(resolve(process.cwd(), ".."), "
 };
 const shippedPathScore = `${shippedPath.score.alerted} of ${shippedPath.score.steps} steps alerted, ${shippedPath.score.seen} seen, ${shippedPath.score.unseen} unseen`;
 
+
+/** The same real path judged by two defenses that disagree on which step alerted. */
+function multiDefenseRecording() {
+  const base = smallRecording();
+  const [first, second] = base.steps;
+  if (!first || !second) throw new Error("The small recording must have two steps.");
+  const verdict = (step: (typeof base.steps)[number]) => ({
+    visibility: step.visibility,
+    outcome: step.outcome,
+    first_event: step.first_event,
+    ...("first_alert" in step ? { first_alert: step.first_alert } : {}),
+  });
+  const secondAlertAt = "2026-11-20T10:02:01.200Z";
+  const capture = { id: "capture", name: "Packet capture", host: "web", records: "packets" };
+  const sigma = { id: "sigma", name: "Sigma rules over packets", rules: 3, when: "after the run" };
+  const captured = { id: "e3", time: secondAlertAt, host: "web", sensor: "capture", kind: "packet", text: "a packet to the secrets service", step: "2", tied_by: "session" };
+  const captureAlert = {
+    id: "a2",
+    time: secondAlertAt,
+    host: "web",
+    detector: "sigma",
+    rule: { id: "r2", title: "Connection to the secrets service", level: "high", origin: "pinned" },
+    counts: true,
+    step: "2",
+    events: ["e3"],
+  };
+  return {
+    ...base,
+    id: "small-judged-twice",
+    title: "One path, judged by two defenses",
+    network: { ...base.network, sensors: [...base.network.sensors, capture], detectors: [...base.network.detectors, sigma] },
+    events: [...base.events, captured],
+    alerts: [...base.alerts, captureAlert],
+    defenses: [
+      {
+        id: "sysmon-alone",
+        name: "Sysmon with the published rules",
+        sensors: ["sysmon"],
+        detectors: ["pinned"],
+        steps: { "1": verdict(first), "2": verdict(second) },
+        score: { ...base.score },
+      },
+      {
+        id: "with-capture",
+        name: "Sysmon, packet capture and Sigma",
+        sensors: ["sysmon", "capture"],
+        detectors: ["sigma"],
+        steps: {
+          "1": { visibility: { answer: "telemetry only", basis: "Sysmon recorded it but Sigma did not alert", events: 1 }, outcome: "seen", first_event: first.first_event },
+          "2": { visibility: { answer: "alert", basis: "Sigma matched the captured packet", events: 2 }, outcome: "alerted", first_event: second.first_event, first_alert: secondAlertAt },
+        },
+        score: { ...base.score, first_alert_seconds: 61.2 },
+      },
+    ],
+  };
+}
 function file(name: string, value: unknown) {
   return { name, mimeType: "application/json", buffer: Buffer.from(JSON.stringify(value)) };
 }
@@ -154,6 +210,35 @@ test("the service serves the interface, and its main screens open on a fresh wor
   const imported = recorded.getByRole("listitem").filter({ hasText: "Two steps toward a secrets file" });
   await expect(imported.getByText("Imported, not verified by BlueFire", { exact: true })).toBeVisible();
   await expect(imported.getByText("1 of 2 steps alerted, 1 seen, 0 unseen")).toBeVisible();
+
+  // The app keeps the same real moment while either defense judges every visible answer.
+  const judged = multiDefenseRecording();
+  await page.getByLabel("Recording file to import").setInputFiles(file("judged.json", judged));
+  await expect(page).toHaveURL(/#\/runs\/recorded\/small-judged-twice/);
+  const judgedAddress = new URL(page.url());
+  judgedAddress.hash = "/runs/recorded/small-judged-twice?step=2&at=2&paused=1&defense=sysmon-alone";
+  await page.goto(judgedAddress.toString());
+  const choices = page.getByRole("group", { name: "The defenses that judge this run" });
+  const choiceRows = choices.getByRole("button");
+  await expect(choiceRows).toHaveCount(2);
+  await expect(choiceRows.first()).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".lv-sensor.is-off title", { hasText: "Packet capture" })).toHaveCount(1);
+  const judgedSlider = page.getByRole("slider", { name: /^Timeline/ });
+  const judgedAt = await judgedSlider.getAttribute("aria-valuenow");
+  const judgedClock = await page.locator(".lv-clock b").textContent();
+  await expect(page.locator(".lv-word")).toHaveText("seen");
+  await page.keyboard.press("2");
+  await expect(choiceRows.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await expect(page).toHaveURL(/defense=with-capture/);
+  await expect(judgedSlider).toHaveAttribute("aria-valuenow", judgedAt ?? "");
+  await expect(page.locator(".lv-clock b")).toHaveText(judgedClock ?? "");
+  await expect(page.locator(".lv-word")).toHaveText("alerted");
+  await expect(page.locator(".lv-sensor.is-off title", { hasText: "Packet capture" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Analyse", exact: true }).click();
+  const comparison = page.getByRole("group", { name: "The defenses side by side" });
+  await expect(comparison).toBeVisible();
+  await expect(comparison.getByRole("button")).toHaveCount(2);
+  await page.getByRole("link", { name: "Runs", exact: true }).first().click();
 
   // A recording still running says so, and its page asks the service again until it has finished.
   let asked = 0;
