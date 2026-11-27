@@ -207,6 +207,8 @@ const defenses = defensesOf(pathRecording);
 const expectedDefenses = ["wazuh-stock", "sigma-public", "packets-et-open", "ai-tool-packs", "ordered-credential"];
 if (defenses.map((defense) => defense.id).join("|") !== expectedDefenses.join("|"))
   untrue(DEFENSE_SECTION, `its defenses are ${defenses.map((defense) => defense.id).join(", ") || "none"}`);
+const [defaultDefense] = defenses;
+if (!defaultDefense) untrue(DEFENSE_SECTION, "it has no default defense");
 const expectedScores = [
   [1, 10, 0, 0],
   [0, 11, 0, 0],
@@ -796,7 +798,10 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await expectGoal(page, "the loop's first frame");
   await openPath(at(alertTold));
   await expect(page.getByRole("region", { name: "The step", exact: true }).locator(".lv-word"), `${CAPTION}: the loop's frame of the first alert does not tell the first step alerted`).toHaveText("alerted");
-  await expect(page.getByText(/^The defense raised its first alert/), "the loop's frame of the first alert has no first alert on the race line").toBeVisible();
+  const loopRace = page.getByRole("region", { name: "The race", exact: true });
+  const firstPathStep = `step ${pathSteps.indexOf(pathFirst) + 1}`;
+  await expect(loopRace.getByText(new RegExp(`first alert · ${firstPathStep}`, "i")).filter({ visible: true }), "the loop's frame of the first alert has no visible first-alert mark on the race line").toBeVisible();
+  await expect(loopRace.locator(".lv-winning"), "the loop's frame of the first alert does not name the default defense and alerted step").toContainText(`${defaultDefense.name} first alerted on ${firstPathStep}`);
   await openPath(at(copyLate));
   await expect(page.getByRole("region", { name: "The step", exact: true }).getByRole("button", { name: "Fix this", exact: true })).toBeVisible();
   const loop: LoopPlan = {
