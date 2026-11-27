@@ -525,14 +525,14 @@ export function StepDetail({ recording, row, colours, testNumber, testsTotal, or
 
       <section className="lv-dt-sec">
         <h4>
-          Rules that matched <span>only high or critical is an alert</span>
+          Rules that matched <span>only high or critical is an alert; the groups describe scoring, detector provenance names authorship</span>
         </h4>
         {anyMatch ? (
           <>
-            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules at alert level: in the score" alerts={m.alert} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Rules in this defense at alert level: in the score" alerts={m.alert} ended={row.end} />
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Lab alerts: the lab's own rules at alert level, not in the score" alerts={m.labAlert} ended={row.end} />
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules below alert level: for review" alerts={m.review.filter((alert) => alert.rule.level !== "informational")} ended={row.end} />
-            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Published rules at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
+            <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Rules in this defense at informational level: nobody reviews them" alerts={m.review.filter((alert) => alert.rule.level === "informational")} ended={row.end} />
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="The lab's own rules below alert level" alerts={m.labReview} ended={row.end} />
             <MatchGroup recording={recording} evidenceIndex={evidenceIndex} title="Matched only the launcher line, which never counts" alerts={m.launcher} ended={row.end} />
           </>

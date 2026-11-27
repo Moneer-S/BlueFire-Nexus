@@ -85,6 +85,17 @@ describe("the rules that matched, in the detail of analyse mode", () => {
     expect(rows[0]).toEqual({ title: "Multiple authentication failures followed by a success.", counts: "1 event · 19:32:52.192", notes: ["Raised 908 ms after the step ended."] });
   }, 60_000);
 
+  it("groups the ordered rule by scoring without calling its repository-authored matches published", () => {
+    const view = open("lab-range-one-path", { mode: "analyse", defense: "ordered-credential", select: "s08" });
+    const detail = view.container.querySelector("article.lv-dt");
+    const text = detail?.textContent ?? "";
+    expect(text).toContain("Rules in this defense at alert level: in the score");
+    expect(text).toContain("Rules in this defense at informational level: nobody reviews them");
+    expect(text).toContain("the groups describe scoring, detector provenance names authorship");
+    expect(text).not.toContain("Published rules at alert level");
+    expect(text).not.toContain("Published rules at informational level");
+  }, 60_000);
+
   it("counts an event once where a match names it twice, as the step's fix page does", () => {
     // Test 42 of a later run of the 60 tests: its one match of this rule names the event 45-3 twice.
     const raw = (file("lab-pair-history-watch-after") as { alerts: RawAlert[] }).alerts.filter((alert) => alert.step === "test:23d348f3" && alert.rule.title === "Use Of Hidden Paths Or Files");
