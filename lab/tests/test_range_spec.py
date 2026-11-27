@@ -550,6 +550,22 @@ def test_a_tracked_manifest_rule_set_keeps_the_repository_sets_positional_fields
     )
 
 
+def test_a_tracked_manifest_can_publish_sigma_rules() -> None:
+    document = manifest_defended()
+    document["rule_sets"]["published"]["kind"] = "sigma"
+    document["defenses"][0]["sensors"] = ["wazuh-agent"]
+
+    found = range_spec.parse(document).rule_sets[0]
+
+    assert found == range_spec.RuleSet(
+        "published",
+        "sigma",
+        source_file="lab/rules/published/SHA256SUMS",
+        sha256="a" * 64,
+        version="7",
+    )
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [

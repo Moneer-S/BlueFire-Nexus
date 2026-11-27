@@ -58,18 +58,55 @@ def defended(folder: Path = RULE_SET) -> range_spec.Spec:
 TRACKED_FILES = {
     "rules/LICENSE": b"made-up licence\r\n",
     "rules/classification.config": b"config kept byte for byte\n",
-    "rules/alpha.rules": b'alert tcp any any -> any any (msg:"alpha"; sid:1;)\r\n\xff',
+    "rules/alpha.rules": b'alert tcp any any -> any any (msg:"alpha"; sid:1;)\r\n',
     "rules/nested/beta.rules": b'alert icmp any any -> any any (msg:"beta"; sid:2;)\n',
+}
+
+TRACKED_SIGMA_FILES = {
+    "atomic.yml": b"""title: Tracked atomic rule
+id: 00000000-0000-4000-8000-000000000001
+status: test
+description: A harmless tracked-rule fixture.
+author: The lab's tests
+date: 2026-11-26
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection:
+    Image|endswith: /bash
+  condition: selection
+level: high
+""",
+    "correlation.yaml": b"""title: Tracked correlation rule
+id: 00000000-0000-4000-8000-000000000002
+status: test
+description: A harmless tracked-correlation fixture.
+author: The lab's tests
+date: 2026-11-26
+correlation:
+  type: event_count
+  rules:
+    - 00000000-0000-4000-8000-000000000001
+  group-by:
+    - Computer
+  timespan: 1m
+  condition:
+    gte: 2
+level: high
+""",
+    "NOTICE.txt": b"auxiliary provenance is retained\n",
 }
 
 
 def tracked(
     repository: Path,
     *,
+    kind: str = "suricata",
     manifest_data: bytes | None = None,
     files: dict[str, bytes] | None = None,
 ) -> tuple[range_spec.Spec, bytes, dict[str, str]]:
-    """A spec whose Suricata rules are tracked behind a manifest in a stand-in worktree."""
+    """A spec whose rules are tracked behind a manifest in a stand-in worktree."""
 
     repository.mkdir()
     (repository / ".git").write_text("gitdir: elsewhere\n")
@@ -87,7 +124,7 @@ def tracked(
     document = range_spec.read(SMALL.read_text())
     document["rule_sets"] = {
         "published": {
-            "kind": "suricata",
+            "kind": kind,
             "source": "lab/rules/published/SHA256SUMS",
             "sha256": hashlib.sha256(manifest_data).hexdigest(),
             "version": "7",
@@ -97,12 +134,13 @@ def tracked(
         {
             "id": "packets",
             "name": "Packets with published rules",
-            "sensors": ["packet-capture"],
+            "sensors": ["packet-capture" if kind == "suricata" else "wazuh-agent"],
             "rules": ["published"],
         }
     ]
-    document["hosts"]["web"]["packages"].append("tcpdump")
-    document["hosts"]["web"]["capture"] = "packets"
+    if kind == "suricata":
+        document["hosts"]["web"]["packages"].append("tcpdump")
+        document["hosts"]["web"]["capture"] = "packets"
     return range_spec.parse(document, folder=repository / "lab" / "range"), manifest_data, hashes
 
 
@@ -437,6 +475,61 @@ def test_a_tracked_manifest_and_every_listed_file_are_copied_byte_for_byte(tmp_p
     }
     assert rulesets.digest(spec.rule_sets[0], without_rule_changes) == made["digest"]
     assert rulesets.held(tmp_path / "run", "published", made["lock"]) == copied
+
+
+def test_a_tracked_sigma_manifest_counts_and_digests_only_its_executable_rules(tmp_path: Path) -> None:
+    spec, manifest_data, hashes = tracked(tmp_path / "repository", kind="sigma", files=TRACKED_SIGMA_FILES)
+
+    made = rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    copied = tmp_path / "run" / "rules" / "published"
+    assert made["kind"] == "sigma" and made["files"] == 2
+    assert (copied / "atomic.yml").read_bytes() == TRACKED_SIGMA_FILES["atomic.yml"]
+    assert (copied / "correlation.yaml").read_bytes() == TRACKED_SIGMA_FILES["correlation.yaml"]
+    assert (copied / "NOTICE.txt").read_bytes() == TRACKED_SIGMA_FILES["NOTICE.txt"]
+    assert made["lock"]["SHA256SUMS"] == hashlib.sha256(manifest_data).hexdigest()
+    listing = "".join(f"{hashes[path]}  {path}\n" for path in ("atomic.yml", "correlation.yaml"))
+    assert made["digest"] == hashlib.sha256(listing.encode()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("kind", "path", "data", "reason"),
+    [
+        ("sigma", "bad.yml", b"title: not a rule\n", "not a Sigma rule or correlation"),
+        ("suricata", "bad.rules", b"# only a comment\n", "no active Suricata rule"),
+    ],
+)
+def test_a_tracked_manifest_refuses_a_listed_rule_file_that_is_not_executable(
+    tmp_path: Path, kind: str, path: str, data: bytes, reason: str
+) -> None:
+    spec, _, _ = tracked(tmp_path / "repository", kind=kind, files={path: data})
+
+    with pytest.raises(range_spec.SpecError, match=reason):
+        rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    assert not (tmp_path / "run" / "rules").exists()
+
+
+@pytest.mark.parametrize(
+    ("kind", "files", "message"),
+    [
+        ("sigma", {"NOTICE.txt": b"provenance only\n"}, "lists no sigma rule file"),
+        (
+            "suricata",
+            {"classification.config": b"config only\n"},
+            "lists no suricata rule file",
+        ),
+    ],
+)
+def test_a_tracked_manifest_must_list_a_rule_file_of_its_kind(
+    tmp_path: Path, kind: str, files: dict[str, bytes], message: str
+) -> None:
+    spec, _, _ = tracked(tmp_path / "repository", kind=kind, files=files)
+
+    with pytest.raises(range_spec.SpecError, match=message):
+        rulesets.fetch(spec, spec.rule_sets[0], tmp_path / "run")
+
+    assert not (tmp_path / "run" / "rules").exists()
 
 
 def test_a_changed_tracked_manifest_is_refused_before_a_run_folder_is_written(tmp_path: Path) -> None:

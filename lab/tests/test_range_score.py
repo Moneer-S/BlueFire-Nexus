@@ -842,6 +842,18 @@ defenses:
   - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
   - {id: made-up-rules, name: Rules made up for the tests, sensors: [wazuh-agent], rules: [made-up]}
 """
+TRACKED_SIGMA_SET = """\
+rule_sets:
+  ordered-credential:
+    kind: sigma
+    source: lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    version: "1"
+defenses:
+  - {id: wazuh-stock, name: Wazuh with its stock rules, sensors: [wazuh-agent], rules: [wazuh]}
+  - {id: ordered-credential, name: Ordered credential activity, sensors: [wazuh-agent],
+     rules: [ordered-credential]}
+"""
 HIGH = {
     "id": "00000000-0000-4000-8000-00000000000a",
     "title": "Made Up - A Rule That Counts",
@@ -997,6 +1009,56 @@ def test_a_match_of_a_rule_set_is_tied_as_its_event_is(tmp_path: Path, monkeypat
     ]
     # The manager's own alerts are written as before, one line for each raw line.
     assert manifest["ecs"]["files"]["alerts.ecs.ndjson"]["ECS lines"] == 4
+
+
+def test_a_tracked_sigma_set_runs_from_its_root_and_links_its_public_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = small_run(tmp_path)
+    rule = {**HIGH, "file": "atomic.yml"}
+    files = {
+        "atomic.yml": b"title: a stand-in tracked rule\n",
+    }
+    manifest_data = "".join(
+        f"{hashlib.sha256(data).hexdigest()}  {path}\n" for path, data in files.items()
+    ).encode()
+    files["SHA256SUMS"] = manifest_data
+    lock = {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
+    for relative, data in files.items():
+        path = folder / "rules" / "ordered-credential" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def configure(run: dict) -> None:
+        run["spec"].update(text=spec_text(TRACKED_SIGMA_SET))
+        run["rule_sets"] = {"ordered-credential": {"lock": lock}}
+
+    rewrite(folder, configure)
+
+    def evaluate_set(program, rules, folders, events, work, pipelines=()) -> dict:
+        assert folders == ["."] and (rules / "atomic.yml").is_file()
+        return {
+            "engine": {"name": "Zircolite", "version": "4.7.1"},
+            "pipelines": list(pipelines),
+            "groups": [],
+            "files that are not a rule": [],
+            "rules": 1,
+            "loaded": 1,
+            "matches": [{"rule": rule, "event": PLACE["a program the test started"]}],
+        }
+
+    monkeypatch.setattr(sigma, "evaluate_set", evaluate_set)
+
+    manifest = judged(folder, RANGE_ONE)
+
+    alert = ecs_lines(folder, "alerts.ordered-credential.ecs.ndjson")[0]
+    assert alert["rule"]["reference"] == (
+        "https://github.com/Moneer-S/BlueFire-Nexus/blob/main/"
+        "lab/rules/linux/process_creation/ordered_credential_access/atomic.yml"
+    )
+    found = manifest["score"]["rule sets"]["ordered-credential"]
+    assert found["evaluated"] is True
+    assert found["source"] == ("lab/rules/linux/process_creation/ordered_credential_access/SHA256SUMS@1")
 
 
 def test_a_correlation_alerts_on_its_terminal_event_and_keeps_every_evidence_event(

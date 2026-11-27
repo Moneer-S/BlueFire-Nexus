@@ -127,6 +127,7 @@ NETWORK_EVENTS_FILE = "events.network.ecs.ndjson"
 ALERTS_FILE = "alerts.ecs.ndjson"
 # The matches of a rule set that was evaluated after the run, by the set's name.
 MATCHES_FILE = "alerts.{}.ecs.ndjson"
+PUBLIC_RULE_REPOSITORY = "https://github.com/Moneer-S/BlueFire-Nexus/blob/main"
 # The manager's live rules as a recording names their detector, and when each kind of rules ran.
 PINNED = "pinned"
 LIVE = "live"
@@ -1339,10 +1340,11 @@ def after_the_run(
                 "checked against a lock"
             )
         folder = rulesets.held(out, rule_set.name, lock)
+        folders = list(rule_set.folders) if rule_set.folders else ["."]
         made = sigma.evaluate_set(
             engine,
             folder,
-            list(rule_set.folders),
+            folders,
             events,
             out / "engine" / rule_set.name,
             rule_set.pipelines,
@@ -1376,7 +1378,11 @@ def after_the_run(
         evidence = [place for place in evidence if place != index] + [index]
         origin, job, step, tied_by = ties[index]
         evidence_event_ids = [ids[place] for place in evidence]
-        reference = f"https://github.com/{rule_set.repo}/blob/{rule_set.commit}/{rule['file']}"
+        if rulesets.local(rule_set):
+            relative = posixpath.join(posixpath.dirname(rule_set.source_file), rule["file"])
+            reference = f"{PUBLIC_RULE_REPOSITORY}/{relative}"
+        else:
+            reference = f"https://github.com/{rule_set.repo}/blob/{rule_set.commit}/{rule['file']}"
         documents.append(
             ecs.match(
                 events[index],

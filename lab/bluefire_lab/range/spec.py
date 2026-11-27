@@ -1189,8 +1189,6 @@ def _rule_sets(value: object, atomics: Atomics | None) -> tuple[RuleSet, ...]:
                 "give a recorded run to"
             )
         if local:
-            if entry["kind"] != "suricata":
-                raise SpecError(f"{where}: a tracked rule manifest must have kind suricata")
             source = entry["source"]
             if (
                 not isinstance(source, str)

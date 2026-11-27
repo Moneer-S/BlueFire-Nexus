@@ -28,6 +28,7 @@ from .spec import RuleSet, Spec, SpecError
 FOLDER = "rules"
 SOURCE = "SOURCE"
 MANIFEST_ENTRY = re.compile(r"([0-9a-f]{64})  ([^\r\n]+)\Z")
+RULE_SUFFIXES = {"sigma": (".yml", ".yaml"), "suricata": (".rules",)}
 
 
 def local(rule_set: RuleSet) -> bool:
@@ -38,6 +39,12 @@ def local(rule_set: RuleSet) -> bool:
 
 def manifest_name(rule_set: RuleSet) -> str:
     return PurePosixPath(rule_set.source_file).name
+
+
+def is_rule_file(rule_set: RuleSet, path: str) -> bool:
+    """Whether a tracked file has the executable suffix for this set's rule kind."""
+
+    return PurePosixPath(path).suffix.lower() in RULE_SUFFIXES[rule_set.kind]
 
 
 def repository(spec: Spec, rule_set: RuleSet) -> Path:
@@ -105,8 +112,11 @@ def read_manifest(data: bytes, rule_set: RuleSet) -> dict[str, str]:
         found[path] = digest_
     if not found:
         raise SpecError(f"the manifest {rule_set.source_file} lists no file")
-    if not any(PurePosixPath(path).suffix == ".rules" for path in found):
-        raise SpecError(f"the manifest {rule_set.source_file} lists no .rules file")
+    if not any(is_rule_file(rule_set, path) for path in found):
+        suffixes = " or ".join(RULE_SUFFIXES[rule_set.kind])
+        raise SpecError(
+            f"the manifest {rule_set.source_file} lists no {rule_set.kind} rule file ({suffixes})"
+        )
     return found
 
 
@@ -335,6 +345,17 @@ def fetch(spec: Spec, rule_set: RuleSet, out: Path, get: atomics.Fetch = atomics
                     f"{relative} of {rule_set.name} has SHA-256 {found_hash}, and {rule_set.source_file} "
                     f"says {wanted_hash}: the run stops"
                 )
+            if is_rule_file(rule_set, relative):
+                reason = (
+                    sigma_reason(relative, data)
+                    if rule_set.kind == "sigma"
+                    else suricata_reason(relative, data)
+                )
+                if reason is not None:
+                    raise SpecError(
+                        f"{relative} of {rule_set.name} is not an executable {rule_set.kind} rule: "
+                        f"{reason}: the run stops"
+                    )
             files[relative] = data
         hashes = manifest_lock(rule_set, listed)
         root = rule_root(out, create=True)
@@ -394,7 +415,7 @@ def record(rule_set: RuleSet, hashes: dict[str, str]) -> dict:
             "version": rule_set.version,
             "sha256": rule_set.sha256,
             "folder": f"{FOLDER}/{rule_set.name}",
-            "files": sum(PurePosixPath(path).suffix == ".rules" for path in hashes),
+            "files": sum(is_rule_file(rule_set, path) for path in hashes),
             "digest": digest(rule_set, hashes),
             "lock": dict(sorted(hashes.items())),
             "note": (
@@ -433,7 +454,7 @@ def digest(rule_set: RuleSet, hashes: dict[str, str]) -> str:
     folder: the files of the rule folders, without the licence file and SOURCE."""
 
     if local(rule_set):
-        paths = [path for path in hashes if PurePosixPath(path).suffix == ".rules"]
+        paths = [path for path in hashes if is_rule_file(rule_set, path)]
     else:
         paths = [path for path in hashes if in_folder(rule_set, path)]
     listing = "".join(f"{hashes[path]}  {path}\n" for path in sorted(paths))
