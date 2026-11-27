@@ -640,10 +640,19 @@ test("pictures of the live view, in the replay pages and in the app", async ({ p
   await openPath(at({ step: copy.id, at: LATE }));
   await expectWholeMoment(page, copy, path);
   const told = page.getByRole("region", { name: "The step", exact: true });
-  await expect(told.getByRole("button", { name: "Fix this", exact: true }), `${NO_ALERT_PICTURE}: the step it shows has no Fix this`).toBeVisible();
+  const outcome = told.locator(".lv-why");
+  const fix = told.getByRole("button", { name: "Fix this", exact: true });
+  const hint = told.locator(".lv-fix-hint");
+  await expect(fix, `${NO_ALERT_PICTURE}: the step it shows has no Fix this`).toBeVisible();
   await expect(told, `${NO_ALERT_PICTURE}: the step it shows is not told as seen with one rule matched for review`).toContainText(/1 rule matched for review, none at alert level/);
   await expect(told, `${NO_ALERT_PICTURE}: the step's hint does not start from a rule that matched it`).toContainText(/start from the rule/);
   await expectWholeRaceLine(page, "path-no-alert.png");
+  // Bring the bottom of the step's story band just into the frame. The minimal scroll keeps the network and its
+  // below-alert match above it, while the picture now shows the outcome, its action and the rule to start from.
+  await hint.scrollIntoViewIfNeeded();
+  for (const [part, name] of [[outcome, "selected step's outcome"], [fix, "Fix this"], [hint, "rule-start hint"]] as const) {
+    await expect(part, `${NO_ALERT_PICTURE}: the ${name} is not wholly inside the 1440 by 900 picture`).toBeInViewport({ ratio: 1 });
+  }
   await picture(page, folder, "path-no-alert.png");
   // The path at its goal, at 1920 by 1080, for the documents.
   await page.setViewportSize({ width: 1920, height: 1080 });
