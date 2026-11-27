@@ -84,8 +84,10 @@ def test_copy_to_a_sibling_or_full_log_is_refused(
     with pytest.raises(
         retained_occurrences.RetainedOccurrenceError,
         match="outside the approved locations",
-    ):
+    ) as raised:
         audit(tmp_path)
+    assert CERTIFIED not in str(raised.value)
+    assert OTHER_CERTIFIED not in str(raised.value)
 
 
 def test_certified_plaintext_copied_into_a_key_is_refused(tmp_path: Path) -> None:
@@ -167,3 +169,27 @@ def test_duplicate_key_in_a_later_ndjson_record_is_refused_without_echoing_it() 
 
     assert "duplicate JSON key" in str(raised.value)
     assert "sensitive-field" not in str(raised.value)
+
+
+def test_a_parent_symlink_cannot_redirect_a_json_source(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "manifest.json").write_text(
+        json.dumps({"capture": {"sha256": CERTIFIED}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        retained_occurrences.RetainedOccurrenceError,
+        match="cannot be opened safely",
+    ):
+        retained_occurrences.audit_json_occurrences(
+            tmp_path,
+            sources={PurePosixPath("linked/manifest.json"): "document"},
+            certified=[
+                retained_occurrences.CertifiedOccurrence(
+                    PurePosixPath("linked/manifest.json"), "/capture/sha256", CERTIFIED
+                )
+            ],
+        )

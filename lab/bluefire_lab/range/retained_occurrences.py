@@ -10,6 +10,7 @@ key or string-scalar location.
 from __future__ import annotations
 
 import json
+import os
 import stat
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -203,19 +204,74 @@ def _relative(value: object, what: str) -> PurePosixPath:
     return path
 
 
-def _read_source(root: Path, relative: PurePosixPath) -> bytes:
-    path = root.joinpath(*relative.parts)
+def _signature(status: os.stat_result) -> tuple[int, ...]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_nlink,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
+def _root_descriptor(root: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        status = path.lstat()
-        if not stat.S_ISREG(status.st_mode) or stat.S_ISLNK(status.st_mode) or status.st_nlink != 1:
-            raise RetainedOccurrenceError(
-                f"the retained JSON source {relative} must be a single-link regular file"
-            )
-        return path.read_bytes()
+        descriptor = os.open(root, flags)
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise RetainedOccurrenceError("the retained JSON root must be a real directory")
+        return descriptor
     except RetainedOccurrenceError:
         raise
     except OSError as error:
-        raise RetainedOccurrenceError(f"the retained JSON source {relative} cannot be read") from error
+        raise RetainedOccurrenceError("the retained JSON root cannot be anchored safely") from error
+
+
+def _read_source(root_descriptor: int, relative: PurePosixPath) -> bytes:
+    directory = os.dup(root_descriptor)
+    source = None
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        for part in relative.parts[:-1]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            if not stat.S_ISDIR(os.fstat(child).st_mode):
+                os.close(child)
+                raise RetainedOccurrenceError("a retained JSON source parent is not a real directory")
+            os.close(directory)
+            directory = child
+
+        source = os.open(relative.name, file_flags, dir_fd=directory)
+        before = os.fstat(source)
+        named = os.stat(relative.name, dir_fd=directory, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or _signature(before) != _signature(named)
+        ):
+            raise RetainedOccurrenceError("a retained JSON source is not a single-link regular file")
+
+        chunks = []
+        while chunk := os.read(source, 64 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(source)
+        named_after = os.stat(relative.name, dir_fd=directory, follow_symlinks=False)
+        if _signature(after) != _signature(before) or _signature(named_after) != _signature(before):
+            raise RetainedOccurrenceError("a retained JSON source changed while it was read")
+        return b"".join(chunks)
+    except RetainedOccurrenceError:
+        raise
+    except OSError as error:
+        raise RetainedOccurrenceError("a retained JSON source cannot be opened safely") from error
+    finally:
+        if source is not None:
+            os.close(source)
+        os.close(directory)
 
 
 def _mismatch_message(
@@ -256,6 +312,8 @@ def audit_json_occurrences(
         if form not in ("document", "ndjson"):
             raise RetainedOccurrenceError(f"JSON source {number} has an unknown form")
         checked_sources[relative] = form
+    if not checked_sources:
+        raise RetainedOccurrenceError("the JSON source list must name at least one file")
 
     expected: Counter[_AuditKey] = Counter()
     values: set[str] = set()
@@ -274,13 +332,17 @@ def audit_json_occurrences(
         values.add(approved.value)
 
     decoded: dict[PurePosixPath, dict[str, object] | tuple[dict[str, object], ...]] = {}
-    for relative, form in checked_sources.items():
-        data = _read_source(root, relative)
-        what = f"retained JSON source {relative}"
-        if form == "document":
-            decoded[relative] = loads_object(data, what)
-        else:
-            decoded[relative] = loads_ndjson_objects(data, what)
+    root_descriptor = _root_descriptor(root)
+    try:
+        for relative, form in checked_sources.items():
+            data = _read_source(root_descriptor, relative)
+            what = f"retained JSON source {relative}"
+            if form == "document":
+                decoded[relative] = loads_object(data, what)
+            else:
+                decoded[relative] = loads_ndjson_objects(data, what)
+    finally:
+        os.close(root_descriptor)
 
     actual: Counter[_AuditKey] = Counter()
     exact_actual: Counter[_AuditKey] = Counter()
