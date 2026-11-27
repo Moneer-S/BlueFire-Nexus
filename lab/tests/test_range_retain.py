@@ -241,6 +241,19 @@ def source_run(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "drops": {"manager: wazuh-analysisd.state": {"events_dropped": "0"}},
         "wazuh_counted_drops": False,
         "live": {"files": ["live/archives.json", "live/alerts.json"]},
+        "marks": [
+            {
+                "host": host,
+                "mark": f"{'file created' if event == 'added' else 'file changed'} in {folder}",
+                "source": "syscheck",
+                "made": True,
+                "archived": True,
+                "delay_seconds": 0.1,
+            }
+            for host in spec.agents
+            for folder in spec.watch_for(host).fim_realtime
+            for event in ("added", "modified")
+        ],
     }
     manifest = {
         "range": spec.range,
@@ -345,8 +358,16 @@ def test_exports_identity_bytes_with_derived_hosted_provenance_and_actual_verifi
         "ended": retain.iso(1_795_643_384_987_654_321),
         "basis": "the first and last Docker event timeNano selected by the hosted workflow",
     }
-    assert (out / "files/raw/steps/s01/extra/context.txt").read_text() == "all step files are retained\n"
     spec = load(spec_path)
+    expected_marks = [
+        {"host": host, "folder": folder, "event": event, "made": True, "archived": True}
+        for host in spec.agents
+        for folder in spec.watch_for(host).fim_realtime
+        for event in ("added", "modified")
+    ]
+    expected_marks.sort(key=lambda row: (row["host"], row["folder"], row["event"]))
+    assert projected["defense"]["fim_marks"] == expected_marks
+    assert (out / "files/raw/steps/s01/extra/context.txt").read_text() == "all step files are retained\n"
     expected_packets = sum(
         len(settings.networks) for settings in spec.hosts.values() if settings.capture == "packets"
     )
@@ -468,6 +489,7 @@ def test_git_replacement_refs_cannot_substitute_the_declared_head_spec(tmp_path)
         ("packet extra", "missing or undeclared"),
         ("packet delivery", "incomplete, has a delivery gap"),
         ("wazuh delivery", "Wazuh delivery has a gap"),
+        ("wazuh FIM mark", "FIM delivery mark"),
     ],
 )
 def test_refuses_an_incomplete_or_inconsistent_sensor_closure(tmp_path, problem, message):
@@ -486,8 +508,10 @@ def test_refuses_an_incomplete_or_inconsistent_sensor_closure(tmp_path, problem,
         (run / f"raw/hosts/{host}/var/log/bluefire/packets/extra.txt").write_text("extra\n")
     elif problem == "packet delivery":
         capture["delivery_gap"] = True
-    else:
+    elif problem == "wazuh delivery":
         record["defense"]["delivery_gap"] = True
+    else:
+        record["defense"]["marks"][0]["archived"] = False
     write_json(run / "manifest.json", record)
 
     with pytest.raises(retain.RetainError, match=message):

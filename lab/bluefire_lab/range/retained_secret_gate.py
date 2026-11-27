@@ -7,15 +7,15 @@ import hashlib
 import json
 import os
 import re
-import stat
 import subprocess
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from . import atomics, retained_occurrences
-from .retained import RetainedError, RetainedRun, verify_retained
+from . import atomics, engine, retained_occurrences
+from .retained import RetainedError, RetainedFile, RetainedRun, verify_retained
 from .spec import Spec, SpecError, load
 
 SCANNER_VERSION = "1.5.0"
@@ -48,6 +48,28 @@ class Certification:
         return hashlib.sha1(self.value.encode()).hexdigest()  # noqa: S324 - detector identity
 
 
+def verify_candidate(root: Path) -> RetainedRun:
+    """Run the exact retained verifier without exposing candidate-controlled error text."""
+
+    try:
+        return verify_retained(root)
+    except (OSError, RetainedError):
+        raise CandidateSecretError("the retained candidate failed its exact verifier") from None
+
+
+def _production_run_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise CandidateSecretError("the retained candidate has no production range run id")
+    match = re.fullmatch(r"(?P<stamp>[0-9]{8}T[0-9]{6}Z)-[0-9a-f]{6}", value)
+    if match is None:
+        raise CandidateSecretError("the retained candidate has no production range run id")
+    try:
+        datetime.strptime(match.group("stamp"), "%Y%m%dT%H%M%SZ")
+    except ValueError:
+        raise CandidateSecretError("the retained candidate has no production range run id") from None
+    return value
+
+
 def _json_data(data: bytes, what: str) -> dict:
     try:
         value = retained_occurrences.loads_object(data, what)
@@ -56,19 +78,7 @@ def _json_data(data: bytes, what: str) -> dict:
     return value
 
 
-def _json_file(path: Path, what: str) -> tuple[dict, bytes]:
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise CandidateSecretError(f"{what} cannot be read: {error}") from error
-    return _json_data(data, what), data
-
-
-def _ndjson(path: Path, what: str) -> tuple[list[dict], bytes]:
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise CandidateSecretError(f"{what} cannot be read: {error}") from error
+def _ndjson(data: bytes, what: str) -> list[dict]:
     records = []
     for number, line in enumerate(data.splitlines(), start=1):
         if not line:
@@ -76,34 +86,41 @@ def _ndjson(path: Path, what: str) -> tuple[list[dict], bytes]:
         records.append(_json_data(line, f"{what} line {number}"))
     if not records:
         raise CandidateSecretError(f"{what} is empty")
-    return records, data
+    return records
 
 
-def _digest(path: Path, algorithm: str = "sha256") -> str:
-    digest = hashlib.new(algorithm)
-    try:
-        with path.open("rb") as stream:
-            for piece in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(piece)
-    except OSError as error:
-        raise CandidateSecretError(f"{path} cannot be hashed: {error}") from error
-    return digest.hexdigest()
+def _data_digest(data: bytes, algorithm: str = "sha256") -> str:
+    return hashlib.new(algorithm, data).hexdigest()
 
 
-def _regular(path: Path, what: str) -> None:
-    try:
-        status = path.lstat()
-    except OSError as error:
-        raise CandidateSecretError(f"{what} cannot be inspected: {error}") from error
-    if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
-        raise CandidateSecretError(f"{what} must be one regular, unlinked file")
-
-
-def _entry_path(proof: RetainedRun, run_path: str, role: str | None = None) -> Path:
+def _entry(proof: RetainedRun, run_path: str, role: str | None = None) -> RetainedFile:
     matches = [entry for entry in proof.files if entry.run_path.as_posix() == run_path]
     if len(matches) != 1 or (role is not None and matches[0].role != role):
         raise CandidateSecretError(f"the retained provenance does not declare exactly one {run_path}")
-    return proof.root.joinpath(*matches[0].stored_path.parts)
+    return matches[0]
+
+
+def _entry_bytes(
+    proof: RetainedRun,
+    run_path: str,
+    role: str | None = None,
+) -> tuple[RetainedFile, bytes]:
+    entry = _entry(proof, run_path, role)
+    try:
+        data = retained_occurrences.read_regular_bytes(
+            proof.root,
+            entry.stored_path,
+            f"retained file {entry.stored_path}",
+        )
+    except ValueError as error:
+        raise CandidateSecretError(str(error)) from error
+    if len(data) != entry.bytes or _data_digest(data) != entry.sha256:
+        raise CandidateSecretError(f"retained file {entry.stored_path} changed after provenance verification")
+    return entry, data
+
+
+def _entry_path(proof: RetainedRun, entry: RetainedFile) -> Path:
+    return proof.root.joinpath(*entry.stored_path.parts)
 
 
 def _pointer(parts: tuple[object, ...]) -> str:
@@ -126,9 +143,13 @@ def _relative_file(repository: Path, path: Path) -> str:
 def _audit(value: object, plaintext: str, expected: Counter[tuple[str, str]], what: str) -> None:
     actual = retained_occurrences.occurrence_locations(value, plaintext)
     if actual != expected:
-        categories = ", ".join(f"{kind}:{pointer}" for kind, pointer in sorted(actual)) or "none"
+        unexpected = actual - expected
+        missing = expected - actual
+        categories = Counter(kind for kind, _ in unexpected.elements())
+        category_text = ", ".join(f"{count} {name}" for name, count in sorted(categories.items()))
         raise CandidateSecretError(
-            f"{what} occurs outside its approved JSON locations; observed {categories}"
+            f"{what} failed its occurrence audit: {sum(missing.values())} missing, "
+            f"{sum(unexpected.values())} unexpected" + (f" ({category_text})" if category_text else "")
         )
 
 
@@ -137,13 +158,24 @@ def _manifest_certifications(
     proof: RetainedRun,
     spec: Spec,
 ) -> list[Certification]:
-    path = _entry_path(proof, "manifest.json", "minimal truthful run context")
-    manifest, data = _json_file(path, "the retained manifest")
+    entry, data = _entry_bytes(proof, "manifest.json", "minimal truthful run context")
+    path = _entry_path(proof, entry)
+    manifest = _json_data(data, "the retained manifest")
     atomic = manifest.get("atomic_red_team")
     if not isinstance(atomic, dict) or set(atomic) != {"commit"} or atomic["commit"] != spec.atomics.commit:
         raise CandidateSecretError(
             "the retained manifest Atomic Red Team commit differs from the tracked spec"
         )
+    expected_marks = [
+        {"host": host, "folder": folder, "event": event, "made": True, "archived": True}
+        for host in spec.agents
+        for folder in spec.watch_for(host).fim_realtime
+        for event in ("added", "modified")
+    ]
+    expected_marks.sort(key=lambda row: (row["host"], row["folder"], row["event"]))
+    defense = manifest.get("defense")
+    if not isinstance(defense, dict) or defense.get("fim_marks") != expected_marks:
+        raise CandidateSecretError("the retained manifest lacks the exact source Wazuh FIM delivery marks")
 
     approved: dict[str, Counter[tuple[str, str]]] = {
         spec.atomics.commit: Counter({("string", "/atomic_red_team/commit"): 1})
@@ -169,8 +201,8 @@ def _manifest_certifications(
                 raise CandidateSecretError(
                     f"the retained manifest packet path for {host}/{name} is not canonical"
                 )
-            packet = _entry_path(proof, run_path, "raw packet capture")
-            digest = _digest(packet)
+            _, packet = _entry_bytes(proof, run_path, "raw packet capture")
+            digest = _data_digest(packet)
             if record.get("sha256") != digest:
                 raise CandidateSecretError(f"the retained manifest packet digest for {host}/{name} is false")
             location = ("string", _pointer(("packet_capture", "hosts", host, "files", name, "sha256")))
@@ -184,19 +216,33 @@ def _manifest_certifications(
     return certified
 
 
-def _script_hashes(spec: Spec, script: Path) -> dict[str, str]:
+def _workspace_bytes(workspace: Path, path: Path, what: str) -> bytes:
+    path = Path(os.path.abspath(path))
+    try:
+        relative = path.relative_to(workspace)
+        return retained_occurrences.read_regular_bytes(workspace, relative.as_posix(), what)
+    except (ValueError, OSError) as error:
+        raise CandidateSecretError(f"{what} is not one anchored workspace file: {error}") from error
+
+
+def _script_hashes(spec: Spec, script: Path, workspace: Path) -> dict[str, str]:
     if spec.atomics is None or spec.folder is None:
         raise CandidateSecretError("the tracked spec has no Atomic Red Team pin")
-    _regular(script, "the rendered Atomic Red Team script")
     lock_path = spec.folder / spec.atomics.lock
     try:
-        locked = atomics.read_lock(lock_path.read_text(encoding="utf-8"), spec)
+        lock_data = _workspace_bytes(workspace, lock_path, "the tracked Atomic Red Team lock")
+        locked = atomics.read_lock(lock_data.decode("utf-8"), spec)
     except (OSError, UnicodeDecodeError, SpecError) as error:
         raise CandidateSecretError(f"the tracked Atomic Red Team lock cannot be verified: {error}") from error
     expected = locked.get(SCRIPT_RUN_PATH.as_posix())
-    if expected is None or _digest(script) != expected:
+    script_data = _workspace_bytes(workspace, script, "the rendered Atomic Red Team script")
+    if expected is None or _data_digest(script_data) != expected:
         raise CandidateSecretError("the rendered T1105 script differs from the tracked Atomic Red Team lock")
-    return {name: _digest(script, name) for name in HEX}
+    return {name: _data_digest(script_data, name) for name in HEX}
+
+
+def _payload_hashes(payload: bytes) -> dict[str, str]:
+    return {name: hashlib.new(name, payload).hexdigest() for name in HEX}
 
 
 def _event_semantics(record: dict) -> str:
@@ -204,46 +250,63 @@ def _event_semantics(record: dict) -> str:
     return json.dumps(semantic, sort_keys=True, separators=(",", ":"))
 
 
-def _full_log_occurrences(full_log: str, event: str, hashes: dict[str, str]) -> Counter[str]:
-    first = f"File '{SCRIPT_FIM_PATH}' {event}\nMode: realtime\n"
+def _full_log_occurrences(
+    full_log: str,
+    event: str,
+    fim_path: str,
+    expected: dict[str, dict[str, str]],
+) -> Counter[str]:
+    first = f"File '{fim_path}' {event}\nMode: realtime\n"
     if event != "modified":
         if full_log != first:
-            raise CandidateSecretError(f"the {event} Atomic script FIM full_log is not canonical")
+            raise CandidateSecretError(f"the {event} source-bound FIM full_log is not canonical")
         return Counter()
     if not full_log.startswith(first):
-        raise CandidateSecretError("the modified Atomic script FIM full_log is not canonical")
+        raise CandidateSecretError("the modified source-bound FIM full_log is not canonical")
     expected_lines = []
-    for algorithm, digest in hashes.items():
-        expected_lines.extend([f"Old {algorithm}sum was: '{digest}'", f"New {algorithm}sum is : '{digest}'"])
+    for algorithm in HEX:
+        expected_lines.extend(
+            [
+                f"Old {algorithm}sum was: '{expected['before'][algorithm]}'",
+                f"New {algorithm}sum is : '{expected['after'][algorithm]}'",
+            ]
+        )
     lines = full_log.splitlines()
     for line in expected_lines:
         if lines.count(line) != 1:
-            raise CandidateSecretError("the modified Atomic script FIM checksum clauses are not exact")
+            raise CandidateSecretError("the modified source-bound FIM checksum clauses are not exact")
     found = Counter()
-    for digest in hashes.values():
+    values = {digest for hashes in expected.values() for digest in hashes.values()}
+    for digest in values:
         found[digest] = full_log.count(digest)
-        if found[digest] != 2:
-            raise CandidateSecretError("the modified Atomic script FIM checksum count is not exact")
+        wanted = sum(digest in hashes.values() for hashes in expected.values())
+        if found[digest] != wanted:
+            raise CandidateSecretError("the modified source-bound FIM checksum count is not exact")
     return found
 
 
-def _fim_record(record: dict, hashes: dict[str, str]) -> tuple[str, dict[str, Counter[tuple[str, str]]]]:
+def _fim_record(
+    record: dict,
+    expected: dict[str, dict[str, str]],
+    fim_path: str,
+    agent_name: str,
+) -> tuple[str, dict[str, Counter[tuple[str, str]]]]:
     syscheck = record.get("syscheck")
     rule = record.get("rule")
     decoder = record.get("decoder")
     agent = record.get("agent")
     if not all(isinstance(value, dict) for value in (syscheck, rule, decoder, agent)):
-        raise CandidateSecretError("an Atomic script FIM event lacks its structured context")
+        raise CandidateSecretError("a source-bound FIM event lacks its structured context")
     event = syscheck.get("event")
     if event not in EVENTS:
-        raise CandidateSecretError("an Atomic script FIM event has an unknown event kind")
+        raise CandidateSecretError("a source-bound FIM event has an unknown event kind")
     expected_decoder, expected_rule, suffixes = EVENTS[event]
     expected_groups = {"ossec", "syscheck", f"syscheck_entry_{event}", "syscheck_file"}
     groups = rule.get("groups")
     if (
         record.get("location") != "syscheck"
-        or agent.get("name") != "web"
-        or syscheck.get("path") != SCRIPT_FIM_PATH
+        or agent.get("name") != agent_name
+        or syscheck.get("path") != fim_path
         or syscheck.get("mode") != "realtime"
         or decoder.get("name") != expected_decoder
         or rule.get("id") != expected_rule
@@ -251,29 +314,61 @@ def _fim_record(record: dict, hashes: dict[str, str]) -> tuple[str, dict[str, Co
         or not all(isinstance(group, str) for group in groups)
         or not expected_groups.issubset(set(groups))
     ):
-        raise CandidateSecretError("an Atomic script FIM event is outside the canonical sensor context")
+        raise CandidateSecretError("a source-bound FIM event is outside the canonical sensor context")
 
-    expected_fields = {f"{algorithm}_{suffix}" for suffix in suffixes for algorithm in HEX}
+    if set(expected) != set(suffixes):
+        raise CandidateSecretError(f"the {event} FIM source proof has another lifecycle shape")
+    expected_fields = {f"{algorithm}_{suffix}" for suffix in expected for algorithm in HEX}
     actual_fields = {key for key in syscheck if re.fullmatch(r"(?:md5|sha1|sha256)_(?:before|after)", key)}
     if actual_fields != expected_fields:
-        raise CandidateSecretError(f"the {event} Atomic script FIM digest fields are incomplete or extra")
-    approved: dict[str, Counter[tuple[str, str]]] = {digest: Counter() for digest in hashes.values()}
-    for suffix in suffixes:
+        raise CandidateSecretError(f"the {event} source-bound FIM digest fields are incomplete or extra")
+    approved: dict[str, Counter[tuple[str, str]]] = {
+        digest: Counter() for hashes in expected.values() for digest in hashes.values()
+    }
+    for suffix, hashes in expected.items():
         for algorithm, digest in hashes.items():
             field = f"{algorithm}_{suffix}"
             if syscheck.get(field) != digest or not re.fullmatch(rf"[0-9a-f]{{{HEX[algorithm]}}}", digest):
                 raise CandidateSecretError(
-                    f"the {event} Atomic script FIM {field} differs from the fetched script"
+                    f"the {event} source-bound FIM {field} differs from its source bytes"
                 )
             approved[digest][("string", f"/syscheck/{field}")] += 1
     full_log = record.get("full_log")
     if not isinstance(full_log, str):
-        raise CandidateSecretError("an Atomic script FIM event has no full_log")
-    for digest, count in _full_log_occurrences(full_log, event, hashes).items():
+        raise CandidateSecretError("a source-bound FIM event has no full_log")
+    for digest, count in _full_log_occurrences(full_log, event, fim_path, expected).items():
         approved[digest][("string", "/full_log")] += count
     for digest, expected in approved.items():
-        _audit(record, digest, expected, "a fetched-script digest in an Atomic script FIM event")
+        _audit(record, digest, expected, "a source-bound digest in a FIM event")
     return event, approved
+
+
+def _fim_sources(
+    proof: RetainedRun,
+    spec: Spec,
+    script_hashes: dict[str, str],
+) -> dict[tuple[str, str, str], dict[str, dict[str, str]]]:
+    run_id = _production_run_id(proof.run.get("id"))
+    atomic_hosts = [host for technique, host in spec.steps if technique == "T1105"]
+    if len(atomic_hosts) != 1:
+        raise CandidateSecretError("the tracked spec must run T1105 on exactly one host")
+    sources = {
+        (atomic_hosts[0], SCRIPT_FIM_PATH, "added"): {"after": script_hashes},
+        (atomic_hosts[0], SCRIPT_FIM_PATH, "deleted"): {"after": script_hashes},
+    }
+    created = _payload_hashes(engine.FIM_MARK_CREATED)
+    changed = _payload_hashes(engine.FIM_MARK_CHANGED)
+    for host in spec.agents:
+        for folder in spec.watch_for(host).fim_realtime:
+            path = f"{folder.rstrip('/')}/bluefire-mark-{run_id}.txt"
+            entries = {
+                (host, path, "added"): {"after": created},
+                (host, path, "modified"): {"before": created, "after": changed},
+            }
+            if set(sources).intersection(entries):
+                raise CandidateSecretError("the tracked FIM sources collide")
+            sources.update(entries)
+    return sources
 
 
 def _wazuh_certifications(
@@ -285,12 +380,17 @@ def _wazuh_certifications(
     manager = spec.manager
     if manager is None:
         raise CandidateSecretError("the tracked spec has no Wazuh manager")
+    sources = _fim_sources(proof, spec, hashes)
+    approved_values = {
+        digest for expected in sources.values() for values in expected.values() for digest in values.values()
+    }
     streams = {}
     for kind in ("archives", "alerts"):
         run_path = f"raw/hosts/{manager}/var/ossec/logs/{kind}/{kind}.json"
         role = "complete raw Wazuh archive" if kind == "archives" else "complete raw Wazuh alerts"
-        path = _entry_path(proof, run_path, role)
-        records, data = _ndjson(path, f"the retained Wazuh {kind}")
+        entry, data = _entry_bytes(proof, run_path, role)
+        path = _entry_path(proof, entry)
+        records = _ndjson(data, f"the retained Wazuh {kind}")
         selected = []
         approved_by_line: dict[int, dict[str, Counter[tuple[str, str]]]] = {}
         observed: Counter[tuple[str, str]] = Counter()
@@ -303,21 +403,27 @@ def _wazuh_certifications(
             )
             if digest_fields:
                 fim_path = syscheck.get("path")
+                agent = record.get("agent")
+                agent_name = agent.get("name") if isinstance(agent, dict) else None
+                event = syscheck.get("event")
+                key = (agent_name, fim_path, event)
                 path_class = (
                     "atomic-script"
                     if fim_path == SCRIPT_FIM_PATH
+                    else "engine-mark"
+                    if key in sources
                     else "tmp-other"
                     if isinstance(fim_path, str) and fim_path.startswith("/tmp/")
                     else "outside-tmp"
                 )
-                event = syscheck.get("event")
                 event_class = event if event in EVENTS else "unknown"
                 observed[(path_class, event_class)] += 1
-            if isinstance(syscheck, dict) and syscheck.get("path") == SCRIPT_FIM_PATH:
-                checked_event, approved = _fim_record(record, hashes)
-                selected.append((checked_event, _event_semantics(record), number))
-                approved_by_line[number] = approved
-        if len(selected) != 3 or {event for event, _, _ in selected} != set(EVENTS):
+                if key in sources:
+                    checked_event, approved = _fim_record(record, sources[key], fim_path, agent_name)
+                    selected.append((key, checked_event, _event_semantics(record), number))
+                    approved_by_line[number] = approved
+        selected_keys = Counter(key for key, _, _, _ in selected)
+        if selected_keys != Counter({key: 1 for key in sources}):
             description = (
                 ", ".join(
                     f"{count} {path_class}/{event}" for (path_class, event), count in sorted(observed.items())
@@ -325,23 +431,22 @@ def _wazuh_certifications(
                 or "none"
             )
             raise CandidateSecretError(
-                "the retained Wazuh "
-                f"{kind} must have one added, modified and deleted Atomic script event; observed {description}"
+                f"the retained Wazuh {kind} lacks the exact source-bound FIM lifecycle; observed {description}"
             )
         streams[kind] = (path, records, data, selected, approved_by_line)
 
-    archive_semantics = Counter(semantics for _, semantics, _ in streams["archives"][3])
-    alert_semantics = Counter(semantics for _, semantics, _ in streams["alerts"][3])
+    archive_semantics = Counter(semantics for _, _, semantics, _ in streams["archives"][3])
+    alert_semantics = Counter(semantics for _, _, semantics, _ in streams["alerts"][3])
     if archive_semantics != alert_semantics or any(count != 1 for count in archive_semantics.values()):
         raise CandidateSecretError(
-            "the Atomic script FIM events are not mirrored one-to-one in archives and alerts"
+            "the source-bound FIM events are not mirrored one-to-one in archives and alerts"
         )
 
     certified = []
     for kind in ("archives", "alerts"):
         path, records, data, _, approved_by_line = streams[kind]
         filename = _relative_file(repository, path)
-        for digest in hashes.values():
+        for digest in approved_values:
             actual: Counter[tuple[int, str, str]] = Counter()
             expected: Counter[tuple[int, str, str]] = Counter()
             for number, record in enumerate(records, start=1):
@@ -350,15 +455,14 @@ def _wazuh_certifications(
                 for location, count in approved_by_line.get(number, {}).get(digest, {}).items():
                     expected[(number, *location)] += count
             if actual != expected:
-                categories = (
-                    ", ".join(
-                        f"line-{number}:{kind_name}:{pointer}"
-                        for number, kind_name, pointer in sorted(actual)
-                    )
-                    or "none"
-                )
+                unexpected = actual - expected
+                missing = expected - actual
+                categories = Counter(kind_name for _, kind_name, _ in unexpected.elements())
+                category_text = ", ".join(f"{count} {name}" for name, count in sorted(categories.items()))
                 raise CandidateSecretError(
-                    f"a fetched-script digest occurs outside approved Wazuh {kind} locations; observed {categories}"
+                    f"a source-bound digest failed the Wazuh {kind} occurrence audit: "
+                    f"{sum(missing.values())} missing, {sum(unexpected.values())} unexpected"
+                    + (f" ({category_text})" if category_text else "")
                 )
             certified.append(Certification(filename, digest, _line_numbers(data, digest)))
     return certified
@@ -375,22 +479,34 @@ def certify(
 
     repository = repository.resolve()
     candidate = candidate.resolve()
+    proof = verify_candidate(candidate)
     try:
-        proof = verify_retained(candidate)
-    except RetainedError as error:
+        provenance = retained_occurrences.read_regular_bytes(
+            proof.root, "provenance.json", "the retained provenance"
+        )
+    except ValueError as error:
         raise CandidateSecretError(str(error)) from error
+    if _data_digest(provenance) != proof.provenance_sha256:
+        raise CandidateSecretError("the retained provenance changed after verification")
     if not re.fullmatch(r"[0-9a-f]{40}", source_head) or proof.source["head"] != source_head[:12]:
         raise CandidateSecretError("the retained source head differs from the checked-out workflow head")
-    candidate_spec = _entry_path(proof, proof.run["spec"], "exact tracked run spec")
+    spec_path = Path(os.path.abspath(spec_path))
+    if spec_path.parent.name != "range" or spec_path.parent.parent.name != "lab":
+        raise CandidateSecretError("the tracked spec must be below lab/range in the workflow workspace")
+    workspace = spec_path.parents[2]
+    _, candidate_spec = _entry_bytes(proof, proof.run["spec"], "exact tracked run spec")
     try:
-        if candidate_spec.read_bytes() != spec_path.read_bytes():
+        tracked_spec = _workspace_bytes(workspace, spec_path, "the tracked run spec")
+        if candidate_spec != tracked_spec:
             raise CandidateSecretError("the retained run spec differs byte-for-byte from the tracked spec")
         spec = load(spec_path)
+        if _workspace_bytes(workspace, spec_path, "the tracked run spec") != tracked_spec:
+            raise CandidateSecretError("the tracked run spec changed while it was being loaded")
     except (OSError, SpecError) as error:
         raise CandidateSecretError(f"the tracked spec cannot be loaded: {error}") from error
     if spec.atomics is None:
         raise CandidateSecretError("the tracked spec has no Atomic Red Team pin")
-    hashes = _script_hashes(spec, script)
+    hashes = _script_hashes(spec, script, workspace)
     certified = _manifest_certifications(repository, proof, spec)
     certified += _wazuh_certifications(repository, proof, spec, hashes)
 
@@ -466,7 +582,10 @@ def prepare_baseline(
     """Write a private baseline containing only findings matched to certified fingerprints."""
 
     _, certifications, tracked = certify(repository, candidate, spec_path, script, source_head)
-    baseline, _ = _json_file(tracked_baseline, "the tracked scanner baseline")
+    spec_path = Path(os.path.abspath(spec_path))
+    workspace = spec_path.parents[2]
+    baseline_data = _workspace_bytes(workspace, tracked_baseline, "the tracked scanner baseline")
+    baseline = _json_data(baseline_data, "the tracked scanner baseline")
     if baseline.get("version") != SCANNER_VERSION:
         raise CandidateSecretError(f"the tracked scanner baseline must use detect-secrets {SCANNER_VERSION}")
     if not isinstance(baseline.get("plugins_used"), list) or not isinstance(

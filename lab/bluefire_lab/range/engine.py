@@ -83,6 +83,15 @@ READY_SECONDS = 30
 DEFENSE_READY_SECONDS = 180
 MARK_SECONDS = 60
 POLL_SECONDS = 1.0
+# Exact payloads used by the real-time FIM delivery mark. Retained evidence
+# recomputes their integrity fingerprints from the same production constants.
+FIM_MARK_CREATED = b"file created\n"
+FIM_MARK_APPENDED = b"file changed\n"
+FIM_MARK_CHANGED = FIM_MARK_CREATED + FIM_MARK_APPENDED
+FIM_MARK_WRITES = (
+    (">", r"file created\n", "file created", "added"),
+    (">>", r"file changed\n", "file changed", "modified"),
+)
 BUILD_SECONDS = 3600
 COPY_SECONDS = 300
 # Breaks planted on purpose, to show that the seal catches each one. A run with a plant always fails.
@@ -1385,9 +1394,7 @@ class Run:
                 )
                 sent.append((host, f"logger line {number}", "/var/log/auth.log", text, done))
             folders = self.spec.watch_for(host).fim_realtime
-            for step, (write, what, event) in enumerate(
-                ((">", "file created", "added"), (">>", "file changed", "modified"))
-            ):
+            for step, (write, payload, what, event) in enumerate(FIM_MARK_WRITES):
                 if step and folders:
                     # Apart in time, so that the change is not one event with the create.
                     time.sleep(2)
@@ -1395,7 +1402,7 @@ class Run:
                     path = f"{folder.rstrip('/')}/bluefire-mark-{token}.txt"
                     done = self.execute(
                         identifier,
-                        f"printf '%s' \"$EPOCHREALTIME\"; printf '{what}\\n' {write} {path}",
+                        f"printf '%s' \"$EPOCHREALTIME\"; printf '{payload}' {write} {path}",
                         30,
                         "engine:mark",
                     )

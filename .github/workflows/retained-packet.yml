@@ -223,7 +223,7 @@ jobs:
 
       - name: Scan the exact candidate
         run: |
-          "$RUNNER_TEMP/venv/bin/python" -c 'import sys; from pathlib import Path; from bluefire_lab.range.retained import verify_retained; verify_retained(Path(sys.argv[1]))' "$ARTIFACT_ROOT/$FIXTURE"
+          "$RUNNER_TEMP/venv/bin/python" -c 'import sys; from pathlib import Path; from bluefire_lab.range.retained_secret_gate import verify_candidate; verify_candidate(Path(sys.argv[1]))' "$ARTIFACT_ROOT/$FIXTURE"
           scan="$RUNNER_TEMP/candidate-repository"
           git init -q "$scan"
           mkdir -p "$scan/lab/retained"
@@ -263,7 +263,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git "$scan" --config .gitleaks.toml --redact --no-banner
 
-          "$RUNNER_TEMP/venv/bin/python" -c 'import sys; from pathlib import Path; from bluefire_lab.range.retained import verify_retained; verify_retained(Path(sys.argv[1]))' "$ARTIFACT_ROOT/$FIXTURE"
+          "$RUNNER_TEMP/venv/bin/python" -c 'import sys; from pathlib import Path; from bluefire_lab.range.retained_secret_gate import verify_candidate; verify_candidate(Path(sys.argv[1]))' "$ARTIFACT_ROOT/$FIXTURE"
           diff -qr "$ARTIFACT_ROOT/$FIXTURE" "$scan/lab/retained/packet-download"
 
       - name: Take down what is left
