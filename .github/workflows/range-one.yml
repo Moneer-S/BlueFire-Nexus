@@ -271,6 +271,12 @@ jobs:
           echo "OUT=$RUNNER_TEMP/range-one" >> "$GITHUB_ENV"
           docker version
 
+      # Keep the range program's dependencies separate from the app contract it must satisfy.
+      - name: Install the recording validator
+        run: |
+          python3 -m venv "$RUNNER_TEMP/app-venv"
+          "$RUNNER_TEMP/app-venv/bin/pip" install --quiet -e .
+
       # The program that evaluates the public rule sets after the run. It runs on the runner, over
       # the files the run collected, and never inside the range.
       - name: Fetch the rule engine
@@ -533,7 +539,7 @@ jobs:
             jq '{recording, race: .score.path.race, clock: .score.path.clock}' "$OUT/run/manifest.json"
             exit 1
           fi
-          python3 -c \
+          "$RUNNER_TEMP/app-venv/bin/python" -I -c \
             'import json, sys; from pathlib import Path; from bluefire.recordings import validate_recording; validate_recording(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))' \
             "$OUT/run/recording.json"
           "$LAB" replay "$OUT/run/recording.json" --template bluefire/ui/replay.html \

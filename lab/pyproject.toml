@@ -26,6 +26,9 @@ bluefire_lab = ["report.css", "report.js"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "app_recording_interop: cross-product checks that require both the BlueFire app and lab packages",
+]
 
 [tool.ruff]
 line-length = 110
